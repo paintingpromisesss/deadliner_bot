@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Env             string         `mapstructure:"APP_ENV"`
 	BotToken        string         `mapstructure:"BOT_TOKEN"`
+	BotName         string         `mapstructure:"BOT_NAME"`
 	WebAppURL       string         `mapstructure:"WEBAPP_URL"`
 	DatabaseURL     string         `mapstructure:"DATABASE_URL"`
 	DBHost          string         `mapstructure:"DB_HOST"`
@@ -41,6 +42,7 @@ func Load() (*Config, error) {
 	keys := []string{
 		"APP_ENV",
 		"BOT_TOKEN",
+		"BOT_NAME",
 		"WEBAPP_URL",
 		"DATABASE_URL",
 		"DB_HOST",
@@ -79,6 +81,9 @@ func Load() (*Config, error) {
 
 	if cfg.BotToken == "" {
 		return nil, fmt.Errorf("BOT_TOKEN is empty")
+	}
+	if cfg.BotName == "" {
+		return nil, fmt.Errorf("BOT_NAME is empty")
 	}
 	if cfg.DatabaseURL == "" {
 		if cfg.DBHost == "" || cfg.DBPort == "" || cfg.DBUser == "" || cfg.DBPassword == "" || cfg.DBName == "" {

@@ -14,6 +14,7 @@ FROM gcr.io/distroless/base-debian12
 WORKDIR /app
 
 COPY --from=build /app/bot /app/bot
+COPY --from=build /src/web /app/web
 
 EXPOSE 8080
 

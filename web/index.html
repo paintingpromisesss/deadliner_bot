@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HTTP server web test</title>
+  <link rel="stylesheet" href="./style.css" />
+  <script src="./script.js" defer></script>
+</head>
+
+<body>
+  <main class="card">
+    <h1>Web test</h1>
+
+    <section class="row">
+      <div class="label">CSS:</div>
+      <div id="cssStatus" class="pill">не загружен</div>
+    </section>
+
+    <section class="row">
+      <div class="label">JS:</div>
+      <div id="jsStatus" class="pill">не загружен</div>
+    </section>
+
+    <section class="row">
+      <div class="label">Время:</div>
+      <div id="now" class="mono">—</div>
+    </section>
+
+    <hr />
+
+    <section class="row">
+      <button id="incBtn">+1</button>
+      <div class="mono">counter = <span id="counter">0</span></div>
+    </section>
+
+    <section class="row">
+      <button id="pingBtn">GET /health</button>
+      <div id="pingOut" class="mono muted">Нажми, чтобы проверить запрос</div>
+    </section>
+  </main>
+</body>
+</html>

@@ -38,10 +38,28 @@ func (r *FileRepository) GetByID(ctx context.Context, id uint) (*models.Attachme
 	return &attachment, nil
 }
 
+// GetByIDAndChatID returns an attachment by ID scoped to a chat.
+func (r *FileRepository) GetByIDAndChatID(ctx context.Context, id uint, chatID int64) (*models.Attachment, error) {
+	var attachment models.Attachment
+	if err := r.db.WithContext(ctx).Where("id = ? AND chat_id = ?", id, chatID).First(&attachment).Error; err != nil {
+		return nil, err
+	}
+	return &attachment, nil
+}
+
 // List returns all attachments.
 func (r *FileRepository) List(ctx context.Context) ([]models.Attachment, error) {
 	var attachments []models.Attachment
 	if err := r.db.WithContext(ctx).Find(&attachments).Error; err != nil {
+		return nil, err
+	}
+	return attachments, nil
+}
+
+// ListByChatID returns all attachments for a specific chat.
+func (r *FileRepository) ListByChatID(ctx context.Context, chatID int64) ([]models.Attachment, error) {
+	var attachments []models.Attachment
+	if err := r.db.WithContext(ctx).Where("chat_id = ?", chatID).Find(&attachments).Error; err != nil {
 		return nil, err
 	}
 	return attachments, nil

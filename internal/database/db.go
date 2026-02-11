@@ -28,6 +28,7 @@ func Init(cfg *config.Config) (*gorm.DB, error) {
 		&models.Deadline{},
 		&models.Attachment{},
 		&models.Reminder{},
+		&models.ChatSettings{},
 	); err != nil {
 		return nil, fmt.Errorf("auto migrate: %w", err)
 	}

@@ -38,10 +38,28 @@ func (r *DeadlineRepository) GetByID(ctx context.Context, id uint) (*models.Dead
 	return &deadline, nil
 }
 
+// GetByIDAndChatID returns a deadline by its ID scoped to a chat.
+func (r *DeadlineRepository) GetByIDAndChatID(ctx context.Context, id uint, chatID int64) (*models.Deadline, error) {
+	var deadline models.Deadline
+	if err := r.db.WithContext(ctx).Where("id = ? AND chat_id = ?", id, chatID).First(&deadline).Error; err != nil {
+		return nil, err
+	}
+	return &deadline, nil
+}
+
 // List returns all deadlines.
 func (r *DeadlineRepository) List(ctx context.Context) ([]models.Deadline, error) {
 	var deadlines []models.Deadline
 	if err := r.db.WithContext(ctx).Find(&deadlines).Error; err != nil {
+		return nil, err
+	}
+	return deadlines, nil
+}
+
+// ListByChatID returns all deadlines for a specific chat.
+func (r *DeadlineRepository) ListByChatID(ctx context.Context, chatID int64) ([]models.Deadline, error) {
+	var deadlines []models.Deadline
+	if err := r.db.WithContext(ctx).Where("chat_id = ?", chatID).Find(&deadlines).Error; err != nil {
 		return nil, err
 	}
 	return deadlines, nil

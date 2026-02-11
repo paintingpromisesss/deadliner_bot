@@ -38,10 +38,28 @@ func (r *ReminderRepository) GetByID(ctx context.Context, id uint) (*models.Remi
 	return &reminder, nil
 }
 
+// GetByIDAndChatID returns a reminder by ID scoped to a chat.
+func (r *ReminderRepository) GetByIDAndChatID(ctx context.Context, id uint, chatID int64) (*models.Reminder, error) {
+	var reminder models.Reminder
+	if err := r.db.WithContext(ctx).Where("id = ? AND chat_id = ?", id, chatID).First(&reminder).Error; err != nil {
+		return nil, err
+	}
+	return &reminder, nil
+}
+
 // List returns all reminders.
 func (r *ReminderRepository) List(ctx context.Context) ([]models.Reminder, error) {
 	var reminders []models.Reminder
 	if err := r.db.WithContext(ctx).Find(&reminders).Error; err != nil {
+		return nil, err
+	}
+	return reminders, nil
+}
+
+// ListByChatID returns all reminders for a specific chat.
+func (r *ReminderRepository) ListByChatID(ctx context.Context, chatID int64) ([]models.Reminder, error) {
+	var reminders []models.Reminder
+	if err := r.db.WithContext(ctx).Where("chat_id = ?", chatID).Find(&reminders).Error; err != nil {
 		return nil, err
 	}
 	return reminders, nil

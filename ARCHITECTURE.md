@@ -10,7 +10,7 @@
 - **Ролевая модель**: Просматривать могут все, редактировать — только администраторы группы.
 
 ## 2. Технологический стек
-- **Backend Language**: Go 1.22+
+- **Backend Language**: Go 1.25.7+
 - **Web Server**: Fiber или Echo (для API Mini App).
 - **Telegram Bot Lib**: `github.com/go-telegram/bot` (поддержка топиков, middleware).
 - **Database**: PostgreSQL (Driver: `pgx`, ORM: `GORM`).
@@ -26,7 +26,7 @@ deadliner_bot/
 │       └── main.go              # Entry point: запуск HTTP сервера и Bot Pollera
 ├── internal/
 │   ├── api/                     # REST API для Mini App
-│   │   ├── server.go            # Роутер (Fiber)
+│   │   ├── server.go            # Роутер (Echo)
 │   │   ├── handlers.go          # Endpoints (GET/POST deadlines, upload)
 │   │   └── auth.go              # Middleware валидации WebAppInitData
 │   ├── bot/                     # Логика Telegram бота

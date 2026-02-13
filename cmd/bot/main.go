@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -22,6 +23,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	srvErrCh := make(chan error, 1)
+	botDone := make(chan struct{})
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("load config: %v", err)
@@ -36,14 +40,27 @@ func main() {
 	if err != nil {
 		log.Fatalf("init database: %v", err)
 	}
-	_ = db
-	log.Printf("database connected")
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatalf("get sql db: %v", err)
+	}
+	defer func() {
+		if err := sqlDB.Close(); err != nil {
+			log.Printf("close database: %v", err)
+		}
+	}()
 
 	server := api.NewServer(cfg.HttpAddr, cfg.ReadTimeout, cfg.WriteTimeout, "web")
 	go func() {
-		log.Printf("http server starting on %s", cfg.HttpAddr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http server error: %v", err)
+		log.Printf("http server starting on %s", server.Addr)
+
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			select {
+			case srvErrCh <- err:
+			default:
+			}
+			stop()
 		}
 	}()
 
@@ -62,13 +79,29 @@ func main() {
 		log.Fatalf("init bot: %v", err)
 	}
 
-	log.Printf("bot starting")
-	b.Start(ctx)
-	log.Printf("bot stopped")
+	go func() {
+		log.Printf("bot starting")
+		b.Start(ctx)
+		close(botDone)
+		log.Printf("bot stopped")
+	}()
+
+	var srvErr error
+	select {
+	case <-ctx.Done():
+	case srvErr = <-srvErrCh:
+		log.Printf("http server error: %v", srvErr)
+		stop()
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("http server shutdown: %v", err)
+	}
+	select {
+	case <-botDone:
+	case <-time.After(5 * time.Second):
+		log.Printf("bot shutdown timeout")
 	}
 }

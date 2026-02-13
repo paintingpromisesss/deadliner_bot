@@ -20,33 +20,47 @@
 - **Deployment**: Docker + Docker Compose.
 
 ## 3. Структура проекта (File Structure)
-student-deadline-bot/
+deadliner_bot/
 ├── cmd/
 │   └── bot/
 │       └── main.go              # Entry point: запуск HTTP сервера и Bot Pollera
 ├── internal/
-│   ├── config/                  # Загрузка env/yaml конфигов
-│   ├── database/                # Подключение к GORM, миграции
-│   ├── models/                  # Structs: Deadline, User, File
+│   ├── api/                     # REST API для Mini App
+│   │   ├── server.go            # Роутер (Fiber)
+│   │   ├── handlers.go          # Endpoints (GET/POST deadlines, upload)
+│   │   └── auth.go              # Middleware валидации WebAppInitData
 │   ├── bot/                     # Логика Telegram бота
 │   │   ├── handlers.go          # Обработка команд (/start, /settings)
 │   │   └── notifications.go     # Логика отправки сообщений в топик
-│   ├── api/                     # REST API для Mini App
-│   │   ├── server.go            # Роутер (Gin/Fiber)
-│   │   ├── handlers.go          # Endpoints (GET/POST deadlines, upload)
-│   │   └── auth.go              # Middleware валидации WebAppInitData
-│   ├── service/                 # Бизнес-логика
-│   │   ├── deadline_service.go  # CRUD дедлайнов
-│   │   ├── file_service.go      # Загрузка файлов и получение file_id
-│   │   └── reminder_service.go  # Расчет времени напоминаний
-│   └── scheduler/               # Cron jobs для проверки напоминаний
+│   ├── config/                  # Загрузка env/yaml конфигов
+│   ├── database/                # Подключение к GORM, миграции
+│   │   └── db.go                # Инициализация БД
+│   ├── logger/                  # Логирование
+│   ├── models/                  # Structs: Deadline, Attachment, Reminder, ChatSettings
+│   │   ├── deadline.go          # Модель дедлайна
+│   │   ├── attachment.go        # Модель вложения
+│   │   ├── reminder.go          # Модель напоминания
+│   │   └── chat_settings.go     # Модель настроек чата
+│   ├── repository/              # Слой доступа к данным
+│   │   ├── deadline_repository.go
+│   │   ├── attachment_repository.go
+│   │   ├── reminder_repository.go
+│   │   ├── chat_settings_repository.go
+│   ├── scheduler/               # Cron jobs для проверки напоминаний
+│   └── service/                 # Бизнес-логика
+│       ├── deadline_service.go  # CRUD дедлайнов
+│       ├── file_service.go      # Загрузка файлов и получение file_id
+│       └── reminder_service.go  # Расчет времени напоминаний
 ├── web/                         # Статика для Mini App
 │   ├── index.html               # SPA приложение
 │   ├── script.js                # JS логика (Fetch API, Telegram SDK)
 │   └── style.css                # Стили
 ├── .env                         # Токены и пароли (не в git)
 ├── Dockerfile
-└── docker-compose.yml
+├── docker-compose.yml
+├── go.mod
+├── go.sum
+└── ARCHITECTURE.md
 
 
 
@@ -56,34 +70,55 @@ student-deadline-bot/
 
 | Field | Type | Description |
 | :-- | :-- | :-- |
-| `id` | UUID/Int | PK |
-| `title` | Varchar | Краткий заголовок (напр. "Лаба по физике") |
-| `description` | Text | Подробное описание |
-| `deadline_at` | Timestamp | Дата и время сдачи |
-| `category` | Varchar | Enum: "Lab", "Exam", "Coursework", "Homework" |
-| `chat_id` | Int64 | ID группы (для мультитеннантности в будущем) |
-| `topic_id` | Int | ID топика уведомлений |
-| `message_id` | Int | ID сообщения с анонсом (чтобы обновлять его) |
-| `created_by` | Int64 | Telegram ID создателя |
+| `id` | SERIAL/UUID | PK |
+| `title` | VARCHAR | Краткий заголовок (напр. "Лаба по физике") |
+| `description` | TEXT | Подробное описание |
+| `deadline_at` | TIMESTAMP | Дата и время сдачи |
+| `category` | VARCHAR | Enum: "Lab", "Exam", "Coursework", "Homework" |
+| `chat_id` | BIGINT | ID группы (для мультитеннантности) |
+| `topic_id` | INT | ID топика уведомлений |
+| `message_id` | INT | ID сообщения с анонсом (чтобы обновлять его) |
+| `created_by` | BIGINT | Telegram ID создателя |
+| `created_at` | TIMESTAMP | Дата создания |
+| `updated_at` | TIMESTAMP | Дата последнего обновления |
 
 ### Table: `attachments`
 
 | Field | Type | Description |
 | :-- | :-- | :-- |
-| `id` | UUID/Int | PK |
-| `deadline_id` | FK | Ссылка на deadline |
-| `file_id` | Varchar | Telegram File ID (для отправки ботом) |
-| `file_name` | Varchar | Оригинальное имя файла |
-| `file_type` | Varchar | "photo", "document" |
+| `id` | SERIAL/UUID | PK |
+| `deadline_id` | INT | FK на deadline (каскадное удаление) |
+| `chat_id` | BIGINT | ID группы (для индексации) |
+| `file_id` | VARCHAR | Telegram File ID (для отправки ботом) |
+| `file_name` | VARCHAR | Оригинальное имя файла |
+| `file_type` | VARCHAR | "photo", "document", "video" |
+| `created_at` | TIMESTAMP | Дата создания |
+| `updated_at` | TIMESTAMP | Дата последнего обновления |
 
 ### Table: `reminders`
 
 | Field | Type | Description |
 | :-- | :-- | :-- |
-| `id` | UUID/Int | PK |
-| `deadline_id` | FK | Ссылка на deadline |
-| `remind_at` | Timestamp | Время отправки напоминания |
-| `is_sent` | Boolean | Флаг отправки |
+| `id` | SERIAL/UUID | PK |
+| `deadline_id` | INT | FK на deadline |
+| `chat_id` | BIGINT | ID группы (для индексации) |
+| `remind_at` | TIMESTAMP | Время отправки напоминания |
+| `is_sent` | BOOLEAN | Флаг отправки |
+| `created_at` | TIMESTAMP | Дата создания |
+| `updated_at` | TIMESTAMP | Дата последнего обновления |
+
+### Table: `chat_settings`
+
+| Field | Type | Description |
+| :-- | :-- | :-- |
+| `id` | SERIAL/UUID | PK |
+| `chat_id` | BIGINT | ID группы (UNIQUE INDEX) |
+| `deadline_topic_id` | INT | ID топика для дедлайнов |
+| `time_zone` | VARCHAR | Часовой пояс (напр. "Europe/Moscow") |
+| `updated_by` | BIGINT | Telegram ID администратора, обновившего настройки |
+| `setup_needed` | BOOLEAN | Флаг необходимости настройки |
+| `created_at` | TIMESTAMP | Дата создания |
+| `updated_at` | TIMESTAMP | Дата последнего обновления |
 
 ## 5. API Интерфейс (Backend <-> Mini App)
 

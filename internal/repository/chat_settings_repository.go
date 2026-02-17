@@ -26,13 +26,13 @@ func (r *ChatSettingsRepository) Create(ctx context.Context, settings *models.Ch
 	if settings == nil {
 		return fmt.Errorf("settings is nil")
 	}
-	return r.db.WithContext(ctx).Create(settings).Error
+	return dbFromContext(ctx, r.db).WithContext(ctx).Create(settings).Error
 }
 
 // GetByID returns settings by ID.
 func (r *ChatSettingsRepository) GetByID(ctx context.Context, id uint) (*models.ChatSettings, error) {
 	var settings models.ChatSettings
-	if err := r.db.WithContext(ctx).First(&settings, id).Error; err != nil {
+	if err := dbFromContext(ctx, r.db).WithContext(ctx).First(&settings, id).Error; err != nil {
 		return nil, err
 	}
 	return &settings, nil
@@ -41,7 +41,7 @@ func (r *ChatSettingsRepository) GetByID(ctx context.Context, id uint) (*models.
 // GetByChatID returns settings for a specific chat.
 func (r *ChatSettingsRepository) GetByChatID(ctx context.Context, chatID int64) (*models.ChatSettings, error) {
 	var settings models.ChatSettings
-	if err := r.db.WithContext(ctx).Where("chat_id = ?", chatID).First(&settings).Error; err != nil {
+	if err := dbFromContext(ctx, r.db).WithContext(ctx).Where("chat_id = ?", chatID).First(&settings).Error; err != nil {
 		return nil, err
 	}
 	return &settings, nil
@@ -50,7 +50,7 @@ func (r *ChatSettingsRepository) GetByChatID(ctx context.Context, chatID int64) 
 // List returns all chat settings.
 func (r *ChatSettingsRepository) List(ctx context.Context) ([]models.ChatSettings, error) {
 	var settings []models.ChatSettings
-	if err := r.db.WithContext(ctx).Find(&settings).Error; err != nil {
+	if err := dbFromContext(ctx, r.db).WithContext(ctx).Find(&settings).Error; err != nil {
 		return nil, err
 	}
 	return settings, nil
@@ -61,10 +61,10 @@ func (r *ChatSettingsRepository) Update(ctx context.Context, settings *models.Ch
 	if settings == nil {
 		return fmt.Errorf("settings is nil")
 	}
-	return r.db.WithContext(ctx).Save(settings).Error
+	return dbFromContext(ctx, r.db).WithContext(ctx).Save(settings).Error
 }
 
 // Delete removes settings by ID.
 func (r *ChatSettingsRepository) Delete(ctx context.Context, id uint) error {
-	return r.db.WithContext(ctx).Delete(&models.ChatSettings{}, id).Error
+	return dbFromContext(ctx, r.db).WithContext(ctx).Delete(&models.ChatSettings{}, id).Error
 }

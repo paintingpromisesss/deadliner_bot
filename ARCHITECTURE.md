@@ -46,10 +46,12 @@ deadliner_bot/
 │   │   ├── attachment_repository.go
 │   │   ├── reminder_repository.go
 │   │   ├── chat_settings_repository.go
+│   │   └── transaction_manager.go # Транзакции + tx в context
 │   ├── scheduler/               # Cron jobs для проверки напоминаний
 │   └── service/                 # Бизнес-логика
 │       ├── deadline_service.go  # CRUD дедлайнов
-│       ├── file_service.go      # Загрузка файлов и получение file_id
+│       ├── attachment_service.go # CRUD вложений + линковка к дедлайну
+│       ├── chat_settings_service.go # CRUD настроек чата
 │       └── reminder_service.go  # Расчет времени напоминаний
 ├── web/                         # Статика для Mini App
 │   ├── index.html               # SPA приложение
@@ -76,8 +78,6 @@ deadliner_bot/
 | `deadline_at` | TIMESTAMP | Дата и время сдачи |
 | `category` | VARCHAR | Enum: "Lab", "Exam", "Coursework", "Homework" |
 | `chat_id` | BIGINT | ID группы (для мультитеннантности) |
-| `topic_id` | INT | ID топика уведомлений |
-| `message_id` | INT | ID сообщения с анонсом (чтобы обновлять его) |
 | `created_by` | BIGINT | Telegram ID создателя |
 | `created_at` | TIMESTAMP | Дата создания |
 | `updated_at` | TIMESTAMP | Дата последнего обновления |
@@ -115,6 +115,7 @@ deadliner_bot/
 | `chat_id` | BIGINT | ID группы (UNIQUE INDEX) |
 | `deadline_topic_id` | INT | ID топика для дедлайнов |
 | `time_zone` | VARCHAR | Часовой пояс (напр. "Europe/Moscow") |
+| `default_reminders` | JSONB | Дефолтные смещения напоминаний (например `[24h, 2h]`) |
 | `updated_by` | BIGINT | Telegram ID администратора, обновившего настройки |
 | `setup_needed` | BOOLEAN | Флаг необходимости настройки |
 | `created_at` | TIMESTAMP | Дата создания |
@@ -132,7 +133,7 @@ deadliner_bot/
 
 ### `POST /api/deadlines` (Admin only)
 
-- **Body**: JSON `{ title, description, deadline_at, category, attachments: [] }`
+- **Body**: JSON `{ title, description, deadline_at, category, attachment_ids: [], custom_reminders: [] }`
 - **Action**:
 
 1. Проверяет права юзера (через `getChatMember` API Телеграма).
@@ -188,3 +189,29 @@ deadliner_bot/
 ## 8. Безопасность
 
 1. **Validation**: Middleware на Go проверяет HMAC подпись `initData` с помощью токена бота.
+
+## 9. Транзакции (Service + Repository)
+
+### Базовый паттерн
+
+- Транзакции открываются в сервисном слое через `TransactionManager.RunInTransaction(ctx, fn)`.
+- Внутри `fn` используется `txCtx` (контекст с инжектированной транзакцией).
+- Все вызовы репозиториев, которые должны участвовать в одной транзакции, получают именно `txCtx`.
+
+### Гарантия rollback
+
+- Если любая операция внутри `RunInTransaction` возвращает ошибку, транзакция откатывается целиком.
+- Если ошибок нет, транзакция коммитится.
+
+### Правило для repository-слоя
+
+- Репозитории не должны напрямую управлять бизнес-транзакцией из сервиса.
+- Все методы репозиториев должны брать соединение через `dbFromContext(ctx, r.db).WithContext(ctx)`, а не через `r.db.WithContext(ctx)`.
+- Это обеспечивает автоматическое участие метода в транзакции, когда передан `txCtx`.
+
+### Пример сценария
+
+- `DeadlineService.CreateDeadline` запускает `RunInTransaction`.
+- Внутри транзакции создается дедлайн и связанные напоминания.
+- Ошибка на любом шаге приводит к откату и дедлайна, и напоминаний.
+

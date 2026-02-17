@@ -26,13 +26,13 @@ func (r *DeadlineRepository) Create(ctx context.Context, deadline *models.Deadli
 	if deadline == nil {
 		return fmt.Errorf("deadline is nil")
 	}
-	return r.db.WithContext(ctx).Create(deadline).Error
+	return dbFromContext(ctx, r.db).WithContext(ctx).Create(deadline).Error
 }
 
 // GetByID returns a deadline by its ID.
 func (r *DeadlineRepository) GetByID(ctx context.Context, id uint) (*models.Deadline, error) {
 	var deadline models.Deadline
-	if err := r.db.WithContext(ctx).First(&deadline, id).Error; err != nil {
+	if err := dbFromContext(ctx, r.db).WithContext(ctx).First(&deadline, id).Error; err != nil {
 		return nil, err
 	}
 	return &deadline, nil
@@ -41,7 +41,7 @@ func (r *DeadlineRepository) GetByID(ctx context.Context, id uint) (*models.Dead
 // GetByIDAndChatID returns a deadline by its ID scoped to a chat.
 func (r *DeadlineRepository) GetByIDAndChatID(ctx context.Context, id uint, chatID int64) (*models.Deadline, error) {
 	var deadline models.Deadline
-	if err := r.db.WithContext(ctx).Where("id = ? AND chat_id = ?", id, chatID).First(&deadline).Error; err != nil {
+	if err := dbFromContext(ctx, r.db).WithContext(ctx).Where("id = ? AND chat_id = ?", id, chatID).First(&deadline).Error; err != nil {
 		return nil, err
 	}
 	return &deadline, nil
@@ -50,7 +50,7 @@ func (r *DeadlineRepository) GetByIDAndChatID(ctx context.Context, id uint, chat
 // List returns all deadlines.
 func (r *DeadlineRepository) List(ctx context.Context) ([]models.Deadline, error) {
 	var deadlines []models.Deadline
-	if err := r.db.WithContext(ctx).Find(&deadlines).Error; err != nil {
+	if err := dbFromContext(ctx, r.db).WithContext(ctx).Find(&deadlines).Error; err != nil {
 		return nil, err
 	}
 	return deadlines, nil
@@ -59,7 +59,7 @@ func (r *DeadlineRepository) List(ctx context.Context) ([]models.Deadline, error
 // ListByChatID returns all deadlines for a specific chat.
 func (r *DeadlineRepository) ListByChatID(ctx context.Context, chatID int64) ([]models.Deadline, error) {
 	var deadlines []models.Deadline
-	if err := r.db.WithContext(ctx).Where("chat_id = ?", chatID).Find(&deadlines).Error; err != nil {
+	if err := dbFromContext(ctx, r.db).WithContext(ctx).Where("chat_id = ?", chatID).Find(&deadlines).Error; err != nil {
 		return nil, err
 	}
 	return deadlines, nil
@@ -70,10 +70,10 @@ func (r *DeadlineRepository) Update(ctx context.Context, deadline *models.Deadli
 	if deadline == nil {
 		return fmt.Errorf("deadline is nil")
 	}
-	return r.db.WithContext(ctx).Save(deadline).Error
+	return dbFromContext(ctx, r.db).WithContext(ctx).Save(deadline).Error
 }
 
 // Delete removes a deadline by ID.
 func (r *DeadlineRepository) Delete(ctx context.Context, id uint) error {
-	return r.db.WithContext(ctx).Delete(&models.Deadline{}, id).Error
+	return dbFromContext(ctx, r.db).WithContext(ctx).Delete(&models.Deadline{}, id).Error
 }

@@ -117,14 +117,14 @@ func (s *ReminderService) Update(ctx context.Context, reminder *models.Reminder)
 		return ErrInvalidReminderID
 	}
 
-	if _, err := s.repo.GetByIDAndChatID(ctx, reminder.ID, reminder.ChatID); err != nil {
+	if err := s.repo.Update(ctx, reminder); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrReminderNotFound
 		}
 		return err
 	}
 
-	return s.repo.Update(ctx, reminder)
+	return nil
 }
 
 // Delete removes a reminder by ID.

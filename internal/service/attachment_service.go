@@ -106,14 +106,14 @@ func (s *AttachmentService) Update(ctx context.Context, attachment *models.Attac
 		return ErrInvalidAttachmentID
 	}
 
-	if _, err := s.repo.GetByIDAndChatID(ctx, attachment.ID, attachment.ChatID); err != nil {
+	if err := s.repo.Update(ctx, attachment); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrAttachmentNotFound
 		}
 		return err
 	}
 
-	return s.repo.Update(ctx, attachment)
+	return nil
 }
 
 // Delete removes an attachment by ID.

@@ -92,7 +92,23 @@ func (r *reminderRepository) Update(ctx context.Context, reminder *models.Remind
 	if reminder == nil {
 		return fmt.Errorf("reminder is nil")
 	}
-	return dbFromContext(ctx, r.db).WithContext(ctx).Save(reminder).Error
+
+	result := dbFromContext(ctx, r.db).WithContext(ctx).
+		Model(&models.Reminder{}).
+		Where("id = ? AND chat_id = ?", reminder.ID, reminder.ChatID).
+		Updates(map[string]interface{}{
+			"deadline_id": reminder.DeadlineID,
+			"remind_at":   reminder.RemindAt,
+			"is_sent":     reminder.IsSent,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+
+	return nil
 }
 
 // Delete removes a reminder by ID.

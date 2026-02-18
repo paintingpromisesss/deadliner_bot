@@ -72,7 +72,25 @@ func (r *chatSettingsRepository) Update(ctx context.Context, settings *models.Ch
 	if settings == nil {
 		return fmt.Errorf("settings is nil")
 	}
-	return dbFromContext(ctx, r.db).WithContext(ctx).Save(settings).Error
+
+	result := dbFromContext(ctx, r.db).WithContext(ctx).
+		Model(&models.ChatSettings{}).
+		Where("id = ? AND chat_id = ?", settings.ID, settings.ChatID).
+		Updates(map[string]interface{}{
+			"deadline_topic_id": settings.DeadlineTopicID,
+			"time_zone":         settings.TimeZone,
+			"default_reminders": settings.DefaultReminders,
+			"updated_by":        settings.UpdatedBy,
+			"setup_needed":      settings.SetupNeeded,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+
+	return nil
 }
 
 // Delete removes settings by ID.

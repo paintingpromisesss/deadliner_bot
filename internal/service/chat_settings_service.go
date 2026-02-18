@@ -66,19 +66,14 @@ func (s *ChatSettingsService) Update(ctx context.Context, settings *models.ChatS
 		return ErrInvalidChatSettingsID
 	}
 
-	existing, err := s.repo.GetByID(ctx, settings.ID)
-	if err != nil {
+	if err := s.repo.Update(ctx, settings); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrChatSettingsNotFound
 		}
 		return err
 	}
 
-	if existing.ChatID != settings.ChatID {
-		return ErrChatSettingsNotFound
-	}
-
-	return s.repo.Update(ctx, settings)
+	return nil
 }
 
 // Delete removes chat settings by ID.

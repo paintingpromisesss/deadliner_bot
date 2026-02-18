@@ -82,7 +82,26 @@ func (r *deadlineRepository) Update(ctx context.Context, deadline *models.Deadli
 	if deadline == nil {
 		return fmt.Errorf("deadline is nil")
 	}
-	return dbFromContext(ctx, r.db).WithContext(ctx).Save(deadline).Error
+
+	result := dbFromContext(ctx, r.db).WithContext(ctx).
+		Model(&models.Deadline{}).
+		Where("id = ? AND chat_id = ?", deadline.ID, deadline.ChatID).
+		Updates(map[string]interface{}{
+			"title":       deadline.Title,
+			"description": deadline.Description,
+			"deadline_at": deadline.DeadlineAt,
+			"category":    deadline.Category,
+			"status":      deadline.Status,
+			"created_by":  deadline.CreatedBy,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+
+	return nil
 }
 
 // Delete removes a deadline by ID.

@@ -9,6 +9,7 @@ type Deadline struct {
 	Description string    `json:"description"`
 	DeadlineAt  time.Time `json:"deadline_at"`
 	Category    string    `json:"category"`
+	Status      string    `json:"status"`
 	ChatID      int64     `json:"chat_id"`
 	CreatedBy   int64     `json:"created_by"`
 

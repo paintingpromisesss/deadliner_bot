@@ -50,12 +50,18 @@ var (
 	ErrChatSettingsLookupFailed = errors.New("failed to get chat settings")
 	// ErrCreateDeadlineFailed is returned when deadline creation fails.
 	ErrCreateDeadlineFailed = errors.New("failed to create deadline")
+	// ErrUpdateDeadlineFailed is returned when deadline update fails.
+	ErrUpdateDeadlineFailed = errors.New("failed to update deadline")
 	// ErrCalculateRemindersFailed is returned when reminder timestamps calculation fails.
 	ErrCalculateRemindersFailed = errors.New("failed to calculate reminders")
 	// ErrBuildRemindersFailed is returned when reminder models construction fails.
 	ErrBuildRemindersFailed = errors.New("failed to build reminders")
 	// ErrCreateRemindersFailed is returned when reminder persistence fails.
 	ErrCreateRemindersFailed = errors.New("failed to create reminders")
+	// ErrDeleteRemindersFailed is returned when reminders removal fails.
+	ErrDeleteRemindersFailed = errors.New("failed to delete reminders")
+	// ErrListRemindersFailed is returned when loading reminders fails.
+	ErrListRemindersFailed = errors.New("failed to list reminders")
 	// ErrLinkAttachmentsFailed is returned when attachments linking fails.
 	ErrLinkAttachmentsFailed = errors.New("failed to link attachments")
 	// ErrListAttachmentsFailed is returned when loading linked attachments fails.
@@ -78,6 +84,11 @@ type DeadlineService struct {
 type CreateOptions struct {
 	AttachmentIDs   []uint
 	CustomReminders []string
+}
+
+type UpdateOptions struct {
+	AttachmentIDs   *[]uint
+	CustomReminders *[]string
 }
 
 // NewDeadlineService creates a new DeadlineService.
@@ -107,19 +118,9 @@ func (s *DeadlineService) CreateDeadline(ctx context.Context, deadline *models.D
 		return err
 	}
 
-	settings, err := s.chatSettingsService.GetByChatID(ctx, deadline.ChatID)
+	remindersString, err := s.resolveReminderDurations(ctx, deadline.ChatID, opts.CustomReminders)
 	if err != nil {
-		if errors.Is(err, ErrChatSettingsNotFound) {
-			return fmt.Errorf("%w: chat_id=%d", ErrChatSettingsNotFound, deadline.ChatID)
-		}
-		return fmt.Errorf("%w: %v", ErrChatSettingsLookupFailed, err)
-	}
-
-	var remindersString []string
-	if len(opts.CustomReminders) > 0 {
-		remindersString = opts.CustomReminders
-	} else {
-		remindersString = settings.DefaultReminders
+		return err
 	}
 
 	return s.txManager.RunInTransaction(ctx, func(txCtx context.Context) error {
@@ -127,30 +128,16 @@ func (s *DeadlineService) CreateDeadline(ctx context.Context, deadline *models.D
 			return fmt.Errorf("%w: %v", ErrCreateDeadlineFailed, err)
 		}
 
-		remindersTimes, err := CalculateReminders(deadline.DeadlineAt, remindersString)
+		reminders, err := s.buildAndCreateDeadlineReminders(txCtx, deadline, remindersString)
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrCalculateRemindersFailed, err)
-		}
-
-		reminders, err := BuildRemindersFromTimes(deadline.ID, deadline.ChatID, remindersTimes)
-		if err != nil {
-			return fmt.Errorf("%w: %v", ErrBuildRemindersFailed, err)
-		}
-		if len(reminders) > 0 {
-			if err := s.reminderService.CreateBatch(txCtx, reminders); err != nil {
-				return fmt.Errorf("%w: %v", ErrCreateRemindersFailed, err)
-			}
+			return err
 		}
 		deadline.Reminders = reminders
 
 		if len(opts.AttachmentIDs) > 0 {
-			if err := s.attachmentService.LinkAttachmentsToDeadline(txCtx, deadline.ID, opts.AttachmentIDs); err != nil {
-				return fmt.Errorf("%w: %v", ErrLinkAttachmentsFailed, err)
-			}
-
-			attachments, err := s.attachmentService.ListByDeadlineID(txCtx, deadline.ID)
+			attachments, err := s.syncDeadlineAttachments(txCtx, deadline.ID, opts.AttachmentIDs, true)
 			if err != nil {
-				return fmt.Errorf("%w: deadline_id=%d: %v", ErrListAttachmentsFailed, deadline.ID, err)
+				return err
 			}
 			deadline.Attachments = attachments
 		}
@@ -223,7 +210,7 @@ func (s *DeadlineService) ListByChatID(ctx context.Context, chatID int64) ([]mod
 }
 
 // Update validates and updates an existing deadline.
-func (s *DeadlineService) Update(ctx context.Context, deadline *models.Deadline) error {
+func (s *DeadlineService) Update(ctx context.Context, deadline *models.Deadline, opts UpdateOptions) error {
 	if err := s.validateDeadline(deadline); err != nil {
 		return err
 	}
@@ -231,14 +218,117 @@ func (s *DeadlineService) Update(ctx context.Context, deadline *models.Deadline)
 		return ErrInvalidDeadlineID
 	}
 
-	if _, err := s.repo.GetByIDAndChatID(ctx, deadline.ID, deadline.ChatID); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrDeadlineNotFound
-		}
+	customReminders := []string(nil)
+	if opts.CustomReminders != nil {
+		customReminders = *opts.CustomReminders
+	}
+
+	remindersString, err := s.resolveReminderDurations(ctx, deadline.ChatID, customReminders)
+	if err != nil {
 		return err
 	}
 
-	return s.repo.Update(ctx, deadline)
+	return s.txManager.RunInTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.repo.Update(txCtx, deadline); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDeadlineNotFound
+			}
+			return fmt.Errorf("%w: %v", ErrUpdateDeadlineFailed, err)
+		}
+
+		reminders, err := s.syncDeadlineReminders(txCtx, deadline, remindersString)
+		if err != nil {
+			return err
+		}
+		deadline.Reminders = reminders
+
+		attachmentIDs := []uint(nil)
+		if opts.AttachmentIDs != nil {
+			attachmentIDs = *opts.AttachmentIDs
+		}
+
+		attachments, err := s.syncDeadlineAttachments(txCtx, deadline.ID, attachmentIDs, true)
+		if err != nil {
+			return err
+		}
+		deadline.Attachments = attachments
+
+		return nil
+	})
+}
+
+func (s *DeadlineService) syncDeadlineAttachments(ctx context.Context, deadlineID uint, attachmentIDs []uint, reload bool) ([]models.Attachment, error) {
+	if len(attachmentIDs) > 0 {
+		if err := s.attachmentService.LinkAttachmentsToDeadline(ctx, deadlineID, attachmentIDs); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrLinkAttachmentsFailed, err)
+		}
+	}
+
+	if !reload {
+		return nil, nil
+	}
+
+	attachments, err := s.attachmentService.ListByDeadlineID(ctx, deadlineID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: deadline_id=%d: %v", ErrListAttachmentsFailed, deadlineID, err)
+	}
+
+	return attachments, nil
+}
+
+func (s *DeadlineService) resolveReminderDurations(ctx context.Context, chatID int64, customReminders []string) ([]string, error) {
+	if len(customReminders) > 0 {
+		return customReminders, nil
+	}
+
+	settings, err := s.chatSettingsService.GetByChatID(ctx, chatID)
+	if err != nil {
+		if errors.Is(err, ErrChatSettingsNotFound) {
+			return nil, fmt.Errorf("%w: chat_id=%d", ErrChatSettingsNotFound, chatID)
+		}
+		return nil, fmt.Errorf("%w: %v", ErrChatSettingsLookupFailed, err)
+	}
+
+	return settings.DefaultReminders, nil
+}
+
+func (s *DeadlineService) syncDeadlineReminders(ctx context.Context, deadline *models.Deadline, remindersString []string) ([]models.Reminder, error) {
+	existingReminders, err := s.reminderService.ListByChatID(ctx, deadline.ChatID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrListRemindersFailed, err)
+	}
+
+	for _, reminder := range existingReminders {
+		if reminder.DeadlineID != deadline.ID {
+			continue
+		}
+
+		if err := s.reminderService.DeleteByIDAndChatID(ctx, reminder.ID, deadline.ChatID); err != nil {
+			return nil, fmt.Errorf("%w: reminder_id=%d: %v", ErrDeleteRemindersFailed, reminder.ID, err)
+		}
+	}
+
+	return s.buildAndCreateDeadlineReminders(ctx, deadline, remindersString)
+}
+
+func (s *DeadlineService) buildAndCreateDeadlineReminders(ctx context.Context, deadline *models.Deadline, remindersString []string) ([]models.Reminder, error) {
+	remindersTimes, err := CalculateReminders(deadline.DeadlineAt, remindersString)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrCalculateRemindersFailed, err)
+	}
+
+	reminders, err := BuildRemindersFromTimes(deadline.ID, deadline.ChatID, remindersTimes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBuildRemindersFailed, err)
+	}
+
+	if len(reminders) > 0 {
+		if err := s.reminderService.CreateBatch(ctx, reminders); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrCreateRemindersFailed, err)
+		}
+	}
+
+	return reminders, nil
 }
 
 // Delete removes a deadline by ID.

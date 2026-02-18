@@ -93,7 +93,24 @@ func (r *attachmentRepository) Update(ctx context.Context, attachment *models.At
 	if attachment == nil {
 		return fmt.Errorf("attachment is nil")
 	}
-	return dbFromContext(ctx, r.db).WithContext(ctx).Save(attachment).Error
+
+	result := dbFromContext(ctx, r.db).WithContext(ctx).
+		Model(&models.Attachment{}).
+		Where("id = ? AND chat_id = ?", attachment.ID, attachment.ChatID).
+		Updates(map[string]interface{}{
+			"deadline_id": attachment.DeadlineID,
+			"file_id":     attachment.FileID,
+			"file_name":   attachment.FileName,
+			"file_type":   attachment.FileType,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+
+	return nil
 }
 
 // Delete removes an attachment by ID.

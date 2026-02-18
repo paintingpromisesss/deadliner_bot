@@ -8,21 +8,33 @@ import (
 	"gorm.io/gorm"
 )
 
-// DeadlineRepository provides CRUD access to deadlines.
-type DeadlineRepository struct {
+type DeadlineRepository interface {
+	Create(ctx context.Context, deadline *models.Deadline) error
+	GetByID(ctx context.Context, id uint) (*models.Deadline, error)
+	GetByIDAndChatID(ctx context.Context, id uint, chatID int64) (*models.Deadline, error)
+	List(ctx context.Context) ([]models.Deadline, error)
+	ListByChatID(ctx context.Context, chatID int64) ([]models.Deadline, error)
+	Update(ctx context.Context, deadline *models.Deadline) error
+	Delete(ctx context.Context, id uint) error
+}
+
+var _ DeadlineRepository = (*deadlineRepository)(nil)
+
+// deadlineRepository is a GORM-backed DeadlineRepository implementation.
+type deadlineRepository struct {
 	db *gorm.DB
 }
 
 // NewDeadlineRepository creates a new DeadlineRepository.
-func NewDeadlineRepository(db *gorm.DB) (*DeadlineRepository, error) {
+func NewDeadlineRepository(db *gorm.DB) (DeadlineRepository, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
-	return &DeadlineRepository{db: db}, nil
+	return &deadlineRepository{db: db}, nil
 }
 
 // Create inserts a new deadline.
-func (r *DeadlineRepository) Create(ctx context.Context, deadline *models.Deadline) error {
+func (r *deadlineRepository) Create(ctx context.Context, deadline *models.Deadline) error {
 	if deadline == nil {
 		return fmt.Errorf("deadline is nil")
 	}
@@ -30,7 +42,7 @@ func (r *DeadlineRepository) Create(ctx context.Context, deadline *models.Deadli
 }
 
 // GetByID returns a deadline by its ID.
-func (r *DeadlineRepository) GetByID(ctx context.Context, id uint) (*models.Deadline, error) {
+func (r *deadlineRepository) GetByID(ctx context.Context, id uint) (*models.Deadline, error) {
 	var deadline models.Deadline
 	if err := dbFromContext(ctx, r.db).WithContext(ctx).First(&deadline, id).Error; err != nil {
 		return nil, err
@@ -39,7 +51,7 @@ func (r *DeadlineRepository) GetByID(ctx context.Context, id uint) (*models.Dead
 }
 
 // GetByIDAndChatID returns a deadline by its ID scoped to a chat.
-func (r *DeadlineRepository) GetByIDAndChatID(ctx context.Context, id uint, chatID int64) (*models.Deadline, error) {
+func (r *deadlineRepository) GetByIDAndChatID(ctx context.Context, id uint, chatID int64) (*models.Deadline, error) {
 	var deadline models.Deadline
 	if err := dbFromContext(ctx, r.db).WithContext(ctx).Where("id = ? AND chat_id = ?", id, chatID).First(&deadline).Error; err != nil {
 		return nil, err
@@ -48,7 +60,7 @@ func (r *DeadlineRepository) GetByIDAndChatID(ctx context.Context, id uint, chat
 }
 
 // List returns all deadlines.
-func (r *DeadlineRepository) List(ctx context.Context) ([]models.Deadline, error) {
+func (r *deadlineRepository) List(ctx context.Context) ([]models.Deadline, error) {
 	var deadlines []models.Deadline
 	if err := dbFromContext(ctx, r.db).WithContext(ctx).Find(&deadlines).Error; err != nil {
 		return nil, err
@@ -57,7 +69,7 @@ func (r *DeadlineRepository) List(ctx context.Context) ([]models.Deadline, error
 }
 
 // ListByChatID returns all deadlines for a specific chat.
-func (r *DeadlineRepository) ListByChatID(ctx context.Context, chatID int64) ([]models.Deadline, error) {
+func (r *deadlineRepository) ListByChatID(ctx context.Context, chatID int64) ([]models.Deadline, error) {
 	var deadlines []models.Deadline
 	if err := dbFromContext(ctx, r.db).WithContext(ctx).Where("chat_id = ?", chatID).Find(&deadlines).Error; err != nil {
 		return nil, err
@@ -66,7 +78,7 @@ func (r *DeadlineRepository) ListByChatID(ctx context.Context, chatID int64) ([]
 }
 
 // Update saves deadline changes.
-func (r *DeadlineRepository) Update(ctx context.Context, deadline *models.Deadline) error {
+func (r *deadlineRepository) Update(ctx context.Context, deadline *models.Deadline) error {
 	if deadline == nil {
 		return fmt.Errorf("deadline is nil")
 	}
@@ -74,6 +86,6 @@ func (r *DeadlineRepository) Update(ctx context.Context, deadline *models.Deadli
 }
 
 // Delete removes a deadline by ID.
-func (r *DeadlineRepository) Delete(ctx context.Context, id uint) error {
+func (r *deadlineRepository) Delete(ctx context.Context, id uint) error {
 	return dbFromContext(ctx, r.db).WithContext(ctx).Delete(&models.Deadline{}, id).Error
 }

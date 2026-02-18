@@ -19,10 +19,10 @@ var (
 )
 
 type AttachmentService struct {
-	repo *repository.AttachmentRepository
+	repo repository.AttachmentRepository
 }
 
-func NewAttachmentService(repo *repository.AttachmentRepository) (*AttachmentService, error) {
+func NewAttachmentService(repo repository.AttachmentRepository) (*AttachmentService, error) {
 	if repo == nil {
 		return nil, ErrAttachmentRepoNil
 	}

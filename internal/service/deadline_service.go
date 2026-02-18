@@ -68,7 +68,7 @@ var allowedDeadlineCategories = []string{"Лабораторная работа"
 
 // DeadlineService handles business logic for deadlines.
 type DeadlineService struct {
-	repo                *repository.DeadlineRepository
+	repo                repository.DeadlineRepository
 	txManager           repository.TransactionManager
 	chatSettingsService *ChatSettingsService
 	attachmentService   *AttachmentService
@@ -81,7 +81,7 @@ type CreateOptions struct {
 }
 
 // NewDeadlineService creates a new DeadlineService.
-func NewDeadlineService(repo *repository.DeadlineRepository, txManager repository.TransactionManager, chatSettingsService *ChatSettingsService, attachmentService *AttachmentService, reminderService *ReminderService) (*DeadlineService, error) {
+func NewDeadlineService(repo repository.DeadlineRepository, txManager repository.TransactionManager, chatSettingsService *ChatSettingsService, attachmentService *AttachmentService, reminderService *ReminderService) (*DeadlineService, error) {
 	if repo == nil {
 		return nil, ErrDeadlineRepoNil
 	}

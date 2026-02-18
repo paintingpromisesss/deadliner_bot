@@ -21,10 +21,10 @@ var (
 )
 
 type ChatSettingsService struct {
-	repo *repository.ChatSettingsRepository
+	repo repository.ChatSettingsRepository
 }
 
-func NewChatSettingsService(repo *repository.ChatSettingsRepository) (*ChatSettingsService, error) {
+func NewChatSettingsService(repo repository.ChatSettingsRepository) (*ChatSettingsService, error) {
 	if repo == nil {
 		return nil, ErrChatSettingsRepoNil
 	}

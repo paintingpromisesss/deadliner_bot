@@ -23,10 +23,10 @@ var (
 )
 
 type ReminderService struct {
-	repo *repository.ReminderRepository
+	repo repository.ReminderRepository
 }
 
-func NewReminderService(repo *repository.ReminderRepository) (*ReminderService, error) {
+func NewReminderService(repo repository.ReminderRepository) (*ReminderService, error) {
 	if repo == nil {
 		return nil, ErrReminderRepoNil
 	}

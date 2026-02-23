@@ -92,7 +92,6 @@ func (r *deadlineRepository) Update(ctx context.Context, deadline *models.Deadli
 			"deadline_at": deadline.DeadlineAt,
 			"category":    deadline.Category,
 			"status":      deadline.Status,
-			"created_by":  deadline.CreatedBy,
 		})
 	if result.Error != nil {
 		return result.Error

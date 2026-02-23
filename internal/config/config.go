@@ -29,6 +29,7 @@ type Config struct {
 	Location        *time.Location `mapstructure:"-"`
 	ReadTimeout     time.Duration  `mapstructure:"HTTP_READ_TIMEOUT"`
 	WriteTimeout    time.Duration  `mapstructure:"HTTP_WRITE_TIMEOUT"`
+	MemberCacheTTL  time.Duration  `mapstructure:"MEMBER_CACHE_TTL"`
 }
 
 // Load reads environment variables into Config using Viper.
@@ -58,6 +59,7 @@ func Load() (*Config, error) {
 		"TZ",
 		"HTTP_READ_TIMEOUT",
 		"HTTP_WRITE_TIMEOUT",
+		"MEMBER_CACHE_TTL",
 	}
 	for _, key := range keys {
 		_ = v.BindEnv(key)
@@ -70,6 +72,7 @@ func Load() (*Config, error) {
 	v.SetDefault("TZ", "Europe/Moscow")
 	v.SetDefault("HTTP_READ_TIMEOUT", "10s")
 	v.SetDefault("HTTP_WRITE_TIMEOUT", "10s")
+	v.SetDefault("MEMBER_CACHE_TTL", "2m")
 	v.SetDefault("DB_HOST", "localhost")
 	v.SetDefault("DB_PORT", "5432")
 	v.SetDefault("DB_SSL_MODE", "disable")
@@ -99,6 +102,11 @@ func Load() (*Config, error) {
 			cfg.DBSSLMode,
 		)
 	}
+
+	if cfg.MemberCacheTTL <= 0 {
+		cfg.MemberCacheTTL = 2 * time.Minute
+	}
+
 	if cfg.Timezone != "" {
 		loc, err := time.LoadLocation(cfg.Timezone)
 		if err != nil {

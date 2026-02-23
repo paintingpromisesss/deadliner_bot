@@ -15,6 +15,7 @@ type ReminderRepository interface {
 	GetByIDAndChatID(ctx context.Context, id uint, chatID int64) (*models.Reminder, error)
 	List(ctx context.Context) ([]models.Reminder, error)
 	ListByChatID(ctx context.Context, chatID int64) ([]models.Reminder, error)
+	DeleteByDeadlineIDAndChatID(ctx context.Context, deadlineID uint, chatID int64) error
 	Update(ctx context.Context, reminder *models.Reminder) error
 	Delete(ctx context.Context, id uint) error
 }
@@ -85,6 +86,13 @@ func (r *reminderRepository) ListByChatID(ctx context.Context, chatID int64) ([]
 		return nil, err
 	}
 	return reminders, nil
+}
+
+// DeleteByDeadlineIDAndChatID removes reminders by deadline scoped to chat.
+func (r *reminderRepository) DeleteByDeadlineIDAndChatID(ctx context.Context, deadlineID uint, chatID int64) error {
+	return dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("deadline_id = ? AND chat_id = ?", deadlineID, chatID).
+		Delete(&models.Reminder{}).Error
 }
 
 // Update saves reminder changes.

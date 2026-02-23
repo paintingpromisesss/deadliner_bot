@@ -60,8 +60,6 @@ var (
 	ErrCreateRemindersFailed = errors.New("failed to create reminders")
 	// ErrDeleteRemindersFailed is returned when reminders removal fails.
 	ErrDeleteRemindersFailed = errors.New("failed to delete reminders")
-	// ErrListRemindersFailed is returned when loading reminders fails.
-	ErrListRemindersFailed = errors.New("failed to list reminders")
 	// ErrLinkAttachmentsFailed is returned when attachments linking fails.
 	ErrLinkAttachmentsFailed = errors.New("failed to link attachments")
 	// ErrListAttachmentsFailed is returned when loading linked attachments fails.
@@ -70,7 +68,26 @@ var (
 
 const maxDeadlineTitleLength = 255
 
-var allowedDeadlineCategories = []string{"Лабораторная работа", "Курсовая работа", "Домашняя работа", "Экзамен", "Другое"}
+const (
+	deadlineCategoryLab        = "lab"
+	deadlineCategoryExam       = "exam"
+	deadlineCategoryCoursework = "coursework"
+	deadlineCategoryHomework   = "homework"
+	deadlineCategoryOther      = "other"
+)
+
+var deadlineCategoryAliases = map[string]string{
+	deadlineCategoryLab:        deadlineCategoryLab,
+	"лабораторная работа":      deadlineCategoryLab,
+	deadlineCategoryExam:       deadlineCategoryExam,
+	"экзамен":                  deadlineCategoryExam,
+	deadlineCategoryCoursework: deadlineCategoryCoursework,
+	"курсовая работа":          deadlineCategoryCoursework,
+	deadlineCategoryHomework:   deadlineCategoryHomework,
+	"домашняя работа":          deadlineCategoryHomework,
+	deadlineCategoryOther:      deadlineCategoryOther,
+	"другое":                   deadlineCategoryOther,
+}
 
 // DeadlineService handles business logic for deadlines.
 type DeadlineService struct {
@@ -135,7 +152,7 @@ func (s *DeadlineService) CreateDeadline(ctx context.Context, deadline *models.D
 		deadline.Reminders = reminders
 
 		if len(opts.AttachmentIDs) > 0 {
-			attachments, err := s.syncDeadlineAttachments(txCtx, deadline.ID, opts.AttachmentIDs, true)
+			attachments, err := s.syncDeadlineAttachments(txCtx, deadline.ID, deadline.ChatID, opts.AttachmentIDs, true)
 			if err != nil {
 				return err
 			}
@@ -247,7 +264,7 @@ func (s *DeadlineService) Update(ctx context.Context, deadline *models.Deadline,
 			attachmentIDs = *opts.AttachmentIDs
 		}
 
-		attachments, err := s.syncDeadlineAttachments(txCtx, deadline.ID, attachmentIDs, true)
+		attachments, err := s.syncDeadlineAttachments(txCtx, deadline.ID, deadline.ChatID, attachmentIDs, true)
 		if err != nil {
 			return err
 		}
@@ -257,9 +274,9 @@ func (s *DeadlineService) Update(ctx context.Context, deadline *models.Deadline,
 	})
 }
 
-func (s *DeadlineService) syncDeadlineAttachments(ctx context.Context, deadlineID uint, attachmentIDs []uint, reload bool) ([]models.Attachment, error) {
+func (s *DeadlineService) syncDeadlineAttachments(ctx context.Context, deadlineID uint, chatID int64, attachmentIDs []uint, reload bool) ([]models.Attachment, error) {
 	if len(attachmentIDs) > 0 {
-		if err := s.attachmentService.LinkAttachmentsToDeadline(ctx, deadlineID, attachmentIDs); err != nil {
+		if err := s.attachmentService.LinkAttachmentsToDeadline(ctx, deadlineID, chatID, attachmentIDs); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrLinkAttachmentsFailed, err)
 		}
 	}
@@ -293,19 +310,8 @@ func (s *DeadlineService) resolveReminderDurations(ctx context.Context, chatID i
 }
 
 func (s *DeadlineService) syncDeadlineReminders(ctx context.Context, deadline *models.Deadline, remindersString []string) ([]models.Reminder, error) {
-	existingReminders, err := s.reminderService.ListByChatID(ctx, deadline.ChatID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrListRemindersFailed, err)
-	}
-
-	for _, reminder := range existingReminders {
-		if reminder.DeadlineID != deadline.ID {
-			continue
-		}
-
-		if err := s.reminderService.DeleteByIDAndChatID(ctx, reminder.ID, deadline.ChatID); err != nil {
-			return nil, fmt.Errorf("%w: reminder_id=%d: %v", ErrDeleteRemindersFailed, reminder.ID, err)
-		}
+	if err := s.reminderService.DeleteByDeadlineIDAndChatID(ctx, deadline.ID, deadline.ChatID); err != nil {
+		return nil, fmt.Errorf("%w: deadline_id=%d chat_id=%d: %v", ErrDeleteRemindersFailed, deadline.ID, deadline.ChatID, err)
 	}
 
 	return s.buildAndCreateDeadlineReminders(ctx, deadline, remindersString)
@@ -408,10 +414,9 @@ func (s *DeadlineService) validateDeadline(deadline *models.Deadline) error {
 }
 
 func normalizeCategory(category string) (string, bool) {
-	for _, allowed := range allowedDeadlineCategories {
-		if strings.EqualFold(category, allowed) {
-			return allowed, true
-		}
+	canonical, ok := deadlineCategoryAliases[strings.ToLower(strings.TrimSpace(category))]
+	if ok {
+		return canonical, true
 	}
 
 	return "", false

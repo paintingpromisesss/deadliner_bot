@@ -153,9 +153,12 @@ func (s *AttachmentService) DeleteByIDAndChatID(ctx context.Context, id uint, ch
 }
 
 // LinkToDeadline links provided attachments to a deadline by updating deadline_id in DB.
-func (s *AttachmentService) LinkAttachmentsToDeadline(ctx context.Context, deadlineID uint, attachmentIDs []uint) error {
+func (s *AttachmentService) LinkAttachmentsToDeadline(ctx context.Context, deadlineID uint, chatID int64, attachmentIDs []uint) error {
 	if deadlineID == 0 {
 		return ErrInvalidDeadlineID
+	}
+	if chatID == 0 {
+		return ErrInvalidChatID
 	}
 	if len(attachmentIDs) == 0 {
 		return nil
@@ -167,7 +170,7 @@ func (s *AttachmentService) LinkAttachmentsToDeadline(ctx context.Context, deadl
 		}
 	}
 
-	return s.repo.LinkToDeadline(ctx, deadlineID, attachmentIDs)
+	return s.repo.LinkToDeadline(ctx, deadlineID, chatID, attachmentIDs)
 }
 
 func validateAttachment(attachment *models.Attachment) error {

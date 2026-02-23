@@ -17,7 +17,7 @@ type AttachmentRepository interface {
 	ListByChatID(ctx context.Context, chatID int64) ([]models.Attachment, error)
 	Update(ctx context.Context, attachment *models.Attachment) error
 	Delete(ctx context.Context, id uint) error
-	LinkToDeadline(ctx context.Context, deadlineID uint, attachmentIDs []uint) error
+	LinkToDeadline(ctx context.Context, deadlineID uint, chatID int64, attachmentIDs []uint) error
 }
 
 var _ AttachmentRepository = (*attachmentRepository)(nil)
@@ -118,17 +118,57 @@ func (r *attachmentRepository) Delete(ctx context.Context, id uint) error {
 	return dbFromContext(ctx, r.db).WithContext(ctx).Delete(&models.Attachment{}, id).Error
 }
 
-// LinkToDeadline updates deadline_id for the provided attachment IDs.
-func (r *attachmentRepository) LinkToDeadline(ctx context.Context, deadlineID uint, attachmentIDs []uint) error {
+// LinkToDeadline updates deadline_id for the provided attachment IDs scoped to chat.
+func (r *attachmentRepository) LinkToDeadline(ctx context.Context, deadlineID uint, chatID int64, attachmentIDs []uint) error {
 	if deadlineID == 0 {
 		return fmt.Errorf("deadline id is invalid")
+	}
+	if chatID == 0 {
+		return fmt.Errorf("chat id is invalid")
 	}
 	if len(attachmentIDs) == 0 {
 		return fmt.Errorf("attachment ids are empty")
 	}
 
-	return dbFromContext(ctx, r.db).WithContext(ctx).
+	db := dbFromContext(ctx, r.db).WithContext(ctx)
+
+	var deadlineCount int64
+	if err := db.Model(&models.Deadline{}).
+		Where("id = ? AND chat_id = ?", deadlineID, chatID).
+		Count(&deadlineCount).Error; err != nil {
+		return err
+	}
+	if deadlineCount == 0 {
+		return gorm.ErrRecordNotFound
+	}
+
+	uniqueIDs := uniqueUintIDs(attachmentIDs)
+
+	result := db.
 		Model(&models.Attachment{}).
-		Where("id IN ?", attachmentIDs).
-		Update("deadline_id", deadlineID).Error
+		Where("id IN ? AND chat_id = ?", uniqueIDs, chatID).
+		Update("deadline_id", deadlineID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != int64(len(uniqueIDs)) {
+		return gorm.ErrRecordNotFound
+	}
+
+	return nil
+}
+
+func uniqueUintIDs(ids []uint) []uint {
+	seen := make(map[uint]struct{}, len(ids))
+	unique := make([]uint, 0, len(ids))
+
+	for _, id := range ids {
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+
+	return unique
 }

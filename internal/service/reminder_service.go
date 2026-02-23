@@ -108,6 +108,18 @@ func (s *ReminderService) ListByChatID(ctx context.Context, chatID int64) ([]mod
 	return s.repo.ListByChatID(ctx, chatID)
 }
 
+// DeleteByDeadlineIDAndChatID removes reminders scoped by deadline and chat.
+func (s *ReminderService) DeleteByDeadlineIDAndChatID(ctx context.Context, deadlineID uint, chatID int64) error {
+	if deadlineID == 0 {
+		return ErrInvalidDeadlineID
+	}
+	if chatID == 0 {
+		return ErrInvalidChatID
+	}
+
+	return s.repo.DeleteByDeadlineIDAndChatID(ctx, deadlineID, chatID)
+}
+
 // Update validates and updates an existing reminder.
 func (s *ReminderService) Update(ctx context.Context, reminder *models.Reminder) error {
 	if err := validateReminder(reminder); err != nil {

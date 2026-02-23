@@ -14,9 +14,6 @@ import (
 	botpkg "github.com/paintingpromisesss/deadliner_bot/internal/bot"
 	"github.com/paintingpromisesss/deadliner_bot/internal/config"
 	"github.com/paintingpromisesss/deadliner_bot/internal/database"
-
-	"github.com/go-telegram/bot"
-	"github.com/go-telegram/bot/models"
 )
 
 func main() {
@@ -51,7 +48,12 @@ func main() {
 		}
 	}()
 
-	server := api.NewServer(cfg.HttpAddr, cfg.ReadTimeout, cfg.WriteTimeout, "web")
+	b, err := botpkg.New(cfg.BotToken, cfg.BotName)
+	if err != nil {
+		log.Fatalf("init bot: %v", err)
+	}
+
+	server := api.NewServer(cfg.HttpAddr, cfg.ReadTimeout, cfg.WriteTimeout, "web", cfg.BotToken, b, cfg.MemberCacheTTL)
 	go func() {
 		log.Printf("http server starting on %s", server.Addr)
 
@@ -63,21 +65,6 @@ func main() {
 			stop()
 		}
 	}()
-
-	b, err := bot.New(
-		cfg.BotToken,
-		bot.WithDefaultHandler(func(ctx context.Context, b *bot.Bot, update *models.Update) {
-			_ = b
-			_ = update
-		}),
-		bot.WithMessageTextHandler("/start", bot.MatchTypePrefix, botpkg.StartHandler),
-		bot.WithMessageTextHandler("/settings", bot.MatchTypePrefix, func(ctx context.Context, b *bot.Bot, update *models.Update) {
-			botpkg.SettingsHandler(ctx, b, update, cfg.BotName)
-		}),
-	)
-	if err != nil {
-		log.Fatalf("init bot: %v", err)
-	}
 
 	go func() {
 		log.Printf("bot starting")

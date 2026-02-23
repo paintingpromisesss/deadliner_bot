@@ -8,7 +8,7 @@ type Deadline struct {
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
 	DeadlineAt  time.Time `json:"deadline_at"`
-	Category    string    `json:"category"`
+	Category    string    `json:"category_key"`
 	Status      string    `json:"status"`
 	ChatID      int64     `json:"chat_id"`
 	CreatedBy   int64     `json:"created_by"`

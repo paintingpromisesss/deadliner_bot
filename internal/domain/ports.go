@@ -65,6 +65,13 @@ type MembershipRepo interface {
 	ListByGroupDetailed(ctx context.Context, groupID int64) ([]MembershipDetail, error)
 	ListByUser(ctx context.Context, userID int64) ([]Membership, error)
 	SetRole(ctx context.Context, groupID, userID int64, role Role) error
+	// DemoteIfNotLastAdmin понижает админа до member одним условным UPDATE:
+	// ErrNotFound если строки нет/она не admin, ErrConflict если это последний
+	// админ группы (группа не должна остаться без админа).
+	DemoteIfNotLastAdmin(ctx context.Context, groupID, userID int64) error
+	// RemoveIfNotLastAdmin удаляет membership одним условным UPDATE:
+	// ErrNotFound если строки нет, ErrConflict если это последний админ.
+	RemoveIfNotLastAdmin(ctx context.Context, groupID, userID int64) error
 	SetDMNotify(ctx context.Context, groupID, userID int64, dmNotify *bool) error
 	Delete(ctx context.Context, groupID, userID int64) error
 	CountAdmins(ctx context.Context, groupID int64) (int, error)
@@ -100,6 +107,8 @@ type ReminderRepo interface {
 type InviteRepo interface {
 	Create(ctx context.Context, inv *Invite) error
 	GetByCode(ctx context.Context, code string) (*Invite, error)
+	// IncrementUsed атомарно расходует одно использование: ErrConflict если
+	// инвайт отозван/истёк/исчерпан (условие — в SQL, гонки исключены).
 	IncrementUsed(ctx context.Context, id int64) error
 	Revoke(ctx context.Context, groupID int64, code string) error
 	ListByGroup(ctx context.Context, groupID int64) ([]Invite, error)

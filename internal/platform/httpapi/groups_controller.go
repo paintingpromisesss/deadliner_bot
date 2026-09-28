@@ -100,7 +100,8 @@ func (c *groupsController) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"group": toGroupDTO(g)})
 }
 
-// ListOrSearch — GET /api/v1/groups: с ?q= поиск по префиксу, без q — мои группы.
+// ListOrSearch — GET /api/v1/groups: с ?q= поиск по префиксу, без q — мои
+// группы. Единая форма ответа: [{group, role}]; role="" для не-участника.
 func (c *groupsController) ListOrSearch(w http.ResponseWriter, r *http.Request) {
 	actor := middleware.UserFrom(r.Context())
 	if actor == nil {
@@ -108,29 +109,21 @@ func (c *groupsController) ListOrSearch(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	q := r.URL.Query().Get("q")
+	var mine []groups.MyGroup
+	var err error
 	if q == "" {
-		mine, err := c.svc.ListMine(r.Context(), actor)
-		if err != nil {
-			writeGroupsError(w, err)
-			return
-		}
-		out := make([]map[string]any, 0, len(mine))
-		for _, mg := range mine {
-			dto := toGroupDTO(&mg.Group)
-			out = append(out, map[string]any{"group": dto, "role": string(mg.Role)})
-		}
-		writeJSON(w, http.StatusOK, out)
-		return
+		mine, err = c.svc.ListMine(r.Context(), actor)
+	} else {
+		mine, err = c.svc.Search(r.Context(), actor, q)
 	}
-
-	found, err := c.svc.Search(r.Context(), actor, q)
 	if err != nil {
 		writeGroupsError(w, err)
 		return
 	}
-	out := make([]groupDTO, 0, len(found))
-	for i := range found {
-		out = append(out, toGroupDTO(&found[i]))
+	out := make([]map[string]any, 0, len(mine))
+	for _, mg := range mine {
+		dto := toGroupDTO(&mg.Group)
+		out = append(out, map[string]any{"group": dto, "role": string(mg.Role)})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -201,6 +194,10 @@ func (c *groupsController) Update(w http.ResponseWriter, r *http.Request) {
 	if req.DefaultPresets != nil {
 		ps := make([]time.Duration, 0, len(*req.DefaultPresets))
 		for _, m := range *req.DefaultPresets {
+			if m > maxPresetMinutes {
+				httpjson.WriteError(w, http.StatusBadRequest, "validation", i18n.T("api.error.validation"))
+				return
+			}
 			ps = append(ps, time.Duration(m)*time.Minute)
 		}
 		presets = &ps
@@ -231,8 +228,16 @@ func (c *groupsController) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// maxPresetMinutes — граница защиты от переполнения Duration: 10 лет в минутах.
+const maxPresetMinutes = int64(10 * 365 * 24 * 60)
+
+// maxTTLHours — верхняя граница TTL инвайта: 90 дней.
+const maxTTLHours = 24 * 90
+
 // CreateInvite — POST /api/v1/groups/{id}/invites {role,max_uses,ttl_hours}
 // → 201 {code, expires_at}; plaintext-код возвращается один раз.
+// max_uses: -1 = без лимита (дефолт), ≥1 — число использований; 0 и < -1 → 400.
+// ttl_hours: 0 → дефолт конфига; отрицательный или > 2160 → 400.
 func (c *groupsController) CreateInvite(w http.ResponseWriter, r *http.Request) {
 	actor := middleware.UserFrom(r.Context())
 	if actor == nil {
@@ -245,8 +250,8 @@ func (c *groupsController) CreateInvite(w http.ResponseWriter, r *http.Request) 
 	}
 	var req struct {
 		Role     string `json:"role"`
-		MaxUses  int    `json:"max_uses"`
-		TTLHours int    `json:"ttl_hours"`
+		MaxUses  *int   `json:"max_uses"`
+		TTLHours *int   `json:"ttl_hours"`
 	}
 	if err := decodeStrict(r, &req); err != nil {
 		httpjson.WriteError(w, http.StatusBadRequest, "validation", i18n.T("api.error.validation"))
@@ -255,8 +260,20 @@ func (c *groupsController) CreateInvite(w http.ResponseWriter, r *http.Request) 
 	if req.Role == "" {
 		req.Role = string(domain.RoleMember)
 	}
+	maxUses := -1
+	if req.MaxUses != nil {
+		maxUses = *req.MaxUses
+	}
+	ttlHours := 0
+	if req.TTLHours != nil {
+		ttlHours = *req.TTLHours
+	}
+	if maxUses == 0 || maxUses < -1 || ttlHours < 0 || ttlHours > maxTTLHours {
+		httpjson.WriteError(w, http.StatusBadRequest, "validation", i18n.T("api.error.validation"))
+		return
+	}
 	code, inv, err := c.svc.CreateInvite(r.Context(), actor, id,
-		domain.Role(req.Role), req.MaxUses, time.Duration(req.TTLHours)*time.Hour)
+		domain.Role(req.Role), maxUses, time.Duration(ttlHours)*time.Hour)
 	if err != nil {
 		writeGroupsError(w, err)
 		return

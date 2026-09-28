@@ -166,9 +166,26 @@ func (s *Service) checkCreateLimit(ctx context.Context, userID int64, action str
 
 // Search — подсказка слага по префиксу: активные группы + свои pending
 // (фильтр на стороне репо, спека §6.4), не более SearchLimit результатов.
-func (s *Service) Search(ctx context.Context, actor *domain.User, q string) ([]domain.Group, error) {
+// Роль вызывающего проставляется для групп, где он участник (иначе "").
+func (s *Service) Search(ctx context.Context, actor *domain.User, q string) ([]MyGroup, error) {
 	q = domain.Normalize(q)
-	return s.groups.SearchByPrefix(ctx, q, actor.ID, SearchLimit)
+	found, err := s.groups.SearchByPrefix(ctx, q, actor.ID, SearchLimit)
+	if err != nil {
+		return nil, err
+	}
+	mems, err := s.members.ListByUser(ctx, actor.ID)
+	if err != nil {
+		return nil, err
+	}
+	roles := make(map[int64]domain.Role, len(mems))
+	for _, m := range mems {
+		roles[m.GroupID] = m.Role
+	}
+	out := make([]MyGroup, 0, len(found))
+	for _, g := range found {
+		out = append(out, MyGroup{Group: g, Role: roles[g.ID]})
+	}
+	return out, nil
 }
 
 // Get возвращает группу с ролью вызывающего, привязкой чата и счётчиком
@@ -310,7 +327,12 @@ func (s *Service) ListMembers(ctx context.Context, actor *domain.User, groupID i
 	return s.members.ListByGroupDetailed(ctx, groupID)
 }
 
-// CreateInvite генерирует инвайт-код (admin). Возвращает plaintext-код
+// maxInviteTTL — верхняя граница TTL инвайта (90 дней).
+const maxInviteTTL = 90 * 24 * time.Hour
+
+// CreateInvite генерирует инвайт-код (admin). maxUses: -1 = без лимита,
+// ≥1 — число использований; 0 и < -1 — ErrValidation. ttl ≤ 0 → дефолт из
+// конфига; ttl > 90 дней — ErrValidation. Возвращает plaintext-код
 // (показывается один раз) и сохранённый инвайт с хэшем.
 func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID int64, role domain.Role, maxUses int, ttl time.Duration) (string, *domain.Invite, error) {
 	if role != domain.RoleAdmin && role != domain.RoleMember {
@@ -319,10 +341,13 @@ func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID 
 	if err := s.requireAdmin(ctx, actor, groupID); err != nil {
 		return "", nil, err
 	}
-	if maxUses <= 0 {
-		maxUses = 1
+	if maxUses == 0 || maxUses < -1 {
+		return "", nil, &domain.ValidationError{Field: "max_uses", Msg: "must be -1 (unlimited) or >= 1"}
 	}
-	if ttl <= 0 {
+	if ttl < 0 || ttl > maxInviteTTL {
+		return "", nil, &domain.ValidationError{Field: "ttl_hours", Msg: "must be within 0..2160 hours"}
+	}
+	if ttl == 0 {
 		ttl = s.cfg.InviteDefaultTTL
 	}
 
@@ -349,7 +374,9 @@ func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID 
 // RedeemInvite — вступление по коду. Отозванный/истёкший код неотличим от
 // несуществующего (ErrNotFound — не раскрываем существование); исчерпанный
 // max_uses → ErrConflict; повторный redeem действующего участника идемпотентен
-// (без инкремента used_count).
+// (без инкремента used_count). Расход использования — атомарный
+// IncrementUsed (условие max_uses в SQL), поэтому параллельные redeem не
+// превышают лимит.
 func (s *Service) RedeemInvite(ctx context.Context, actor *domain.User, code string) (*domain.Group, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	inv, err := s.invites.GetByCode(ctx, HashInviteCode(code))
@@ -365,23 +392,28 @@ func (s *Service) RedeemInvite(ctx context.Context, actor *domain.User, code str
 	if err != nil {
 		return nil, err
 	}
-
-	if inv.UsedCount >= inv.MaxUses {
-		return nil, fmt.Errorf("%w: invite max_uses exhausted", domain.ErrConflict)
+	// Pending-группа не должна принимать чужих участников: тот же не-протекающий
+	// ErrNotFound, что и в Get (видимость — создателю и superadmin).
+	if g.Status != domain.GroupStatusActive && g.CreatedBy != actor.ID && !actor.IsSuperadmin {
+		return nil, fmt.Errorf("%w: group id=%d is not active", domain.ErrNotFound, g.ID)
 	}
 
 	if _, err := s.members.Get(ctx, g.ID, actor.ID); err == nil {
-		return g, nil // уже участник — идемпотентный успех
+		return g, nil // уже участник — идемпотентный успех, использование не тратим
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return nil, err
 	}
 
+	// Сначала атомарно тратим использование: если ErrConflict — лимит исчерпан.
+	// Обратный порядок (membership → increment) допускал бы overshoot в гонке.
+	if err := s.invites.IncrementUsed(ctx, inv.ID); err != nil {
+		return nil, err
+	}
 	m := &domain.Membership{GroupID: g.ID, UserID: actor.ID, Role: inv.Role}
 	if err := s.members.Upsert(ctx, m); err != nil {
+		// Сбой после расхода использования оставляет «потраченный» redeem —
+		// приемлемо (inv.MaxUses — верхняя граница, не строгая квота).
 		return nil, fmt.Errorf("groups: redeem membership: %w", err)
-	}
-	if err := s.invites.IncrementUsed(ctx, inv.ID); err != nil {
-		return nil, fmt.Errorf("groups: increment invite: %w", err)
 	}
 	s.writeAudit(ctx, actor.ID, "invite.redeem", "group", g.ID,
 		map[string]any{"invite_id": inv.ID, "role": string(inv.Role)})
@@ -401,8 +433,10 @@ func (s *Service) RevokeInvite(ctx context.Context, actor *domain.User, groupID 
 	return nil
 }
 
-// SetRole — promote/demote участника (admin). Единственного админа понизить
-// нельзя (ErrConflict + ErrLastAdmin); superadmin ограничение не мешает.
+// SetRole — promote/demote участника (admin). Понижение админа идёт через
+// DemoteIfNotLastAdmin: защита «последнего админа» — в условном SQL репо,
+// поэтому две конкурентные демotions не оставят группу без админа. Ограничение
+// действует и для superadmin (группу нельзя «осиротить»).
 func (s *Service) SetRole(ctx context.Context, actor *domain.User, groupID, userID int64, role domain.Role) error {
 	if role != domain.RoleAdmin && role != domain.RoleMember {
 		return &domain.ValidationError{Field: "role", Msg: "must be admin or member"}
@@ -414,12 +448,11 @@ func (s *Service) SetRole(ctx context.Context, actor *domain.User, groupID, user
 	if err != nil {
 		return err
 	}
-	if target.Role == domain.RoleAdmin && role != domain.RoleAdmin && !actor.IsSuperadmin {
-		if err := s.guardLastAdmin(ctx, groupID); err != nil {
+	if target.Role == domain.RoleAdmin && role == domain.RoleMember {
+		if err := s.demoteGuarded(ctx, groupID, userID); err != nil {
 			return err
 		}
-	}
-	if err := s.members.SetRole(ctx, groupID, userID, role); err != nil {
+	} else if err := s.members.SetRole(ctx, groupID, userID, role); err != nil {
 		return err
 	}
 	s.writeAudit(ctx, actor.ID, "member.set_role", "group", groupID,
@@ -427,8 +460,9 @@ func (s *Service) SetRole(ctx context.Context, actor *domain.User, groupID, user
 	return nil
 }
 
-// RemoveMember — кик (admin). Админа может кикнуть только superadmin;
-// последнего админа нельзя кикнуть никому из обычных админов.
+// RemoveMember — кик (admin). Админа может кикнуть только superadmin, но и он
+// не может удалить последнего админа (группа не должна остаться без админа —
+// вместо этого группу можно удалить).
 func (s *Service) RemoveMember(ctx context.Context, actor *domain.User, groupID, userID int64) error {
 	if err := s.requireAdmin(ctx, actor, groupID); err != nil {
 		return err
@@ -437,45 +471,57 @@ func (s *Service) RemoveMember(ctx context.Context, actor *domain.User, groupID,
 	if err != nil {
 		return err
 	}
-	if target.Role == domain.RoleAdmin && !actor.IsSuperadmin {
-		return fmt.Errorf("%w: only superadmin can remove an admin", domain.ErrForbidden)
-	}
-	if err := s.members.Delete(ctx, groupID, userID); err != nil {
+	if target.Role == domain.RoleAdmin {
+		if !actor.IsSuperadmin {
+			return fmt.Errorf("%w: only superadmin can remove an admin", domain.ErrForbidden)
+		}
+		if err := s.removeGuarded(ctx, groupID, userID); err != nil {
+			return err
+		}
+	} else if err := s.members.Delete(ctx, groupID, userID); err != nil {
 		return err
 	}
 	s.writeAudit(ctx, actor.ID, "member.remove", "group", groupID, map[string]any{"user_id": userID})
 	return nil
 }
 
-// Leave — выход из группы. Последний админ выйти не может: сначала передача
-// прав (ErrConflict + ErrLastAdmin).
+// Leave — выход из группы. Выход админа идёт через RemoveIfNotLastAdmin:
+// последний админ выйти не может (ErrConflict + ErrLastAdmin), защита —
+// в условном SQL репо, конкурентные выходы безопасны.
 func (s *Service) Leave(ctx context.Context, actor *domain.User, groupID int64) error {
 	m, err := s.members.Get(ctx, groupID, actor.ID)
 	if err != nil {
 		return err
 	}
 	if m.Role == domain.RoleAdmin {
-		if err := s.guardLastAdmin(ctx, groupID); err != nil {
+		if err := s.removeGuarded(ctx, groupID, actor.ID); err != nil {
 			return err
 		}
-	}
-	if err := s.members.Delete(ctx, groupID, actor.ID); err != nil {
+	} else if err := s.members.Delete(ctx, groupID, actor.ID); err != nil {
 		return err
 	}
 	s.writeAudit(ctx, actor.ID, "member.leave", "group", groupID, nil)
 	return nil
 }
 
-// guardLastAdmin — ErrConflict, если в группе остался один админ.
-func (s *Service) guardLastAdmin(ctx context.Context, groupID int64) error {
-	n, err := s.members.CountAdmins(ctx, groupID)
-	if err != nil {
-		return err
+// demoteGuarded — понижение с обёрткой ErrLastAdmin для HTTP-маппинга.
+func (s *Service) demoteGuarded(ctx context.Context, groupID, userID int64) error {
+	err := s.members.DemoteIfNotLastAdmin(ctx, groupID, userID)
+	if errors.Is(err, domain.ErrConflict) {
+		return fmt.Errorf("%w: %w: group id=%d user id=%d",
+			domain.ErrConflict, ErrLastAdmin, groupID, userID)
 	}
-	if n <= 1 {
-		return fmt.Errorf("%w: %w: group id=%d", domain.ErrConflict, ErrLastAdmin, groupID)
+	return err
+}
+
+// removeGuarded — удаление с обёрткой ErrLastAdmin для HTTP-маппинга.
+func (s *Service) removeGuarded(ctx context.Context, groupID, userID int64) error {
+	err := s.members.RemoveIfNotLastAdmin(ctx, groupID, userID)
+	if errors.Is(err, domain.ErrConflict) {
+		return fmt.Errorf("%w: %w: group id=%d user id=%d",
+			domain.ErrConflict, ErrLastAdmin, groupID, userID)
 	}
-	return nil
+	return err
 }
 
 // requireAdmin — роль admin в группе или superadmin; иначе ErrForbidden.

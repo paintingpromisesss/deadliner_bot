@@ -63,14 +63,21 @@ func (r *invitesRepo) GetByCode(ctx context.Context, code string) (*domain.Invit
 	return inv, nil
 }
 
+// IncrementUsed атомарно расходует одно использование: UPDATE с условием
+// (не отозван, не истёк, лимит не исчерпан; max_uses < 0 = без лимита).
+// Нулевое число строк → domain.ErrConflict — гонка параллельных redeem
+// исключена на уровне БД (check-then-act в app-слое был небезопасен).
 func (r *invitesRepo) IncrementUsed(ctx context.Context, id int64) error {
 	tag, err := r.pool.Exec(ctx,
-		`UPDATE invites SET used_count = used_count + 1 WHERE id = $1`, id)
+		`UPDATE invites SET used_count = used_count + 1
+		 WHERE id = $1 AND revoked_at IS NULL AND expires_at > now()
+		   AND (max_uses < 0 OR used_count < max_uses)`, id)
 	if err != nil {
 		return mapErr(err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("%w: invite id=%d", domain.ErrNotFound, id)
+		return fmt.Errorf("%w: invite id=%d unusable (revoked, expired or exhausted)",
+			domain.ErrConflict, id)
 	}
 	return nil
 }

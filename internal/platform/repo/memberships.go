@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -125,6 +126,101 @@ func (r *membershipsRepo) SetRole(ctx context.Context, groupID, userID int64, ro
 		return fmt.Errorf("%w: membership group=%d user=%d", domain.ErrNotFound, groupID, userID)
 	}
 	return nil
+}
+
+// DemoteIfNotLastAdmin — понижение админа с защитой «последнего админа» в БД:
+// транзакция «чтение роли → UPDATE → count админов», и если оставшийся
+// счётчик равен нулю — откат. App-слой check-then-act был небезопасен при гонках.
+func (r *membershipsRepo) DemoteIfNotLastAdmin(ctx context.Context, groupID, userID int64) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Блокировка строки группы сериализует конкурентные demote/kick/leave
+	// одной группы — иначе две транзакции могут одновременно понизить
+	// двух разных админов и оставить группу без админа.
+	if _, err := tx.Exec(ctx, `SELECT id FROM groups WHERE id = $1 FOR UPDATE`, groupID); err != nil {
+		return mapErr(err)
+	}
+
+	var role string
+	err = tx.QueryRow(ctx,
+		`SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2`,
+		groupID, userID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: membership group=%d user=%d", domain.ErrNotFound, groupID, userID)
+	}
+	if err != nil {
+		return mapErr(err)
+	}
+	if role != string(domain.RoleAdmin) {
+		return fmt.Errorf("%w: cannot demote user_id=%d: not an admin",
+			domain.ErrValidation, userID)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE group_memberships SET role = 'member'
+		 WHERE group_id = $1 AND user_id = $2`, groupID, userID); err != nil {
+		return mapErr(err)
+	}
+
+	var admins int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM group_memberships WHERE group_id = $1 AND role = 'admin'`,
+		groupID).Scan(&admins); err != nil {
+		return mapErr(err)
+	}
+	if admins == 0 {
+		return fmt.Errorf("%w: group=%d would lose its last admin", domain.ErrConflict, groupID)
+	}
+	return mapErr(tx.Commit(ctx))
+}
+
+// RemoveIfNotLastAdmin — удаление участника с той же защитой: кик последнего
+// админа (даже superadmin'ом) откатывается — группу нельзя «осиротить».
+func (r *membershipsRepo) RemoveIfNotLastAdmin(ctx context.Context, groupID, userID int64) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback(ctx)
+
+	// См. DemoteIfNotLastAdmin: блокировка строки группы против гонки.
+	if _, err := tx.Exec(ctx, `SELECT id FROM groups WHERE id = $1 FOR UPDATE`, groupID); err != nil {
+		return mapErr(err)
+	}
+
+	var role string
+	err = tx.QueryRow(ctx,
+		`SELECT role FROM group_memberships WHERE group_id = $1 AND user_id = $2`,
+		groupID, userID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: membership group=%d user=%d", domain.ErrNotFound, groupID, userID)
+	}
+	if err != nil {
+		return mapErr(err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM group_memberships WHERE group_id = $1 AND user_id = $2`,
+		groupID, userID); err != nil {
+		return mapErr(err)
+	}
+
+	if role == string(domain.RoleAdmin) {
+		var admins int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM group_memberships WHERE group_id = $1 AND role = 'admin'`,
+			groupID).Scan(&admins); err != nil {
+			return mapErr(err)
+		}
+		if admins == 0 {
+			return fmt.Errorf("%w: group=%d would lose its last admin", domain.ErrConflict, groupID)
+		}
+	}
+	return mapErr(tx.Commit(ctx))
 }
 
 func (r *membershipsRepo) SetDMNotify(ctx context.Context, groupID, userID int64, dmNotify *bool) error {

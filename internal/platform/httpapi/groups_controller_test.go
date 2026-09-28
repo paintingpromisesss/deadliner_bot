@@ -53,9 +53,10 @@ func newTestGroupsRouterDefault(t *testing.T) http.Handler {
 	})
 }
 
-// promoteGroupAdmin выдаёт роль admin напрямую в БД: в рамках Task 7 это
-// единственный путь к админству — создатель группы намеренно member
-// (спека §3.1), а claim-флоу появится в Task 10.
+// promoteGroupAdmin выдаёт роль admin напрямую в БД и активирует группу:
+// в рамках Task 7 это единственный путь к админству — создатель группы
+// намеренно member (спека §3.1), а claim-флоу появится в Task 10. Активация
+// нужна, потому что redeem в pending-группу чужим запрещён (finding #3).
 func promoteGroupAdmin(t *testing.T, r http.Handler, token string, groupID int64) {
 	t.Helper()
 	resp := doJSON(r, http.MethodGet, "/api/v1/me", token, nil)
@@ -70,6 +71,10 @@ func promoteGroupAdmin(t *testing.T, r http.Handler, token string, groupID int64
 		`UPDATE group_memberships SET role='admin' WHERE group_id=$1 AND user_id=$2`,
 		groupID, int64(me["id"].(float64))); err != nil {
 		t.Fatalf("promote admin: %v", err)
+	}
+	if _, err := testPool.Exec(t.Context(),
+		`UPDATE groups SET status='active' WHERE id=$1`, groupID); err != nil {
+		t.Fatalf("activate group: %v", err)
 	}
 }
 
@@ -311,7 +316,7 @@ func TestGroupsSearchAndListMine(t *testing.T) {
 	if resp.Code != http.StatusCreated {
 		t.Fatalf("create = %d", resp.Code)
 	}
-	// Pending-группа видна создателю в поиске.
+	// Pending-группа видна создателю в поиске; единая форма [{group, role}].
 	resp = doJSON(r, http.MethodGet, "/api/v1/groups?q=поиск", tok, nil)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("search = %d", resp.Code)
@@ -320,8 +325,15 @@ func TestGroupsSearchAndListMine(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &found); err != nil {
 		t.Fatal(err)
 	}
-	if len(found) != 1 || found[0]["slug"] != "ПОИСК-11" {
-		t.Errorf("search results = %v", found)
+	if len(found) != 1 {
+		t.Fatalf("search results = %v", found)
+	}
+	grp, _ := found[0]["group"].(map[string]any)
+	if grp == nil || grp["slug"] != "ПОИСК-11" {
+		t.Errorf("search result shape = %v, want {group:{slug:ПОИСК-11},role}", found[0])
+	}
+	if found[0]["role"] != "member" {
+		t.Errorf("search role = %v, want member (создатель — участник)", found[0]["role"])
 	}
 	// Без q — мои группы с ролью.
 	resp = doJSON(r, http.MethodGet, "/api/v1/groups", tok, nil)
@@ -334,6 +346,71 @@ func TestGroupsSearchAndListMine(t *testing.T) {
 	}
 	if len(mine) != 1 || mine[0]["role"] != "member" {
 		t.Errorf("list mine = %v", mine)
+	}
+}
+
+func TestGroupsInviteBounds400(t *testing.T) {
+	r := newTestGroupsRouterDefault(t)
+	tok, _ := login(t, r, 980)
+
+	resp := doJSON(r, http.MethodPost, "/api/v1/groups", tok,
+		map[string]any{"slug": "ЛИМ-11", "title": "T"})
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("create = %d", resp.Code)
+	}
+	var created struct {
+		Group struct {
+			ID int64 `json:"id"`
+		} `json:"group"`
+	}
+	_ = json.Unmarshal(resp.Body.Bytes(), &created)
+	gid := created.Group.ID
+	promoteGroupAdmin(t, r, tok, gid)
+
+	invitesURL := fmt.Sprintf("/api/v1/groups/%d/invites", gid)
+	// max_uses = 0 — бессмысленно → 400.
+	if resp = doJSON(r, http.MethodPost, invitesURL, tok,
+		map[string]any{"role": "member", "max_uses": 0}); resp.Code != http.StatusBadRequest {
+		t.Errorf("max_uses=0 = %d, want 400; body: %s", resp.Code, resp.Body)
+	}
+	// ttl_hours > 90 дней → 400.
+	if resp = doJSON(r, http.MethodPost, invitesURL, tok,
+		map[string]any{"role": "member", "ttl_hours": 24 * 91}); resp.Code != http.StatusBadRequest {
+		t.Errorf("ttl_hours=2184 = %d, want 400; body: %s", resp.Code, resp.Body)
+	}
+	// ttl_hours отрицательный → 400.
+	if resp = doJSON(r, http.MethodPost, invitesURL, tok,
+		map[string]any{"role": "member", "ttl_hours": -1}); resp.Code != http.StatusBadRequest {
+		t.Errorf("ttl_hours=-1 = %d, want 400; body: %s", resp.Code, resp.Body)
+	}
+	// max_uses = -1 (без лимита) — валидно → 201.
+	if resp = doJSON(r, http.MethodPost, invitesURL, tok,
+		map[string]any{"role": "member", "max_uses": -1}); resp.Code != http.StatusCreated {
+		t.Errorf("max_uses=-1 = %d, want 201; body: %s", resp.Code, resp.Body)
+	}
+}
+
+func TestGroupsPresetsOverflow400(t *testing.T) {
+	r := newTestGroupsRouterDefault(t)
+	tok, _ := login(t, r, 990)
+
+	resp := doJSON(r, http.MethodPost, "/api/v1/groups", tok,
+		map[string]any{"slug": "ОВФ-11", "title": "T"})
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("create = %d", resp.Code)
+	}
+	var created struct {
+		Group struct {
+			ID int64 `json:"id"`
+		} `json:"group"`
+	}
+	_ = json.Unmarshal(resp.Body.Bytes(), &created)
+	promoteGroupAdmin(t, r, tok, created.Group.ID)
+
+	resp = doJSON(r, http.MethodPatch, fmt.Sprintf("/api/v1/groups/%d", created.Group.ID), tok,
+		map[string]any{"default_presets": []int64{10*365*24*60 + 1}})
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("presets overflow = %d, want 400; body: %s", resp.Code, resp.Body)
 	}
 }
 

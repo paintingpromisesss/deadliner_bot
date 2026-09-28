@@ -224,6 +224,44 @@ func (r *fakeMembershipRepo) SetRole(ctx context.Context, groupID, userID int64,
 	return nil
 }
 
+// countAdmins — локальный счётчик для условных операций (зеркалит SQL-guard).
+func (r *fakeMembershipRepo) countAdmins(groupID int64) int {
+	n := 0
+	for _, m := range r.mems {
+		if m.GroupID == groupID && m.Role == domain.RoleAdmin {
+			n++
+		}
+	}
+	return n
+}
+
+func (r *fakeMembershipRepo) DemoteIfNotLastAdmin(ctx context.Context, groupID, userID int64) error {
+	m, ok := r.mems[memKey{groupID, userID}]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if m.Role != domain.RoleAdmin {
+		return domain.ErrValidation
+	}
+	if r.countAdmins(groupID) <= 1 {
+		return domain.ErrConflict
+	}
+	m.Role = domain.RoleMember
+	return nil
+}
+
+func (r *fakeMembershipRepo) RemoveIfNotLastAdmin(ctx context.Context, groupID, userID int64) error {
+	m, ok := r.mems[memKey{groupID, userID}]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if m.Role == domain.RoleAdmin && r.countAdmins(groupID) <= 1 {
+		return domain.ErrConflict
+	}
+	delete(r.mems, memKey{groupID, userID})
+	return nil
+}
+
 func (r *fakeMembershipRepo) SetDMNotify(ctx context.Context, groupID, userID int64, dm *bool) error {
 	return errors.New("not used")
 }
@@ -250,10 +288,11 @@ func (r *fakeMembershipRepo) CountAdmins(ctx context.Context, groupID int64) (in
 type fakeInviteRepo struct {
 	invites map[string]*domain.Invite // by stored code
 	nextID  int64
+	clock   *fakeClock
 }
 
-func newFakeInviteRepo() *fakeInviteRepo {
-	return &fakeInviteRepo{invites: map[string]*domain.Invite{}, nextID: 1}
+func newFakeInviteRepo(clock *fakeClock) *fakeInviteRepo {
+	return &fakeInviteRepo{invites: map[string]*domain.Invite{}, nextID: 1, clock: clock}
 }
 
 func (r *fakeInviteRepo) Create(ctx context.Context, inv *domain.Invite) error {
@@ -273,12 +312,21 @@ func (r *fakeInviteRepo) GetByCode(ctx context.Context, code string) (*domain.In
 	return &cp, nil
 }
 
+// IncrementUsed зеркалит условный SQL репо: отозван/истёк/исчерпан → ErrConflict.
 func (r *fakeInviteRepo) IncrementUsed(ctx context.Context, id int64) error {
 	for _, inv := range r.invites {
-		if inv.ID == id {
-			inv.UsedCount++
-			return nil
+		if inv.ID != id {
+			continue
 		}
+		now := r.clock.Now()
+		if inv.RevokedAt != nil || !inv.ExpiresAt.After(now) {
+			return domain.ErrConflict
+		}
+		if inv.MaxUses >= 0 && inv.UsedCount >= inv.MaxUses {
+			return domain.ErrConflict
+		}
+		inv.UsedCount++
+		return nil
 	}
 	return domain.ErrNotFound
 }
@@ -357,13 +405,14 @@ type fixture struct {
 }
 
 func newFixture(cfg Config) *fixture {
+	clock := &fakeClock{now: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
 	f := &fixture{
 		groups:   newFakeGroupRepo(),
 		members:  newFakeMembershipRepo(),
-		invites:  newFakeInviteRepo(),
+		invites:  newFakeInviteRepo(clock),
 		counters: newFakeCounterRepo(),
 		audit:    &fakeAuditRepo{},
-		clock:    &fakeClock{now: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)},
+		clock:    clock,
 	}
 	if cfg.PendingTTL == 0 {
 		cfg.PendingTTL = 14 * 24 * time.Hour
@@ -563,12 +612,33 @@ func TestSearch_NormalizesAndLimits(t *testing.T) {
 	if len(got) != 20 {
 		t.Errorf("Search returned %d groups, want limit 20", len(got))
 	}
+	// Единая форма: MyGroup с ролью ("" для не-участника).
+	for _, mg := range got {
+		if mg.Role != "" {
+			t.Errorf("role = %q for stranger, want empty", mg.Role)
+		}
+	}
+}
+
+func TestSearch_CarriesCallerRole(t *testing.T) {
+	f := newFixture(Config{CreateDayLimit: 100, CreateWeekLimit: 100})
+	ctx := context.Background()
+	g := seedGroupWithAdmin(t, f, 1, "РОЛЬ-11")
+
+	got, err := f.svc.Search(ctx, user(1, false), "роль")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 1 || got[0].Group.ID != g.ID || got[0].Role != domain.RoleAdmin {
+		t.Errorf("Search = %+v, want group %d with role admin", got, g.ID)
+	}
 }
 
 // --- Invites ---
 
-// seedGroupWithAdmin создаёт группу и делает actorID её админом (через SQL-подобный
-// SetRole — в обход claim, который в Task 10).
+// seedGroupWithAdmin создаёт активную группу и делает actorID её админом
+// (через SQL-подобный SetRole — в обход claim, который в Task 10). Группа
+// активируется: redeem в pending-группу запрещён чужим (finding #3).
 func seedGroupWithAdmin(t *testing.T, f *fixture, adminID int64, slug string) *domain.Group {
 	t.Helper()
 	ctx := context.Background()
@@ -578,6 +648,9 @@ func seedGroupWithAdmin(t *testing.T, f *fixture, adminID int64, slug string) *d
 	}
 	if err := f.members.SetRole(ctx, g.ID, adminID, domain.RoleAdmin); err != nil {
 		t.Fatalf("SetRole: %v", err)
+	}
+	if err := f.groups.SetStatus(ctx, g.ID, domain.GroupStatusActive); err != nil {
+		t.Fatalf("SetStatus: %v", err)
 	}
 	return g
 }
@@ -736,6 +809,103 @@ func TestRedeemInvite_MemberIdempotent(t *testing.T) {
 	}
 }
 
+// --- Redeem: атомарность и статус группы ---
+
+// TestRedeemInvite_ExhaustedAtRepoLevel — used_count уже на максимуме:
+// атомарный IncrementUsed (fake моделирует условный SQL) возвращает
+// ErrConflict, и membership НЕ создаётся.
+func TestRedeemInvite_ExhaustedAtRepoLevel(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+	g := seedGroupWithAdmin(t, f, 1, "А-111")
+	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour)
+	if err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+	// Исчерпываем лимит «в обход» redeem — как если бы гонка уже случилась.
+	stored, err := f.invites.GetByCode(ctx, sha(code))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inv := range f.invites.invites {
+		if inv.ID == stored.ID {
+			inv.UsedCount = inv.MaxUses
+		}
+	}
+	_, err = f.svc.RedeemInvite(ctx, user(2, false), code)
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("exhausted redeem err = %v, want ErrConflict from atomic increment", err)
+	}
+	if _, err := f.members.Get(ctx, g.ID, 2); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("membership created despite conflict: %v", err)
+	}
+}
+
+func TestRedeemInvite_PendingGroupNotFound(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+	// Группа остаётся pending (без активации) — чужой участник войти не может.
+	g, err := f.svc.Create(ctx, user(1, false), "П-111", "T")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.members.SetRole(ctx, g.ID, 1, domain.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour)
+	if err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+	_, err = f.svc.RedeemInvite(ctx, user(2, false), code)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("pending redeem err = %v, want ErrNotFound (без утечки существования)", err)
+	}
+	if _, err := f.members.Get(ctx, g.ID, 2); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("stranger joined pending group: %v", err)
+	}
+	// Создатель — может.
+	if _, err := f.svc.RedeemInvite(ctx, user(1, false), code); err != nil {
+		t.Fatalf("creator redeem in pending group: %v", err)
+	}
+}
+
+// --- CreateInvite: границы ---
+
+func TestCreateInvite_Bounds(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+	g := seedGroupWithAdmin(t, f, 1, "А-111")
+
+	for _, maxUses := range []int{0, -2} {
+		_, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, maxUses, time.Hour)
+		if !errors.Is(err, domain.ErrValidation) {
+			t.Errorf("max_uses=%d err = %v, want ErrValidation", maxUses, err)
+		}
+	}
+	// -1 = без лимита — валидно.
+	if _, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, -1, time.Hour); err != nil {
+		t.Errorf("max_uses=-1 err = %v, want nil (unlimited)", err)
+	}
+	if _, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, 91*24*time.Hour); !errors.Is(err, domain.ErrValidation) {
+		t.Errorf("ttl=91d err = %v, want ErrValidation", err)
+	}
+}
+
+func TestRedeemInvite_UnlimitedUses(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+	g := seedGroupWithAdmin(t, f, 1, "А-111")
+	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, -1, time.Hour)
+	if err != nil {
+		t.Fatalf("CreateInvite: %v", err)
+	}
+	for i := int64(2); i <= 5; i++ {
+		if _, err := f.svc.RedeemInvite(ctx, user(i, false), code); err != nil {
+			t.Fatalf("redeem #%d: %v", i-1, err)
+		}
+	}
+}
+
 // --- Membership admin ops ---
 
 func TestSetRole_LastAdminGuard(t *testing.T) {
@@ -758,6 +928,44 @@ func TestSetRole_LastAdminGuard(t *testing.T) {
 	}
 	if err := f.svc.SetRole(ctx, user(1, false), g.ID, 1, domain.RoleMember); err != nil {
 		t.Fatalf("demote with second admin: %v", err)
+	}
+}
+
+func TestSetRole_SequentialDemotesGuardLastAdmin(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+	g := seedGroupWithAdmin(t, f, 1, "А-111")
+	for _, uid := range []int64{2, 3} {
+		if err := f.members.Upsert(ctx, &domain.Membership{GroupID: g.ID, UserID: uid, Role: domain.RoleAdmin}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Три админа: первые две демotion'ы проходят, третья (последний админ) — конфликт.
+	if err := f.svc.SetRole(ctx, user(1, false), g.ID, 2, domain.RoleMember); err != nil {
+		t.Fatalf("first demote: %v", err)
+	}
+	if err := f.svc.SetRole(ctx, user(1, false), g.ID, 3, domain.RoleMember); err != nil {
+		t.Fatalf("second demote: %v", err)
+	}
+	err := f.svc.SetRole(ctx, user(1, false), g.ID, 1, domain.RoleMember)
+	if !errors.Is(err, domain.ErrConflict) || !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("third (last-admin) demote err = %v, want ErrConflict+ErrLastAdmin", err)
+	}
+}
+
+func TestRemoveMember_SuperadminCannotRemoveLastAdmin(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+	g := seedGroupWithAdmin(t, f, 1, "А-111")
+
+	// Единственный админ: кик запрещён даже superadmin — группу нельзя «осиротить»
+	// (вместо этого группу можно удалить через Delete).
+	err := f.svc.RemoveMember(ctx, user(9, true), g.ID, 1)
+	if !errors.Is(err, domain.ErrConflict) || !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("superadmin removing last admin err = %v, want ErrConflict+ErrLastAdmin", err)
+	}
+	if _, err := f.members.Get(ctx, g.ID, 1); err != nil {
+		t.Errorf("last admin membership gone: %v", err)
 	}
 }
 

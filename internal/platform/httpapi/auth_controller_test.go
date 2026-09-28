@@ -34,6 +34,7 @@ import (
 // NOTE: контейнерная обвязка продублирована из internal/platform/repo/testutil_test.go —
 // хелперы test-файлов не импортируются между пакетами, а выносить их в отдельный
 // пакет ради одной задачи нецелесообразно.
+// testPool доступен всем тестам пакета httpapi (promoteGroupAdmin и др.).
 var testPool *pgxpool.Pool
 
 const testBotToken = "TEST:TOKEN"

@@ -74,6 +74,35 @@ func (r *membershipsRepo) ListByGroup(ctx context.Context, groupID int64) ([]dom
 	return collectMemberships(rows)
 }
 
+// ListByGroupDetailed — участники с username/first_name одним JOIN (без N+1).
+func (r *membershipsRepo) ListByGroupDetailed(ctx context.Context, groupID int64) ([]domain.MembershipDetail, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT m.group_id, m.user_id, m.role, m.dm_notify, m.joined_at,
+		        coalesce(u.username, ''), coalesce(u.first_name, '')
+		 FROM group_memberships m
+		 JOIN users u ON u.id = m.user_id
+		 WHERE m.group_id = $1 ORDER BY m.joined_at, m.user_id`, groupID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := []domain.MembershipDetail{}
+	for rows.Next() {
+		var (
+			d    domain.MembershipDetail
+			role string
+		)
+		err := rows.Scan(&d.GroupID, &d.UserID, &role, &d.DMNotify, &d.JoinedAt,
+			&d.Username, &d.FirstName)
+		if err != nil {
+			return nil, mapErr(err)
+		}
+		d.Role = domain.Role(role)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 func (r *membershipsRepo) ListByUser(ctx context.Context, userID int64) ([]domain.Membership, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+membershipColumns+` FROM group_memberships

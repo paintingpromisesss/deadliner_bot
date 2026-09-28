@@ -11,6 +11,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/sauron/deadliner/internal/app/auth"
+	"github.com/sauron/deadliner/internal/app/groups"
 	"github.com/sauron/deadliner/internal/domain"
 	"github.com/sauron/deadliner/internal/platform/httpapi/httpjson"
 	"github.com/sauron/deadliner/internal/platform/httpapi/middleware"
@@ -19,6 +20,7 @@ import (
 // Deps — зависимости роутера; последующие задачи добавляют сюда свои поля.
 type Deps struct {
 	Auth       *auth.Service
+	Groups     *groups.Service
 	Users      domain.UserRepo
 	Sessions   domain.SessionRepo
 	Log        *slog.Logger
@@ -60,6 +62,22 @@ func New(d Deps) chi.Router {
 			r.Get("/me", authCtl.Me)
 			r.Patch("/me", authCtl.PatchMe)
 			r.Post("/me/logout", authCtl.Logout)
+
+			if d.Groups != nil {
+				groupsCtl := newGroupsController(d.Groups)
+				r.Get("/groups", groupsCtl.ListOrSearch)
+				r.Post("/groups", groupsCtl.Create)
+				r.Get("/groups/{id}", groupsCtl.Get)
+				r.Patch("/groups/{id}", groupsCtl.Update)
+				r.Delete("/groups/{id}", groupsCtl.Delete)
+				r.Post("/groups/{id}/invites", groupsCtl.CreateInvite)
+				r.Delete("/groups/{id}/invites/{code}", groupsCtl.RevokeInvite)
+				r.Get("/groups/{id}/members", groupsCtl.ListMembers)
+				r.Patch("/groups/{id}/members/{user_id}", groupsCtl.SetMemberRole)
+				r.Delete("/groups/{id}/members/{user_id}", groupsCtl.KickMember)
+				r.Delete("/groups/{id}/me", groupsCtl.Leave)
+				r.Post("/invites/redeem", groupsCtl.RedeemInvite)
+			}
 		})
 	})
 

@@ -24,5 +24,7 @@
   "api.error.validation": "Проверьте правильность введённых данных",
   "api.error.unauthorized": "Требуется авторизация",
   "api.error.internal": "Внутренняя ошибка сервера",
-  "cleanup.group_deleted": "Группа %s удалена (cleanup pending): id=%s"
+  "cleanup.group_deleted": "Группа %s удалена (cleanup pending): id=%s",
+  "api.error.slug_invalid": "Некорректный слаг: 3–16 символов, кириллица/латиница/цифры/дефис, минимум одна цифра (например ИКБО-33-21)",
+  "api.error.last_admin": "Нельзя лишить прав последнего администратора — сначала передайте роль"
 }

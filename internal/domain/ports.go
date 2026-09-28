@@ -61,6 +61,8 @@ type MembershipRepo interface {
 	Upsert(ctx context.Context, m *Membership) error
 	Get(ctx context.Context, groupID, userID int64) (*Membership, error)
 	ListByGroup(ctx context.Context, groupID int64) ([]Membership, error)
+	// ListByGroupDetailed — список участников с username/first_name одним JOIN.
+	ListByGroupDetailed(ctx context.Context, groupID int64) ([]MembershipDetail, error)
 	ListByUser(ctx context.Context, userID int64) ([]Membership, error)
 	SetRole(ctx context.Context, groupID, userID int64, role Role) error
 	SetDMNotify(ctx context.Context, groupID, userID int64, dmNotify *bool) error

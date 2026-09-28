@@ -49,3 +49,11 @@ type Membership struct {
 	DMNotify *bool
 	JoinedAt time.Time
 }
+
+// MembershipDetail — membership с именными данными пользователя (JOIN),
+// для списков участников без N+1 чтения users.
+type MembershipDetail struct {
+	Membership
+	Username  string
+	FirstName string
+}

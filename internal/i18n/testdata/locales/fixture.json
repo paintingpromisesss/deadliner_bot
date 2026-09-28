@@ -1,0 +1,5 @@
+{
+  "fixture.hello": "Привет, Deadliner!",
+  "fixture.bind": "Чат привязан к группе %s",
+  "fixture.args": "%s и %d"
+}

@@ -11,6 +11,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/sauron/deadliner/internal/app/auth"
+	"github.com/sauron/deadliner/internal/app/deadlines"
 	"github.com/sauron/deadliner/internal/app/groups"
 	"github.com/sauron/deadliner/internal/domain"
 	"github.com/sauron/deadliner/internal/platform/httpapi/httpjson"
@@ -21,6 +22,7 @@ import (
 type Deps struct {
 	Auth       *auth.Service
 	Groups     *groups.Service
+	Deadlines  *deadlines.Service
 	Users      domain.UserRepo
 	Sessions   domain.SessionRepo
 	Log        *slog.Logger
@@ -77,6 +79,17 @@ func New(d Deps) chi.Router {
 				r.Delete("/groups/{id}/members/{user_id}", groupsCtl.KickMember)
 				r.Delete("/groups/{id}/me", groupsCtl.Leave)
 				r.Post("/invites/redeem", groupsCtl.RedeemInvite)
+			}
+
+			if d.Deadlines != nil {
+				deadlinesCtl := newDeadlinesController(d.Deadlines)
+				r.Post("/deadlines", deadlinesCtl.Create)
+				r.Get("/deadlines/{id}", deadlinesCtl.Get)
+				r.Patch("/deadlines/{id}", deadlinesCtl.Update)
+				r.Delete("/deadlines/{id}", deadlinesCtl.Delete)
+				r.Post("/deadlines/{id}/complete", deadlinesCtl.Complete)
+				r.Get("/groups/{id}/deadlines", deadlinesCtl.ListGroup)
+				r.Get("/me/deadlines", deadlinesCtl.ListMine)
 			}
 		})
 	})

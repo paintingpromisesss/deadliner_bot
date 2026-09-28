@@ -85,23 +85,52 @@ type ChatBindingRepo interface {
 }
 
 type DeadlineRepo interface {
-	Create(ctx context.Context, d *Deadline) error
+	// Create пишет deadline и его reminders в ОДНОЙ транзакции (спека §7.1).
+	// Reminder-строки получают deadline_id созданного дедлайна; дубликаты
+	// (unique index) tolerated — ON CONFLICT DO NOTHING. Заполняет d.ID и
+	// ID/DeadlineID каждого reminder.
+	Create(ctx context.Context, d *Deadline, reminders []Reminder) error
 	GetByID(ctx context.Context, id int64) (*Deadline, error)
-	Update(ctx context.Context, d *Deadline) error
+	// Update меняет только явно заданные поля patch (не всю сущность).
+	Update(ctx context.Context, id int64, patch DeadlinePatch) error
 	SetStatus(ctx context.Context, id int64, status DeadlineStatus) error
 	SoftDelete(ctx context.Context, id int64) error
 	ListByGroup(ctx context.Context, groupID int64, from, to *time.Time, status *DeadlineStatus) ([]Deadline, error)
 	ListByOwner(ctx context.Context, ownerID int64, from, to *time.Time, status *DeadlineStatus) ([]Deadline, error)
 }
 
+// DeadlinePatch — явные поля для UPDATE дедлайна: nil = «не трогать».
+type DeadlinePatch struct {
+	Title       *string
+	Description *string
+	DueAt       *time.Time
+	TZ          *string
+}
+
 type ReminderRepo interface {
 	CreateBatch(ctx context.Context, reminders []Reminder) error
+	// ListByDeadline — все reminders дедлайна (любой статус), по fire_at.
+	ListByDeadline(ctx context.Context, deadlineID int64) ([]Reminder, error)
+	// FetchDue блокируетdue-pending строки в tx (FOR UPDATE SKIP LOCKED) и
+	// помечает их locked_by/locked_at (спека §7.2).
 	FetchDue(ctx context.Context, tx Tx, now time.Time, limit int, workerID string) ([]Reminder, error)
-	MarkSent(ctx context.Context, id int64, now time.Time) error
-	MarkFailed(ctx context.Context, id int64, errMsg string, retryAt time.Time) error
+	// MarkSent — UPDATE … WHERE status='pending' AND locked_by=workerID;
+	// ok=false если строку уже отправили/забрал другой воркер (идемпотентность
+	// доставки, спека §7.2).
+	MarkSent(ctx context.Context, id int64, workerID string, now time.Time) (bool, error)
+	// MarkFailed инкрементирует attempts и пишет last_error; если попыток
+	// осталось — status='pending', fire_at=retryAt (fire_at переиспользуется
+	// как время ретрая: отдельной колонки retry_at в схеме нет), иначе
+	// status='failed'. failed=true если reminder помечен failed.
+	MarkFailed(ctx context.Context, id int64, workerID, errText string, retryAt time.Time, maxAttempts int) (failed bool, err error)
+	// ReleaseStale снимает локи старше olderThan (pending, locked_at <
+	// olderThan): locked_by/locked_at=NULL, attempts+=1; возвращает число строк.
 	ReleaseStale(ctx context.Context, olderThan time.Time) (int64, error)
 	CancelByDeadline(ctx context.Context, deadlineID int64) error
-	Regenerate(ctx context.Context, deadlineID int64, presets []time.Duration, now time.Time) error
+	// Regenerate в ОДНОЙ транзакции: pending → cancelled, затем вставка new
+	// (ON CONFLICT DO NOTHING на обоих unique-индексах); возвращает число
+	// фактически вставленных строк.
+	Regenerate(ctx context.Context, deadlineID int64, newReminders []Reminder) (inserted int, err error)
 }
 
 type InviteRepo interface {

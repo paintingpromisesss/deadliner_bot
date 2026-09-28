@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/sauron/deadliner/internal/cmd"
 	"github.com/sauron/deadliner/internal/config"
 	"github.com/sauron/deadliner/internal/platform/logx"
 )
@@ -39,7 +41,11 @@ func main() {
 	case "serve":
 		log.Info("serve: not implemented")
 	case "migrate":
-		log.Info("migrate: not implemented")
+		if err := cmd.Migrate(ctx, cfg, log); err != nil {
+			log.Error("migrate failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		return
 	case "admin":
 		log.Info("admin: not implemented")
 	}

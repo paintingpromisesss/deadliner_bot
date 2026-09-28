@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/sauron/deadliner/internal/domain"
-	"github.com/sauron/deadliner/internal/platform/telegram/webapp"
+	"github.com/sauron/deadliner/internal/webapp"
 )
 
 // Config — параметры авторизации из env (спека §8).

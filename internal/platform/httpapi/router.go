@@ -50,7 +50,13 @@ func New(d Deps) chi.Router {
 		r.Post("/auth/telegram", authCtl.Telegram)
 
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.Auth(d.Sessions, d.Users, d.SessionTTL))
+			r.Use(middleware.Auth(middleware.AuthDeps{
+				Sessions: d.Sessions,
+				Users:    d.Users,
+				Clock:    domain.SystemClock{},
+				Log:      log,
+				TTL:      d.SessionTTL,
+			}))
 			r.Get("/me", authCtl.Me)
 			r.Patch("/me", authCtl.PatchMe)
 			r.Post("/me/logout", authCtl.Logout)

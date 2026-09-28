@@ -38,10 +38,19 @@ func SessionFrom(ctx context.Context) *domain.Session {
 // touchInterval — как часто продлевается сессия при активности (sliding TTL).
 const touchInterval = time.Hour
 
+// AuthDeps — зависимости middleware аутентификации.
+type AuthDeps struct {
+	Sessions domain.SessionRepo
+	Users    domain.UserRepo
+	Clock    domain.Clock
+	Log      *slog.Logger
+	TTL      time.Duration
+}
+
 // Auth проверяет Authorization: Bearer <token>: сессия должна быть активной,
 // пользователь — существовать. В контекст кладутся *domain.User и *domain.Session.
 // При активности реже раза в час сессия продлевается на ttl (sliding renewal).
-func Auth(sessions domain.SessionRepo, users domain.UserRepo, ttl time.Duration) func(http.Handler) http.Handler {
+func Auth(d AuthDeps) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw := bearerToken(r)
@@ -50,14 +59,14 @@ func Auth(sessions domain.SessionRepo, users domain.UserRepo, ttl time.Duration)
 				return
 			}
 
-			now := time.Now().UTC()
+			now := d.Clock.Now().UTC()
 			tokenHash := auth.HashToken(raw)
-			sess, err := sessions.GetActive(r.Context(), tokenHash, now)
+			sess, err := d.Sessions.GetActive(r.Context(), tokenHash, now)
 			if err != nil {
 				httpjson.WriteUnauthorized(w)
 				return
 			}
-			user, err := users.GetByID(r.Context(), sess.UserID)
+			user, err := d.Users.GetByID(r.Context(), sess.UserID)
 			if err != nil {
 				httpjson.WriteUnauthorized(w)
 				return
@@ -68,8 +77,15 @@ func Auth(sessions domain.SessionRepo, users domain.UserRepo, ttl time.Duration)
 			}
 
 			// Sliding renewal: продлеваем не чаще раза в час, одним UPDATE.
+			// Ошибка Touch не блокирует запрос: сессия уже валидна, а
+			// обновление — bookkeeping (гонка с Revoke допустима).
 			if now.Sub(sess.LastSeen) >= touchInterval {
-				_ = sessions.Touch(r.Context(), tokenHash, now, now.Add(ttl))
+				if err := d.Sessions.Touch(r.Context(), tokenHash, now, now.Add(d.TTL)); err != nil {
+					d.Log.Warn("session touch failed",
+						slog.String("request_id", middleware.GetReqID(r.Context())),
+						slog.String("error", err.Error()),
+					)
+				}
 			}
 
 			ctx := context.WithValue(r.Context(), sessionKey, sess)

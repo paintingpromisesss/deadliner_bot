@@ -10,6 +10,7 @@ import (
 
 	"github.com/sauron/deadliner/internal/cmd"
 	"github.com/sauron/deadliner/internal/config"
+	"github.com/sauron/deadliner/internal/i18n"
 	"github.com/sauron/deadliner/internal/platform/logx"
 )
 
@@ -39,6 +40,8 @@ func main() {
 
 	switch mode {
 	case "serve":
+		// Каталог строк интерфейса должен быть загружен до сборки роутера (Task 6).
+		i18n.MustLoad(i18n.Locales)
 		log.Info("serve: not implemented")
 	case "migrate":
 		if err := cmd.Migrate(ctx, cfg, log); err != nil {

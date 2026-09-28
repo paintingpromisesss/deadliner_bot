@@ -22,5 +22,7 @@
   "api.error.forbidden": "Недостаточно прав",
   "api.error.rate_limit": "Слишком много запросов, попробуйте позже",
   "api.error.validation": "Проверьте правильность введённых данных",
+  "api.error.unauthorized": "Требуется авторизация",
+  "api.error.internal": "Внутренняя ошибка сервера",
   "cleanup.group_deleted": "Группа %s удалена (cleanup pending): id=%s"
 }

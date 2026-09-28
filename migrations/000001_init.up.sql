@@ -36,7 +36,9 @@ CREATE TABLE chat_bindings (
     chat_title        text,
     bound_by          bigint NOT NULL REFERENCES users(id),
     bound_at          timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (chat_id, message_thread_id)
+    -- NULLS NOT DISTINCT: message_thread_id is NULL for ordinary chats, and the
+    -- default NULLS DISTINCT would let one chat bind to many groups.
+    UNIQUE NULLS NOT DISTINCT (chat_id, message_thread_id)
 );
 
 CREATE TABLE group_memberships (

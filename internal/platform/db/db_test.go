@@ -118,6 +118,73 @@ func TestMigrateUpDown(t *testing.T) {
 		t.Errorf("both-NULL deadline error = %v, want check_violation (23514)", err)
 	}
 
+	// chat_bindings: UNIQUE NULLS NOT DISTINCT (chat_id, message_thread_id) —
+	// an ordinary chat (thread NULL) must not bind to two groups.
+	var groupID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM groups WHERE slug_norm = 'MAI-2026'`).Scan(&groupID); err != nil {
+		t.Fatalf("select group: %v", err)
+	}
+	_, err = pool.Exec(ctx,
+		`INSERT INTO groups (slug, slug_norm, title, created_by)
+		 VALUES ('MAI-2027', 'MAI-2027', 'Group C', $1)`, userID)
+	if err != nil {
+		t.Fatalf("insert second group: %v", err)
+	}
+	var groupID2 int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM groups WHERE slug_norm = 'MAI-2027'`).Scan(&groupID2); err != nil {
+		t.Fatalf("select second group: %v", err)
+	}
+
+	_, err = pool.Exec(ctx,
+		`INSERT INTO chat_bindings (group_id, chat_id, message_thread_id, bound_by)
+		 VALUES ($1, -100, NULL, $2)`, groupID, userID)
+	if err != nil {
+		t.Fatalf("insert first chat binding: %v", err)
+	}
+	_, err = pool.Exec(ctx,
+		`INSERT INTO chat_bindings (group_id, chat_id, message_thread_id, bound_by)
+		 VALUES ($1, -100, NULL, $2)`, groupID2, userID)
+	if err == nil {
+		t.Fatal("duplicate (chat_id, NULL thread) binding accepted, want unique violation")
+	}
+	pgErr = nil
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		t.Errorf("duplicate chat binding error = %v, want unique_violation (23505)", err)
+	}
+
+	// reminders: partial unique (deadline_id, kind, offset_minutes) WHERE
+	// offset_minutes IS NOT NULL must reject duplicates.
+	_, err = pool.Exec(ctx,
+		`INSERT INTO deadlines (group_id, owner_user_id, title, due_at, created_by)
+		 VALUES (NULL, $1, 'personal', now() + interval '1 day', $1)`, userID)
+	if err != nil {
+		t.Fatalf("insert personal deadline: %v", err)
+	}
+	var deadlineID int64
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM deadlines WHERE title = 'personal'`).Scan(&deadlineID); err != nil {
+		t.Fatalf("select deadline: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		_, err = pool.Exec(ctx,
+			`INSERT INTO reminders (deadline_id, kind, offset_minutes, fire_at)
+			 VALUES ($1, 'preset', 1440, now() + interval '1 day')`, deadlineID)
+		if i == 0 {
+			if err != nil {
+				t.Fatalf("insert first reminder: %v", err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Fatal("duplicate (deadline_id, kind, offset_minutes) reminder accepted, want unique violation")
+		}
+		pgErr = nil
+		if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+			t.Errorf("duplicate reminder error = %v, want unique_violation (23505)", err)
+		}
+	}
+
 	if err := db.RunDown(ctx, url); err != nil {
 		t.Fatalf("RunDown: %v", err)
 	}
@@ -133,6 +200,17 @@ func TestMigrateUpDown(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Errorf("after Down %d tables remain, want 0", remaining)
+	}
+}
+
+func TestConnectRejectsNonPositivePoolMax(t *testing.T) {
+	ctx := context.Background()
+	for _, poolMax := range []int32{0, -1} {
+		pool, err := db.Connect(ctx, "postgres://deadliner:deadliner@127.0.0.1:1/deadliner?sslmode=disable", poolMax)
+		if err == nil {
+			pool.Close()
+			t.Fatalf("Connect(poolMax=%d) succeeded, want error", poolMax)
+		}
 	}
 }
 

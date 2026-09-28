@@ -19,6 +19,9 @@ import (
 // Connect creates a pgxpool pool for url (max poolMax connections) and
 // verifies reachability with a ping bounded by a 5 second timeout.
 func Connect(ctx context.Context, url string, poolMax int32) (*pgxpool.Pool, error) {
+	if poolMax <= 0 {
+		return nil, fmt.Errorf("db: invalid poolMax %d, must be > 0", poolMax)
+	}
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return nil, fmt.Errorf("db: parse url: %w", err)

@@ -175,7 +175,7 @@ chat_bindings
   chat_title        text
   bound_by          bigint NOT NULL REFERENCES users(id)
   bound_at          timestamptz NOT NULL DEFAULT now()
-  UNIQUE (chat_id, message_thread_id)        -- 1 чат(топик) = 1 группа
+  UNIQUE NULLS NOT DISTINCT (chat_id, message_thread_id)  -- 1 чат(топик) = 1 группа (PG15+; NULL thread_id не плодит дубли)
 
 group_memberships
   group_id          bigint REFERENCES groups(id) ON DELETE CASCADE

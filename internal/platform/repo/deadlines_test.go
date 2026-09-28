@@ -408,6 +408,144 @@ func TestReminderRegenerateConflictTolerated(t *testing.T) {
 	}
 }
 
+// TestReminderRegenerateMultipleCustomAt — регенерация (как при PATCH due_at)
+// на дедлайне с двумя custom_at и одним preset: старый upsert переписал бы ВСЕ
+// cancelled custom_at на один fire_at и упал в 23505; теперь каждая custom_at
+// воскрешается по точному совпадению fire_at, preset — по offset. Успех,
+// итоговый набор корректен, дублей нет.
+func TestReminderRegenerateMultipleCustomAt(t *testing.T) {
+	pool := newTestDB(t)
+	ctx := t.Context()
+	uid := insertUser(t, pool, 2010)
+	now := time.Now().UTC().Truncate(time.Second)
+	due := now.Add(72 * time.Hour)
+	dID, _ := insertDeadlineFixture(t, uid, nil, due, []time.Duration{24 * time.Hour})
+
+	rr := NewReminders(pool)
+	// Два custom_at reminder'а (независимые от due_at).
+	ca1 := now.Add(10 * time.Hour)
+	ca2 := now.Add(20 * time.Hour)
+	if err := rr.CreateBatch(ctx, []domain.Reminder{
+		{DeadlineID: dID, Kind: domain.KindCustomAt, FireAt: ca1, Status: domain.ReminderStatusPending},
+		{DeadlineID: dID, Kind: domain.KindCustomAt, FireAt: ca2, Status: domain.ReminderStatusPending},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// PATCH due_at → service.replan строит новый набор: custom_at как есть,
+	// preset от нового due.
+	newDue := due.Add(48 * time.Hour)
+	planned := []domain.Reminder{
+		domain.NewCustomAtReminder(dID, ca1),
+		domain.NewCustomAtReminder(dID, ca2),
+	}
+	mins := 1440
+	planned = append(planned, domain.Reminder{
+		DeadlineID: dID, Kind: domain.KindPreset, OffsetMinutes: &mins,
+		FireAt: newDue.Add(-24 * time.Hour), Status: domain.ReminderStatusPending,
+	})
+
+	inserted, err := rr.Regenerate(ctx, dID, planned)
+	if err != nil {
+		t.Fatalf("Regenerate with 2 custom_at: %v", err)
+	}
+	if inserted != 3 {
+		t.Errorf("inserted = %d, want 3", inserted)
+	}
+
+	list, err := rr.ListByDeadline(ctx, dID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// fire_at возвращается в tz сессии БД — сравниваем через Equal, не форматом.
+	var pending []domain.Reminder
+	for _, r := range list {
+		if r.Status == domain.ReminderStatusPending {
+			pending = append(pending, r)
+		} else if r.Status != domain.ReminderStatusCancelled {
+			t.Errorf("unexpected status %q on row %d", r.Status, r.ID)
+		}
+	}
+	if len(pending) != 3 {
+		t.Fatalf("pending = %+v, want ca1/ca2/preset(new due)", pending)
+	}
+	var gotCA1, gotCA2, gotPreset bool
+	presetWant := newDue.Add(-24 * time.Hour)
+	for _, r := range pending {
+		switch {
+		case r.Kind == domain.KindCustomAt && r.FireAt.Equal(ca1):
+			gotCA1 = true
+		case r.Kind == domain.KindCustomAt && r.FireAt.Equal(ca2):
+			gotCA2 = true
+		case r.Kind == domain.KindPreset && r.FireAt.Equal(presetWant):
+			gotPreset = true
+		default:
+			t.Errorf("unexpected pending reminder: %+v", r)
+		}
+	}
+	if !gotCA1 || !gotCA2 || !gotPreset {
+		t.Errorf("pending set incomplete: ca1=%v ca2=%v preset=%v", gotCA1, gotCA2, gotPreset)
+	}
+}
+
+// TestReminderRegenerateResurrectionCollision — воскрешение preset, чей новый
+// fire_at занят sent-строкой того же (deadline, fire_at, kind): без ошибки
+// (NOT EXISTS-гард), sent-строка не тронута, кандидат остаётся cancelled.
+func TestReminderRegenerateResurrectionCollision(t *testing.T) {
+	pool := newTestDB(t)
+	ctx := t.Context()
+	uid := insertUser(t, pool, 2011)
+	now := time.Now().UTC().Truncate(time.Second)
+	due := now.Add(72 * time.Hour)
+	// Один pending preset (будет cancelled) — кандидат на воскрешение.
+	dID, _ := insertDeadlineFixture(t, uid, nil, due, []time.Duration{24 * time.Hour})
+
+	rr := NewReminders(pool)
+	// sent-строка: preset offset 60, fire_at = T.
+	sentFire := now.Add(5 * time.Hour)
+	sentMins := 60
+	sent := []domain.Reminder{{
+		DeadlineID: dID, Kind: domain.KindPreset, OffsetMinutes: &sentMins,
+		FireAt: sentFire, Status: domain.ReminderStatusPending,
+	}}
+	if err := rr.CreateBatch(ctx, sent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE reminders SET status='sent', sent_at=now() WHERE id=$1`, sent[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Regenerate: новый preset offset 24h, но fire_at = sentFire — коллизия
+	// по unique (deadline_id, fire_at, kind) с sent-строкой.
+	mins := 1440
+	colliding := []domain.Reminder{{
+		DeadlineID: dID, Kind: domain.KindPreset, OffsetMinutes: &mins,
+		FireAt: sentFire, Status: domain.ReminderStatusPending,
+	}}
+	inserted, err := rr.Regenerate(ctx, dID, colliding)
+	if err != nil {
+		t.Fatalf("Regenerate with fire_at collision: %v", err)
+	}
+	if inserted != 0 {
+		t.Errorf("inserted = %d, want 0 (collision skipped)", inserted)
+	}
+
+	list, _ := rr.ListByDeadline(ctx, dID)
+	for _, r := range list {
+		switch {
+		case r.ID == sent[0].ID:
+			if r.Status != domain.ReminderStatusSent || !r.FireAt.Equal(sentFire) {
+				t.Errorf("sent row mutated: %+v", r)
+			}
+		case r.OffsetMinutes != nil && *r.OffsetMinutes == 1440:
+			if r.Status != domain.ReminderStatusCancelled {
+				t.Errorf("candidate must stay cancelled: %+v", r)
+			}
+		}
+	}
+}
+
 // TestReminderCancelByDeadline — все pending отменяются, остальные не трогаются.
 func TestReminderCancelByDeadline(t *testing.T) {
 	pool := newTestDB(t)

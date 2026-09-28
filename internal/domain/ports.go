@@ -86,9 +86,10 @@ type ChatBindingRepo interface {
 
 type DeadlineRepo interface {
 	// Create пишет deadline и его reminders в ОДНОЙ транзакции (спека §7.1).
-	// Reminder-строки получают deadline_id созданного дедлайна; дубликаты
-	// (unique index) tolerated — ON CONFLICT DO NOTHING. Заполняет d.ID и
-	// ID/DeadlineID каждого reminder.
+	// Reminder-строки получают deadline_id созданного дедлайна. Вставка
+	// СТРОГАЯ: дубликат на unique-индексе → ErrConflict и откат всей
+	// транзакции (deadline не остаётся в БД). Заполняет d.ID и ID/DeadlineID
+	// каждого reminder.
 	Create(ctx context.Context, d *Deadline, reminders []Reminder) error
 	GetByID(ctx context.Context, id int64) (*Deadline, error)
 	// Update меняет только явно заданные поля patch (не всю сущность).
@@ -111,8 +112,11 @@ type ReminderRepo interface {
 	CreateBatch(ctx context.Context, reminders []Reminder) error
 	// ListByDeadline — все reminders дедлайна (любой статус), по fire_at.
 	ListByDeadline(ctx context.Context, deadlineID int64) ([]Reminder, error)
-	// FetchDue блокируетdue-pending строки в tx (FOR UPDATE SKIP LOCKED) и
-	// помечает их locked_by/locked_at (спека §7.2).
+	// FetchDue блокирует due-pending строки в tx (FOR UPDATE SKIP LOCKED) и
+	// помечает их locked_by/locked_at (спека §7.2). Реализация tx ДОЛЖНА также
+	// удовлетворять Query(ctx, sql, args...) (pgx.Rows, error) — порт Tx
+	// объявляет только Exec/QueryRow, репо утверждает tx к этому расширению и
+	// возвращает ошибку, если его нет (см. адаптер в repo-тестах).
 	FetchDue(ctx context.Context, tx Tx, now time.Time, limit int, workerID string) ([]Reminder, error)
 	// MarkSent — UPDATE … WHERE status='pending' AND locked_by=workerID;
 	// ok=false если строку уже отправили/забрал другой воркер (идемпотентность
@@ -127,9 +131,17 @@ type ReminderRepo interface {
 	// olderThan): locked_by/locked_at=NULL, attempts+=1; возвращает число строк.
 	ReleaseStale(ctx context.Context, olderThan time.Time) (int64, error)
 	CancelByDeadline(ctx context.Context, deadlineID int64) error
-	// Regenerate в ОДНОЙ транзакции: pending → cancelled, затем вставка new
-	// (ON CONFLICT DO NOTHING на обоих unique-индексах); возвращает число
-	// фактически вставленных строк.
+	// Regenerate в ОДНОЙ транзакции: pending → cancelled, затем новые
+	// reminders. Unique-индексы не учитывают status, поэтому вместо вставки
+	// поверх cancelled строка детерминированно «воскрешается»: preset/
+	// custom_offset — старейшая по id cancelled-строка с тем же (kind,
+	// offset), если новый fire_at не занят другой строкой (иначе остаётся
+	// cancelled); custom_at — cancelled-строка с точно тем же fire_at.
+	// Свежие вставки — ON CONFLICT DO NOTHING (гонки/повторы терпимы);
+	// sent/failed не трогаются. Возвращает число строк, ставших pending.
+	// КОНТРАКТ: Regenerate — отдельная транзакция от deadlines.Update, поэтому
+	// вызывающий use case при сбое ОБЯЗАН компенсировать уже применённый
+	// патч дедлайна (см. deadlines.Service.Update).
 	Regenerate(ctx context.Context, deadlineID int64, newReminders []Reminder) (inserted int, err error)
 }
 

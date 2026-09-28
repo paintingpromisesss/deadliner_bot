@@ -66,23 +66,54 @@ func insertReminder(ctx context.Context, q pgx.Tx, r *domain.Reminder) error {
 	return nil
 }
 
-// upsertReminder — конфликт-толерантная вставка для Regenerate: сначала
-// «воскрешает» cancelled-строку с тем же (kind, offset) — unique-индекс не
-// учитывает status, поэтому вставка новой строки поверх отменённой невозможна
-// — иначе вставляет новую с ON CONFLICT DO NOTHING. sent/failed-строки не
-// трогаются (отправленное не переотправляется). Возвращает true, если строка
-// появилась или была обновлена.
+// upsertReminder — конфликт-толерантная запись для Regenerate.
+//
+// Unique-индексы не учитывают status, поэтому вставить новую строку поверх
+// cancelled с тем же (kind, offset) нельзя — вместо этого ОДНА cancelled-
+// строка «воскрешается» обратно в pending. Выбор кандидата детерминирован:
+//   - preset/custom_offset (offset_minutes задан): старейшая по id cancelled-
+//     строка с тем же (kind, offset), и только если новый fire_at не занят
+//     другой строкой под unique-индексом (deadline_id, fire_at, kind) —
+//     коллизия (например, с sent-строкой) оставляет кандидата cancelled;
+//   - custom_at (offset_minutes NULL): cancelled-строка с точно тем же
+//     fire_at. Матч «любой cancelled custom_at» переписал бы несколько
+//     отменённых строк на одно время и упал бы в 23505.
+//
+// Если кандидата нет — вставка с ON CONFLICT DO NOTHING (гонки/повторы
+// терпимы). sent/failed-строки не трогаются. Возвращает true, если строка
+// стала pending (воскрешена или вставлена).
 func upsertReminder(ctx context.Context, q pgx.Tx, r *domain.Reminder) (bool, error) {
 	var id int64
-	err := q.QueryRow(ctx,
-		`UPDATE reminders
-		 SET fire_at = $4, status = 'pending', attempts = 0,
-		     locked_by = NULL, locked_at = NULL, last_error = NULL, sent_at = NULL
-		 WHERE deadline_id = $1 AND kind = $2
-		   AND offset_minutes IS NOT DISTINCT FROM $3
-		   AND status = 'cancelled'
-		 RETURNING id`,
-		r.DeadlineID, string(r.Kind), r.OffsetMinutes, r.FireAt).Scan(&id)
+	var err error
+	if r.OffsetMinutes == nil {
+		err = q.QueryRow(ctx,
+			`UPDATE reminders
+			 SET status = 'pending', attempts = 0,
+			     locked_by = NULL, locked_at = NULL, last_error = NULL, sent_at = NULL
+			 WHERE id = (
+			     SELECT c.id FROM reminders c
+			      WHERE c.deadline_id = $1 AND c.kind = $2
+			        AND c.fire_at = $3 AND c.status = 'cancelled'
+			      ORDER BY c.id LIMIT 1)
+			 RETURNING id`,
+			r.DeadlineID, string(r.Kind), r.FireAt).Scan(&id)
+	} else {
+		err = q.QueryRow(ctx,
+			`UPDATE reminders
+			 SET fire_at = $4, status = 'pending', attempts = 0,
+			     locked_by = NULL, locked_at = NULL, last_error = NULL, sent_at = NULL
+			 WHERE id = (
+			     SELECT c.id FROM reminders c
+			      WHERE c.deadline_id = $1 AND c.kind = $2
+			        AND c.offset_minutes = $3 AND c.status = 'cancelled'
+			        AND NOT EXISTS (
+			            SELECT 1 FROM reminders o
+			             WHERE o.deadline_id = $1 AND o.kind = $2
+			               AND o.fire_at = $4 AND o.id <> c.id)
+			      ORDER BY c.id LIMIT 1)
+			 RETURNING id`,
+			r.DeadlineID, string(r.Kind), r.OffsetMinutes, r.FireAt).Scan(&id)
+	}
 	if err == nil {
 		r.ID = id
 		return true, nil

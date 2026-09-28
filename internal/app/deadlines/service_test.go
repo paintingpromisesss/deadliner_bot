@@ -1,11 +1,12 @@
 package deadlines
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,11 @@ type fakeDeadlineRepo struct {
 	nextID   int64
 	deleted  map[int64]bool
 	onCreate onCreateHook
+	// журнал Update-вызовов для assertions компенсации.
+	updateCalls []domain.DeadlinePatch
+	updateErr   error
+	// failUpdateCall > 0 — вернуть updateErr на N-м Update-вызове (1-based).
+	failUpdateCall int
 }
 
 func newFakeDeadlineRepo() *fakeDeadlineRepo {
@@ -60,9 +66,12 @@ func (r *fakeDeadlineRepo) GetByID(ctx context.Context, id int64) (*domain.Deadl
 }
 
 func (r *fakeDeadlineRepo) Update(ctx context.Context, id int64, patch domain.DeadlinePatch) error {
-	d, err := r.GetByID(ctx, id)
-	if err != nil {
-		return err
+	if _, ok := r.rows[id]; !ok || r.deleted[id] {
+		return fmt.Errorf("%w: deadline id=%d", domain.ErrNotFound, id)
+	}
+	r.updateCalls = append(r.updateCalls, patch)
+	if r.updateErr != nil && (r.failUpdateCall == 0 || r.failUpdateCall == len(r.updateCalls)) {
+		return r.updateErr
 	}
 	cur := r.rows[id]
 	if patch.Title != nil {
@@ -77,7 +86,6 @@ func (r *fakeDeadlineRepo) Update(ctx context.Context, id int64, patch domain.De
 	if patch.TZ != nil {
 		cur.TZ = *patch.TZ
 	}
-	_ = d
 	return nil
 }
 
@@ -140,6 +148,8 @@ type fakeReminderRepo struct {
 	// журнал вызовов для assertions
 	regenerateCalls []regenerateCall
 	cancelCalls     []int64
+	regenerateErr   error
+	cancelErr       error
 }
 
 type regenerateCall struct {
@@ -191,6 +201,9 @@ func (r *fakeReminderRepo) ReleaseStale(ctx context.Context, olderThan time.Time
 
 func (r *fakeReminderRepo) CancelByDeadline(ctx context.Context, deadlineID int64) error {
 	r.cancelCalls = append(r.cancelCalls, deadlineID)
+	if r.cancelErr != nil {
+		return r.cancelErr
+	}
 	for _, rem := range r.rows {
 		if rem.DeadlineID == deadlineID && rem.Status == domain.ReminderStatusPending {
 			rem.Status = domain.ReminderStatusCancelled
@@ -201,6 +214,9 @@ func (r *fakeReminderRepo) CancelByDeadline(ctx context.Context, deadlineID int6
 
 func (r *fakeReminderRepo) Regenerate(ctx context.Context, deadlineID int64, newReminders []domain.Reminder) (int, error) {
 	r.regenerateCalls = append(r.regenerateCalls, regenerateCall{deadlineID, newReminders})
+	if r.regenerateErr != nil {
+		return 0, r.regenerateErr
+	}
 	for _, rem := range r.rows {
 		if rem.DeadlineID == deadlineID && rem.Status == domain.ReminderStatusPending {
 			rem.Status = domain.ReminderStatusCancelled
@@ -324,6 +340,7 @@ type testEnv struct {
 	members   *fakeMembershipRepo
 	audit     *fakeAuditRepo
 	clock     *fakeClock
+	logs      *bytes.Buffer
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -343,9 +360,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		members:   newFakeMembershipRepo(),
 		audit:     &fakeAuditRepo{},
 		clock:     &fakeClock{now: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)},
+		logs:      &bytes.Buffer{},
 	}
 	env.svc = NewService(dr, rr, env.groups, env.members, env.audit, env.clock,
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
+		slog.New(slog.NewTextHandler(env.logs, &slog.HandlerOptions{Level: slog.LevelError})))
 	return env
 }
 
@@ -861,5 +879,132 @@ func TestGetReturnsReminders(t *testing.T) {
 	}
 	if _, err := env.svc.Get(t.Context(), actor, 999); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("Get missing = %v, want ErrNotFound", err)
+	}
+}
+
+// errRegenerate — инжектируемый сбой Regenerate для тестов компенсации.
+var errRegenerate = errors.New("regenerate boom")
+
+func TestUpdateRegenerateFailureCompensatesDueAt(t *testing.T) {
+	env := newTestEnv(t)
+	actor := user(1, false)
+	due := env.clock.now.Add(72 * time.Hour)
+	view, err := env.svc.Create(t.Context(), actor, CreateInput{
+		Title: "Курсовая", DueAt: due,
+		Reminders: []ReminderSpec{{Kind: domain.KindPreset, OffsetMinutes: intPtr(1440)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := view.Deadline.ID
+
+	// Сбрасываем журнал Update и ломаем Regenerate.
+	env.deadlines.updateCalls = nil
+	env.reminders.regenerateErr = errRegenerate
+	newDue := due.Add(24 * time.Hour)
+	title := "Новое имя"
+	_, err = env.svc.Update(t.Context(), actor, id,
+		UpdateInput{DueAt: &newDue, Title: &title})
+	if !errors.Is(err, errRegenerate) {
+		t.Fatalf("Update = %v, want errRegenerate", err)
+	}
+	if len(env.reminders.regenerateCalls) != 1 {
+		t.Fatalf("Regenerate calls = %d, want 1", len(env.reminders.regenerateCalls))
+	}
+
+	// Компенсирующий Update вызван со СТАРЫМИ due_at и title.
+	if len(env.deadlines.updateCalls) != 2 {
+		t.Fatalf("Update calls = %d, want 2 (apply + compensate): %+v",
+			len(env.deadlines.updateCalls), env.deadlines.updateCalls)
+	}
+	comp := env.deadlines.updateCalls[1]
+	if comp.DueAt == nil || !comp.DueAt.Equal(due) {
+		t.Errorf("compensating due_at = %v, want old %v", comp.DueAt, due)
+	}
+	if comp.Title == nil || *comp.Title != "Курсовая" {
+		t.Errorf("compensating title = %v, want old", comp.Title)
+	}
+	// Состояние в репо откатилось.
+	got, _ := env.svc.Get(t.Context(), actor, id)
+	if !got.Deadline.DueAt.Equal(due) || got.Deadline.Title != "Курсовая" {
+		t.Errorf("deadline after compensation: %+v", got.Deadline)
+	}
+	// Компенсация успешна — ошибок в логе нет.
+	if env.logs.Len() != 0 {
+		t.Errorf("unexpected error log: %s", env.logs)
+	}
+}
+
+func TestUpdateCompensationFailureLogsAndReturnsOriginalError(t *testing.T) {
+	env := newTestEnv(t)
+	actor := user(1, false)
+	due := env.clock.now.Add(72 * time.Hour)
+	view, err := env.svc.Create(t.Context(), actor, CreateInput{
+		Title: "T", DueAt: due,
+		Reminders: []ReminderSpec{{Kind: domain.KindPreset, OffsetMinutes: intPtr(60)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env.reminders.regenerateErr = errRegenerate
+	// Компенсация тоже падает: первый Update (apply) проходит, второй (revert)
+	// возвращает ошибку.
+	compensateErr := errors.New("compensate boom")
+	env.deadlines.updateErr = compensateErr
+	env.deadlines.failUpdateCall = 2
+	env.deadlines.updateCalls = nil
+
+	newDue := due.Add(24 * time.Hour)
+	_, err = env.svc.Update(t.Context(), actor, view.Deadline.ID, UpdateInput{DueAt: &newDue})
+	if !errors.Is(err, errRegenerate) {
+		t.Fatalf("Update = %v, want original errRegenerate (не compensateErr)", err)
+	}
+	// Сбой компенсации залогирован с id дедлайна.
+	logged := env.logs.String()
+	if !strings.Contains(logged, "compensation failed") ||
+		!strings.Contains(logged, fmt.Sprintf("deadline_id=%d", view.Deadline.ID)) {
+		t.Errorf("expected compensation-failure log with deadline id, got: %q", logged)
+	}
+}
+
+func TestDeleteCancelFailureDoesNotFailRequest(t *testing.T) {
+	env := newTestEnv(t)
+	actor := user(1, false)
+	due := env.clock.now.Add(72 * time.Hour)
+	view, _ := env.svc.Create(t.Context(), actor, CreateInput{
+		Title: "T", DueAt: due,
+		Reminders: []ReminderSpec{{Kind: domain.KindPreset, OffsetMinutes: intPtr(60)}},
+	})
+	env.reminders.cancelErr = errors.New("cancel boom")
+	if err := env.svc.Delete(t.Context(), actor, view.Deadline.ID); err != nil {
+		t.Fatalf("Delete = %v, want nil (cancel failure logged only)", err)
+	}
+	if _, err := env.svc.Get(t.Context(), actor, view.Deadline.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("deadline still visible after delete: %v", err)
+	}
+	if !strings.Contains(env.logs.String(), "cancellation failed") {
+		t.Errorf("expected cancel-failure log, got %q", env.logs)
+	}
+}
+
+func TestCompleteCancelFailureDoesNotFailRequest(t *testing.T) {
+	env := newTestEnv(t)
+	actor := user(1, false)
+	due := env.clock.now.Add(72 * time.Hour)
+	view, _ := env.svc.Create(t.Context(), actor, CreateInput{
+		Title: "T", DueAt: due,
+		Reminders: []ReminderSpec{{Kind: domain.KindPreset, OffsetMinutes: intPtr(60)}},
+	})
+	env.reminders.cancelErr = errors.New("cancel boom")
+	got, err := env.svc.Complete(t.Context(), actor, view.Deadline.ID)
+	if err != nil {
+		t.Fatalf("Complete = %v, want nil (cancel failure logged only)", err)
+	}
+	if got.Deadline.Status != domain.DeadlineStatusDone {
+		t.Errorf("status = %q, want done", got.Deadline.Status)
+	}
+	if !strings.Contains(env.logs.String(), "cancellation failed") {
+		t.Errorf("expected cancel-failure log, got %q", env.logs)
 	}
 }

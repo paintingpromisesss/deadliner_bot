@@ -88,17 +88,23 @@ func (r *deadlinesRepo) GetByID(ctx context.Context, id int64) (*domain.Deadline
 }
 
 // Update меняет только явно заданные поля patch; COALESCE сохраняет текущее
-// значение при nil. Обновление soft-deleted ряда → ErrNotFound.
+// значение при nil. Пустая description нормализуется в NULL (как в Create) —
+// «менять ли» решает отдельный флаг $3, а не NULL-значение.
+// Обновление soft-deleted ряда → ErrNotFound.
 func (r *deadlinesRepo) Update(ctx context.Context, id int64, patch domain.DeadlinePatch) error {
+	var descr *string
+	if patch.Description != nil {
+		descr = nullIfEmpty(*patch.Description)
+	}
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE deadlines SET
 			title = COALESCE($2, title),
-			description = CASE WHEN $3::text IS NULL THEN description ELSE $3 END,
-			due_at = COALESCE($4, due_at),
-			tz = COALESCE($5, tz),
+			description = CASE WHEN $3 THEN $4 ELSE description END,
+			due_at = COALESCE($5, due_at),
+			tz = COALESCE($6, tz),
 			updated_at = now()
 		 WHERE id = $1 AND deleted_at IS NULL`,
-		id, patch.Title, patch.Description, patch.DueAt, patch.TZ)
+		id, patch.Title, patch.Description != nil, descr, patch.DueAt, patch.TZ)
 	if err != nil {
 		return mapErr(err)
 	}

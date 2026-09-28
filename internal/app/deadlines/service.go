@@ -288,6 +288,11 @@ func (s *Service) Update(ctx context.Context, actor *domain.User, id int64, in U
 	if err := s.deadlines.Update(ctx, id, patch); err != nil {
 		return nil, err
 	}
+
+	// Компенсация (unit-of-work отложен): Update и Regenerate — две отдельные
+	// транзакции, поэтому сбой регенерации откатывает поля дедлайна обратно.
+	// Контракт описан в doc domain.ReminderRepo.Regenerate.
+	old := *d
 	if patch.DueAt != nil {
 		d.DueAt = *patch.DueAt
 	}
@@ -303,10 +308,11 @@ func (s *Service) Update(ctx context.Context, actor *domain.User, id int64, in U
 
 	if dueChanged {
 		planned, err := s.replan(ctx, d, now)
-		if err != nil {
-			return nil, err
+		if err == nil {
+			_, err = s.reminders.Regenerate(ctx, id, planned)
 		}
-		if _, err := s.reminders.Regenerate(ctx, id, planned); err != nil {
+		if err != nil {
+			s.compensateUpdate(ctx, id, &old, patch)
 			return nil, err
 		}
 	}
@@ -314,6 +320,37 @@ func (s *Service) Update(ctx context.Context, actor *domain.User, id int64, in U
 	s.writeAudit(ctx, actor.ID, "deadline.update", "deadline", id,
 		map[string]any{"due_changed": dueChanged})
 	return s.Get(ctx, actor, id)
+}
+
+// compensateUpdate возвращает поля дедлайна к old после сбоя Regenerate:
+// due_at и изменённые поля откатываются обратным патчем. Провал самой
+// компенсации не скрывает исходную ошибку — только log.Error с id дедлайна
+// (аудит-хук: рассинхрон дедлайна и reminders чинится следующей правкой
+// due_at либо Task 9 воркер защитно пропустит reminders done/deleted).
+func (s *Service) compensateUpdate(ctx context.Context, id int64, old *domain.Deadline, applied domain.DeadlinePatch) {
+	revert := domain.DeadlinePatch{}
+	if applied.Title != nil {
+		t := old.Title
+		revert.Title = &t
+	}
+	if applied.Description != nil {
+		descr := old.Description
+		revert.Description = &descr
+	}
+	if applied.DueAt != nil {
+		due := old.DueAt
+		revert.DueAt = &due
+	}
+	if applied.TZ != nil {
+		tz := old.TZ
+		revert.TZ = &tz
+	}
+	if err := s.deadlines.Update(ctx, id, revert); err != nil {
+		s.log.Error("deadline update compensation failed: deadline and reminders may be out of sync",
+			slog.Int64("deadline_id", id),
+			slog.String("error", err.Error()),
+		)
+	}
 }
 
 // replan собирает новый набор reminders после смены due_at из текущих pending:
@@ -383,8 +420,13 @@ func (s *Service) Delete(ctx context.Context, actor *domain.User, id int64) erro
 	if err := s.deadlines.SoftDelete(ctx, id); err != nil {
 		return err
 	}
+	// Сбой отмены reminders не отклоняет запрос: дедлайн уже удалён, а воркер
+	// (Task 9) защитно пропускает reminders soft-deleted дедлайнов.
 	if err := s.reminders.CancelByDeadline(ctx, id); err != nil {
-		return fmt.Errorf("deadlines: cancel reminders: %w", err)
+		s.log.Error("deadline deleted but reminder cancellation failed",
+			slog.Int64("deadline_id", id),
+			slog.String("error", err.Error()),
+		)
 	}
 	s.writeAudit(ctx, actor.ID, "deadline.delete", "deadline", id, nil)
 	return nil
@@ -403,8 +445,13 @@ func (s *Service) Complete(ctx context.Context, actor *domain.User, id int64) (*
 	if err := s.deadlines.SetStatus(ctx, id, domain.DeadlineStatusDone); err != nil {
 		return nil, err
 	}
+	// Как в Delete: статус уже changed, сбой отмены — только log.Error
+	// (воркер Task 9 защитно пропустит reminders done-дедлайна).
 	if err := s.reminders.CancelByDeadline(ctx, id); err != nil {
-		return nil, fmt.Errorf("deadlines: cancel reminders: %w", err)
+		s.log.Error("deadline completed but reminder cancellation failed",
+			slog.Int64("deadline_id", id),
+			slog.String("error", err.Error()),
+		)
 	}
 	s.writeAudit(ctx, actor.ID, "deadline.complete", "deadline", id, nil)
 	return s.Get(ctx, actor, id)

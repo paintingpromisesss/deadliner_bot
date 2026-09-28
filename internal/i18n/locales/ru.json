@@ -11,6 +11,7 @@
   "reminder.group.body": "📌 %s — %s\n🗓 %s (%s)",
   "reminder.personal.title": "⏰ <b>Дедлайн через %s</b>",
   "reminder.dm_dup.title": "⏰ <b>Дедлайн через %s</b> (группа %s)",
+  "reminder.overdue.title": "⏰ <b>Дедлайн %s</b>",
   "claim.code_message": "🔑 Пользователь хочет стать админом группы. Одноразовый код подтверждения: %s. Действует %s. Введите код в приложении Deadliner.",
   "claim.success": "✅ Вы стали администратором группы %s.",
   "claim.revoked": "Код подтверждения отозван.",

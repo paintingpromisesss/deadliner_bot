@@ -73,6 +73,10 @@ type MembershipRepo interface {
 	// ErrNotFound если строки нет, ErrConflict если это последний админ.
 	RemoveIfNotLastAdmin(ctx context.Context, groupID, userID int64) error
 	SetDMNotify(ctx context.Context, groupID, userID int64, dmNotify *bool) error
+	// ListDMTargets — users.id участников группы с эффективным dm_notify
+	// (COALESCE(memberships.dm_notify, users.dm_notify_default)), без
+	// bot_blocked — цели dm_dup fan-out (спека §7.3). Упорядочено по user_id.
+	ListDMTargets(ctx context.Context, groupID int64) ([]int64, error)
 	Delete(ctx context.Context, groupID, userID int64) error
 	CountAdmins(ctx context.Context, groupID int64) (int, error)
 }
@@ -122,6 +126,10 @@ type ReminderRepo interface {
 	// ok=false если строку уже отправили/забрал другой воркер (идемпотентность
 	// доставки, спека §7.2).
 	MarkSent(ctx context.Context, id int64, workerID string, now time.Time) (bool, error)
+	// MarkSentWithFanout атомарно в tx: MarkSent родителя + вставка
+	// dm_dup-детей (ON CONFLICT DO NOTHING, спека §7.3). ok=false — лок
+	// потерян/строка уже sent: дети НЕ создаются, fan-out подавлен.
+	MarkSentWithFanout(ctx context.Context, tx Tx, reminderID int64, workerID string, now time.Time, children []Reminder) (ok bool, err error)
 	// MarkFailed инкрементирует attempts и пишет last_error; если попыток
 	// осталось — status='pending', fire_at=retryAt (fire_at переиспользуется
 	// как время ретрая: отдельной колонки retry_at в схеме нет), иначе

@@ -21,9 +21,12 @@ const (
 )
 
 type Reminder struct {
-	ID            int64
-	DeadlineID    int64
-	Kind          ReminderKind
+	ID         int64
+	DeadlineID int64
+	Kind       ReminderKind
+	// TargetUserID — цель dm_dup-ребёнка (fan-out §7.3): users.id получателя
+	// дубля в ЛС. NULL для обычных reminder-строк.
+	TargetUserID  *int64
 	OffsetMinutes *int
 	FireAt        time.Time
 	Status        ReminderStatus

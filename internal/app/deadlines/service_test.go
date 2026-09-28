@@ -191,6 +191,10 @@ func (r *fakeReminderRepo) MarkSent(ctx context.Context, id int64, workerID stri
 	return false, errors.New("not used in service tests")
 }
 
+func (r *fakeReminderRepo) MarkSentWithFanout(ctx context.Context, tx domain.Tx, reminderID int64, workerID string, now time.Time, children []domain.Reminder) (bool, error) {
+	return false, errors.New("not used in service tests")
+}
+
 func (r *fakeReminderRepo) MarkFailed(ctx context.Context, id int64, workerID, errText string, retryAt time.Time, maxAttempts int) (bool, error) {
 	return false, errors.New("not used in service tests")
 }
@@ -317,6 +321,10 @@ func (r *fakeMembershipRepo) RemoveIfNotLastAdmin(ctx context.Context, groupID, 
 }
 func (r *fakeMembershipRepo) SetDMNotify(ctx context.Context, groupID, userID int64, dm *bool) error {
 	return nil
+}
+
+func (r *fakeMembershipRepo) ListDMTargets(ctx context.Context, groupID int64) ([]int64, error) {
+	return nil, errors.New("not used")
 }
 func (r *fakeMembershipRepo) Delete(ctx context.Context, groupID, userID int64) error { return nil }
 func (r *fakeMembershipRepo) CountAdmins(ctx context.Context, groupID int64) (int, error) {

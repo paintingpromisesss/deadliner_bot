@@ -266,6 +266,10 @@ func (r *fakeMembershipRepo) SetDMNotify(ctx context.Context, groupID, userID in
 	return errors.New("not used")
 }
 
+func (r *fakeMembershipRepo) ListDMTargets(ctx context.Context, groupID int64) ([]int64, error) {
+	return nil, errors.New("not used")
+}
+
 func (r *fakeMembershipRepo) Delete(ctx context.Context, groupID, userID int64) error {
 	k := memKey{groupID, userID}
 	if _, ok := r.mems[k]; !ok {

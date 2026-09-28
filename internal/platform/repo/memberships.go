@@ -115,6 +115,34 @@ func (r *membershipsRepo) ListByUser(ctx context.Context, userID int64) ([]domai
 	return collectMemberships(rows)
 }
 
+// ListDMTargets — users.id участников с эффективным dm_notify
+// (COALESCE(memberships.dm_notify, users.dm_notify_default)), без bot_blocked:
+// цели dm_dup fan-out (спека §7.3).
+func (r *membershipsRepo) ListDMTargets(ctx context.Context, groupID int64) ([]int64, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT m.user_id
+		 FROM group_memberships m
+		 JOIN users u ON u.id = m.user_id
+		 WHERE m.group_id = $1
+		   AND COALESCE(m.dm_notify, u.dm_notify_default)
+		   AND NOT u.bot_blocked
+		   AND NOT u.is_banned
+		 ORDER BY m.user_id`, groupID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (r *membershipsRepo) SetRole(ctx context.Context, groupID, userID int64, role domain.Role) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE group_memberships SET role = $3 WHERE group_id = $1 AND user_id = $2`,

@@ -12,8 +12,8 @@ import (
 	"github.com/sauron/deadliner/internal/domain"
 )
 
-const reminderColumns = `id, deadline_id, kind, offset_minutes, fire_at, status,
-	attempts, locked_by, locked_at, last_error, sent_at`
+const reminderColumns = `id, deadline_id, kind, target_user_id, offset_minutes,
+	fire_at, status, attempts, locked_by, locked_at, last_error, sent_at`
 
 type remindersRepo struct {
 	pool *pgxpool.Pool
@@ -33,7 +33,7 @@ func scanReminder(row pgx.Row) (*domain.Reminder, error) {
 		lastErr *string
 	)
 	err := row.Scan(
-		&r.ID, &r.DeadlineID, &kind, &r.OffsetMinutes, &r.FireAt, &status,
+		&r.ID, &r.DeadlineID, &kind, &r.TargetUserID, &r.OffsetMinutes, &r.FireAt, &status,
 		&r.Attempts, &r.LockedBy, &r.LockedAt, &lastErr, &r.SentAt,
 	)
 	if err != nil {
@@ -56,10 +56,10 @@ func insertReminder(ctx context.Context, q pgx.Tx, r *domain.Reminder) error {
 		status = domain.ReminderStatusPending
 	}
 	row := q.QueryRow(ctx,
-		`INSERT INTO reminders (deadline_id, kind, offset_minutes, fire_at, status)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO reminders (deadline_id, kind, target_user_id, offset_minutes, fire_at, status)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id`,
-		r.DeadlineID, string(r.Kind), r.OffsetMinutes, r.FireAt, string(status))
+		r.DeadlineID, string(r.Kind), r.TargetUserID, r.OffsetMinutes, r.FireAt, string(status))
 	if err := row.Scan(&r.ID); err != nil {
 		return mapErr(err)
 	}
@@ -127,11 +127,11 @@ func upsertReminder(ctx context.Context, q pgx.Tx, r *domain.Reminder) (bool, er
 		status = domain.ReminderStatusPending
 	}
 	err = q.QueryRow(ctx,
-		`INSERT INTO reminders (deadline_id, kind, offset_minutes, fire_at, status)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO reminders (deadline_id, kind, target_user_id, offset_minutes, fire_at, status)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT DO NOTHING
 		 RETURNING id`,
-		r.DeadlineID, string(r.Kind), r.OffsetMinutes, r.FireAt, string(status)).Scan(&id)
+		r.DeadlineID, string(r.Kind), r.TargetUserID, r.OffsetMinutes, r.FireAt, string(status)).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil // дубликат (гонка/повтор) — терпимо
 	}
@@ -210,6 +210,58 @@ func (r *remindersRepo) FetchDue(ctx context.Context, tx domain.Tx, now time.Tim
 	return batch, nil
 }
 
+// PgxTx — экспортируемый адаптер pgx.Tx под domain.Tx (Exec/QueryRow/Query).
+// Воркер планировщика открывает транзакцию из пула и передаёт её в
+// FetchDue/MarkSentWithFanout через этот адаптер; repo-тесты используют его
+// же. Query не входит в порт domain.Tx (domain не должен знать pgx.Rows),
+// поэтому FetchDue обращается к нему через type-assertion в txQuery.
+type PgxTx struct{ Tx pgx.Tx }
+
+func (a *PgxTx) Exec(ctx context.Context, sql string, args ...any) error {
+	_, err := a.Tx.Exec(ctx, sql, args...)
+	return err
+}
+
+func (a *PgxTx) QueryRow(ctx context.Context, sql string, args ...any) domain.Row {
+	return a.Tx.QueryRow(ctx, sql, args...)
+}
+
+func (a *PgxTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return a.Tx.Query(ctx, sql, args...)
+}
+
+// TxBeginner открывает транзакции для воркера. PgxPool реализует интерфейс.
+type TxBeginner interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+// BeginDomainTx открывает транзакцию из пула и заворачивает её в PgxTx
+// (domain.Tx). Откат — на вызывающем; идиома: tx, err := BeginDomainTx(...);
+// defer tx.(*PgxTx).Tx.Rollback(ctx).
+func BeginDomainTx(ctx context.Context, pool TxBeginner) (domain.Tx, func(), error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, mapErr(err)
+	}
+	adapter := &PgxTx{Tx: tx}
+	rollback := func() { _ = tx.Rollback(ctx) }
+	return adapter, rollback, nil
+}
+
+// CommitDomainTx коммитит транзакцию, открытую BeginDomainTx. Откат при
+// ошибке коммита — на вызывающем (rollback idiom уже отработает: повторный
+// Rollback после commit безопасен и игнорируется pgx).
+func CommitDomainTx(ctx context.Context, tx domain.Tx) error {
+	adapter, ok := tx.(*PgxTx)
+	if !ok {
+		return fmt.Errorf("repo: tx is not *PgxTx")
+	}
+	if err := adapter.Tx.Commit(ctx); err != nil {
+		return mapErr(err)
+	}
+	return nil
+}
+
 // txQuery выполняет SELECT через domain.Tx. Сам порт Tx не объявляет Query —
 // адаптер пула (pgx.Tx) его имеет; если реализации нет, возвращаем ошибку.
 func txQuery(ctx context.Context, tx domain.Tx, sql string, args ...any) (pgx.Rows, error) {
@@ -235,6 +287,38 @@ func (r *remindersRepo) MarkSent(ctx context.Context, id int64, workerID string,
 		return false, mapErr(err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// MarkSentWithFanout (спека §7.3): в ОДНОЙ транзакции tx — MarkSent родителя
+// и вставка dm_dup-детей. Атомарность гарантирует: дети существуют только у
+// sent-родителя; гонка проиграна (ok=false) — fan-out подавлен. Дети
+// вставляются с ON CONFLICT DO NOTHING: дубликаты при повторе/гонке терпимы
+// (unique (deadline_id, target_user_id) WHERE kind='dm_dup').
+func (r *remindersRepo) MarkSentWithFanout(ctx context.Context, tx domain.Tx, reminderID int64, workerID string, now time.Time, children []domain.Reminder) (bool, error) {
+	var sentID int64
+	err := tx.QueryRow(ctx,
+		`UPDATE reminders
+		 SET status = 'sent', sent_at = $3, locked_by = NULL, locked_at = NULL
+		 WHERE id = $1 AND status = 'pending' AND locked_by = $2
+		 RETURNING id`,
+		reminderID, workerID, now).Scan(&sentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // не наша строка / уже sent — fan-out подавлен
+	}
+	if err != nil {
+		return false, mapErr(err)
+	}
+	for i := range children {
+		child := &children[i]
+		if err := tx.Exec(ctx,
+			`INSERT INTO reminders (deadline_id, kind, target_user_id, offset_minutes, fire_at, status)
+			 VALUES ($1, 'dm_dup', $2, NULL, $3, 'pending')
+			 ON CONFLICT DO NOTHING`,
+			child.DeadlineID, child.TargetUserID, child.FireAt); err != nil {
+			return false, mapErr(err)
+		}
+	}
+	return true, nil
 }
 
 // MarkFailed: attempts+=1, last_error=errText. Если попыток осталось —

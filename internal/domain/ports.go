@@ -45,10 +45,15 @@ type GroupRepo interface {
 	Create(ctx context.Context, g *Group) error
 	GetByID(ctx context.Context, id int64) (*Group, error)
 	GetBySlugNorm(ctx context.Context, slugNorm string) (*Group, error)
-	SearchByPrefix(ctx context.Context, prefix string, limit int) ([]Group, error)
+	// SearchByPrefix returns non-deleted groups whose slug_norm starts with
+	// prefix: active groups plus pending groups created by callerID (spec §6.4).
+	SearchByPrefix(ctx context.Context, prefix string, callerID int64, limit int) ([]Group, error)
 	Update(ctx context.Context, g *Group) error
 	SetStatus(ctx context.Context, id int64, status GroupStatus) error
 	SoftDelete(ctx context.Context, id int64) error
+	// ListMine returns non-deleted groups the user is a member of (via
+	// group_memberships), ordered by slug_norm.
+	ListMine(ctx context.Context, userID int64) ([]Group, error)
 	ListPendingExpired(ctx context.Context, now time.Time, limit int) ([]Group, error)
 }
 

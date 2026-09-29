@@ -27,6 +27,10 @@ type Config struct {
 	// DMNotifyBatch — максимум dm_dup-детей на один родительский success
 	// (страховка от гигантских групп; 0 = без лимита).
 	DMNotifyBatch int
+	// FinalizeTimeout — бюджет на доведение уже начатой работы после отмены
+	// ctx (см. process): фиксация sent/failed не должна теряться, иначе
+	// перезапуск переотправит напоминание. По умолчанию 30s.
+	FinalizeTimeout time.Duration
 }
 
 // Deps — зависимости воркера (только domain-порты + пул для транзакций).
@@ -79,6 +83,9 @@ func New(deps Deps, cfg Config) *Worker {
 	}
 	if cfg.LockTTL <= 0 {
 		cfg.LockTTL = 2 * time.Minute
+	}
+	if cfg.FinalizeTimeout <= 0 {
+		cfg.FinalizeTimeout = 30 * time.Second
 	}
 	log := deps.Log
 	if log == nil {
@@ -172,7 +179,17 @@ func (w *Worker) Tick(ctx context.Context) error {
 }
 
 // process — один reminder: сообщение → MarkSent (+fan-out) | MarkFailed.
+//
+// ctx намеренно отвязывается от отмены (§7.2, graceful shutdown): остановка
+// воркера не должна рвать уже начатую отправку или её фиксацию. Отмена —
+// сигнал циклу (Run) больше не брать новые батчи; незавершённая работа
+// доводится под собственным дедлайном FinalizeTimeout. Иначе отправленное в
+// Telegram сообщение осталось бы с локом, ReleaseStale вернул бы строку в
+// очередь и после рестарта чат получил бы дубль.
 func (w *Worker) process(ctx context.Context, rem domain.Reminder) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.FinalizeTimeout)
+	defer cancel()
+
 	now := w.deps.Clock.Now()
 
 	dl, err := w.deps.Deadlines.GetByID(ctx, rem.DeadlineID)
@@ -223,9 +240,15 @@ func (w *Worker) processGroup(ctx context.Context, rem domain.Reminder, dl domai
 	now := w.deps.Clock.Now()
 
 	binding, err := w.deps.Bindings.GetByGroup(ctx, *dl.GroupID)
-	if err != nil {
+	if errors.Is(err, domain.ErrNotFound) {
 		w.log.Error("scheduler: no chat binding", slog.Int64("group_id", *dl.GroupID))
 		w.fail(ctx, rem, "no chat binding", now.Add(noBindingRetry))
+		return
+	}
+	if err != nil {
+		// Не «привязки нет», а сбой БД: обычный backoff. Дешёвый часовой
+		// ретрай здесь лишь маскировал бы проблему.
+		w.fail(ctx, rem, "binding load: "+err.Error(), now.Add(w.nextBackoff(rem)))
 		return
 	}
 
@@ -241,7 +264,9 @@ func (w *Worker) processGroup(ctx context.Context, rem domain.Reminder, dl domai
 	}
 	text := groupMessage(rem, dl, group.Slug)
 	if err := w.deps.Notifier.SendToChat(ctx, binding.ChatID, threadID, text); err != nil {
-		w.handleSendError(ctx, rem, err)
+		// Чат группы: 403 здесь не означает «пользователь заблокировал бота»,
+		// поэтому dm-цель не передаём.
+		w.handleSendError(ctx, rem, err, nil)
 		return
 	}
 
@@ -252,9 +277,7 @@ func (w *Worker) processGroup(ctx context.Context, rem domain.Reminder, dl domai
 		w.log.Error("scheduler: ListDMTargets failed", slog.String("error", err.Error()))
 		// Чат отправлен — родитель должен стать sent: MarkSent без fan-out,
 		// ошибка детей не отменяет родителя (§7.3).
-		if _, err2 := w.deps.Reminders.MarkSent(ctx, rem.ID, w.cfg.WorkerID, now); err2 != nil {
-			w.log.Error("scheduler: MarkSent (no fanout) failed", slog.String("error", err2.Error()))
-		}
+		w.finalizeWithoutFanout(ctx, rem.ID, now, "list-dm-targets-failed")
 		return
 	}
 	if w.cfg.DMNotifyBatch > 0 && len(targets) > w.cfg.DMNotifyBatch {
@@ -275,9 +298,7 @@ func (w *Worker) processGroup(ctx context.Context, rem domain.Reminder, dl domai
 	tx, rollback, err := repo.BeginDomainTx(ctx, w.deps.Pool)
 	if err != nil {
 		w.log.Error("scheduler: fanout tx begin failed", slog.String("error", err.Error()))
-		if _, err2 := w.deps.Reminders.MarkSent(ctx, rem.ID, w.cfg.WorkerID, now); err2 != nil {
-			w.log.Error("scheduler: MarkSent fallback failed", slog.String("error", err2.Error()))
-		}
+		w.finalizeWithoutFanout(ctx, rem.ID, now, "fanout-tx-begin-failed")
 		return
 	}
 	ok, err := w.deps.Reminders.MarkSentWithFanout(ctx, tx, rem.ID, w.cfg.WorkerID, now, children)
@@ -287,18 +308,32 @@ func (w *Worker) processGroup(ctx context.Context, rem domain.Reminder, dl domai
 		// Отправка в чат уже была — родителя не ретраим (повторная отправка
 		// недопустима), фиксируем sent отдельным MarkSent: он сработает, только
 		// если строка ещё pending и locked_by=нас.
-		if _, err2 := w.deps.Reminders.MarkSent(ctx, rem.ID, w.cfg.WorkerID, now); err2 != nil {
-			w.log.Error("scheduler: MarkSent fallback failed", slog.String("error", err2.Error()))
-		}
+		w.finalizeWithoutFanout(ctx, rem.ID, now, "mark-sent-with-fanout-failed")
 		return
 	}
 	if err := repo.CommitDomainTx(ctx, tx); err != nil {
 		rollback()
 		w.log.Error("scheduler: fanout commit failed", slog.String("error", err.Error()))
+		// Инвариант «в чат — без дубля» держится и здесь: после отката строка
+		// снова pending и locked_by=нас, поэтому фиксируем sent тем же
+		// плейн-MarkSent. Дети потеряны, повторной отправки в чат нет.
+		w.finalizeWithoutFanout(ctx, rem.ID, now, "fanout-commit-failed")
 		return
 	}
 	if !ok {
 		w.log.Info("scheduler: lost lock race, fan-out suppressed", slog.Int64("reminder_id", rem.ID))
+	}
+}
+
+// finalizeWithoutFanout — громкое сообщение в чат уже ушло, а fan-out не
+// состоялся: помечаем родителя sent вне его транзакции. MarkSent проходит
+// только если строка ещё pending и locked_by=нас, поэтому повторная отправка
+// в чат исключена; дочерние dm_dup в этом пути теряются — приоритет у
+// инварианта «чат не получает дубль».
+func (w *Worker) finalizeWithoutFanout(ctx context.Context, remID int64, now time.Time, reason string) {
+	if _, err := w.deps.Reminders.MarkSent(ctx, remID, w.cfg.WorkerID, now); err != nil {
+		w.log.Error("scheduler: MarkSent fallback failed",
+			slog.String("reason", reason), slog.String("error", err.Error()))
 	}
 }
 
@@ -316,7 +351,7 @@ func (w *Worker) processPersonal(ctx context.Context, rem domain.Reminder, dl do
 	}
 	text := personalMessage(rem, dl)
 	if err := w.deps.Notifier.SendToUser(ctx, user.TelegramID, text); err != nil {
-		w.handleSendError(ctx, rem, err)
+		w.handleSendError(ctx, rem, err, &user.TelegramID)
 		return
 	}
 	if _, err := w.deps.Reminders.MarkSent(ctx, rem.ID, w.cfg.WorkerID, now); err != nil {
@@ -347,7 +382,7 @@ func (w *Worker) processDMDup(ctx context.Context, rem domain.Reminder, dl domai
 	}
 	text := dmDupMessage(rem, dl, group.Slug)
 	if err := w.deps.Notifier.SendToUser(ctx, user.TelegramID, text); err != nil {
-		w.handleSendError(ctx, rem, err)
+		w.handleSendError(ctx, rem, err, &user.TelegramID)
 		return
 	}
 	if _, err := w.deps.Reminders.MarkSent(ctx, rem.ID, w.cfg.WorkerID, now); err != nil {
@@ -356,7 +391,10 @@ func (w *Worker) processDMDup(ctx context.Context, rem domain.Reminder, dl domai
 }
 
 // handleSendError — классификация ошибок отправки (§7.2/§7.3/§7.4).
-func (w *Worker) handleSendError(ctx context.Context, rem domain.Reminder, err error) {
+// dmTarget — telegram_id получателя ЛС (nil для отправки в чат группы):
+// только для ЛС 403 означает «пользователь заблокировал бота» и его можно
+// фиксировать в users.bot_blocked.
+func (w *Worker) handleSendError(ctx context.Context, rem domain.Reminder, err error, dmTarget *int64) {
 	now := w.deps.Clock.Now()
 	var rl *domain.RateLimitError
 	if errors.As(err, &rl) && rl.RetryAfter > 0 {
@@ -367,10 +405,26 @@ func (w *Worker) handleSendError(ctx context.Context, rem domain.Reminder, err e
 	}
 	var bb *domain.BotBlockedError
 	if errors.As(err, &bb) || errors.Is(err, domain.ErrBotBlocked) {
+		// 403 от Telegram на ЛС: фиксируем флаг в users, чтобы следующий
+		// fan-out (ListDMTargets: NOT u.bot_blocked) участника уже не выбирал.
+		if dmTarget != nil {
+			w.markBotBlocked(ctx, *dmTarget)
+		}
 		w.quarantine(ctx, rem, "user blocked bot", now)
 		return
 	}
 	w.fail(ctx, rem, err.Error(), now.Add(w.nextBackoff(rem)))
+}
+
+// markBotBlocked — best-effort запись users.bot_blocked (спека §7.3): сбой
+// записи не должен ломать обработку reminder, поэтому только лог.
+func (w *Worker) markBotBlocked(ctx context.Context, telegramID int64) {
+	if err := w.deps.Users.MarkBotBlocked(ctx, telegramID, true); err != nil {
+		w.log.Error("scheduler: MarkBotBlocked failed",
+			slog.Int64("telegram_id", telegramID), slog.String("error", err.Error()))
+		return
+	}
+	w.log.Info("scheduler: user marked bot_blocked", slog.Int64("telegram_id", telegramID))
 }
 
 // nextBackoff — шаг ретрая по attempts (спека §7.2: 30s,2m,10m,30m,1h).

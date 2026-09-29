@@ -203,6 +203,61 @@ func TestMigrateUpDown(t *testing.T) {
 	}
 }
 
+// minor 5: Down миграции 000003 не должен падать на непустой таблице dm_dup —
+// пересоздание полного unique-индекса (deadline_id, fire_at, kind) иначе
+// упирается в дубликаты дочерних строк.
+func TestMigrateDownWithDMDupChildren(t *testing.T) {
+	ctx, url := startPostgres(t)
+
+	if err := db.RunUp(ctx, url); err != nil {
+		t.Fatalf("RunUp: %v", err)
+	}
+	pool, err := db.Connect(ctx, url, 4)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer pool.Close()
+
+	var userID, deadlineID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO users (telegram_id, username) VALUES (222, 'dm') RETURNING id`).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO deadlines (owner_user_id, title, due_at, created_by)
+		 VALUES ($1, 'dm', now() + interval '1 day', $1) RETURNING id`, userID).Scan(&deadlineID); err != nil {
+		t.Fatalf("insert deadline: %v", err)
+	}
+	// Три dm_dup-ребёнка одного fan-out: ОДИН и тот же fire_at (как их пишет
+	// воркер: fire_at = момент fan-out), то есть именно те строки, на которых
+	// полный unique-индекс (deadline_id, fire_at, kind) падал бы. Отдельные
+	// INSERT с now() дали бы разные timestamptz и не воспроизвели бы коллизию —
+	// поэтому время фиксируется явно и передаётся всем трём строкам.
+	fanoutAt := time.Now().UTC().Truncate(time.Microsecond)
+	for _, target := range []int64{1, 2, 3} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO reminders (deadline_id, kind, target_user_id, fire_at)
+			 VALUES ($1, 'dm_dup', $2, $3)`, deadlineID, target, fanoutAt); err != nil {
+			t.Fatalf("insert dm_dup child: %v", err)
+		}
+	}
+	// Плюс два дубля ОДНОЙ цели из разных fan-out (разный fire_at): их должен
+	// схлопнуть откат 000004 перед восстановлением строгого (deadline_id,
+	// target_user_id) индекса.
+	for i := range 2 {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO reminders (deadline_id, kind, target_user_id, fire_at)
+			 VALUES ($1, 'dm_dup', 4, $2)`, deadlineID,
+			fanoutAt.Add(time.Duration(i+1)*time.Minute)); err != nil {
+			t.Fatalf("insert multi-fanout dm_dup child: %v", err)
+		}
+	}
+
+	if err := db.RunDown(ctx, url); err != nil {
+		t.Fatalf("RunDown with dm_dup children: %v", err)
+	}
+}
+
 func TestConnectRejectsNonPositivePoolMax(t *testing.T) {
 	ctx := context.Background()
 	for _, poolMax := range []int32{0, -1} {

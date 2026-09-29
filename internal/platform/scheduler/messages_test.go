@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -128,8 +129,12 @@ func TestPersonalMessage(t *testing.T) {
 	dl := domain.Deadline{ID: 1, Title: "Лаба", DueAt: due, TZ: "Europe/Moscow"}
 	rem := domain.Reminder{Kind: domain.KindCustomAt, FireAt: due.Add(-24 * time.Hour)}
 	got := personalMessage(rem, dl)
-	want := "⏰ <b>Дедлайн через 24 часа</b>\n📌 Лаба — \n🗓 29.09.2026 23:59 (MSK)"
+	// Личный дедлайн — без сегмента слага (нет висящего « — »).
+	want := "⏰ <b>Дедлайн через 24 часа</b>\n📌 Лаба\n🗓 29.09.2026 23:59 (MSK)"
 	if got != want {
 		t.Errorf("personalMessage =\n%q\nwant\n%q", got, want)
+	}
+	if strings.Contains(got, " — ") {
+		t.Errorf("personalMessage contains dangling dash: %q", got)
 	}
 }

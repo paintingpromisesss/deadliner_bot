@@ -171,6 +171,126 @@ func TestMarkSentWithFanoutForeignLock(t *testing.T) {
 	}
 }
 
+// I-3: два fan-out'а одного дедлайна → по ребёнку на (цель, fire_at), а не
+// «один на цель навсегда». Прежний unique (deadline_id, target_user_id) молча
+// проглатывал второго ребёнка (ON CONFLICT DO NOTHING).
+func TestMarkSentWithFanoutMultipleFanoutsPerDeadline(t *testing.T) {
+	pool := newTestDB(t)
+	ctx := context.Background()
+	uid := insertUser(t, pool, 3004)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	groups := NewGroups(pool)
+	g := newGroup("М8О-914-23", "multi", uid, nil)
+	if err := groups.Create(ctx, g); err != nil {
+		t.Fatal(err)
+	}
+	dID, rems := insertDeadlineFixture(t, uid, &g.ID, now.Add(48*time.Hour),
+		[]time.Duration{24 * time.Hour, time.Hour, 30 * time.Minute})
+	rr := NewReminders(pool)
+
+	// Каждое напоминание — свой fan-out со своим fire_at.
+	for i, rem := range rems {
+		if _, err := pool.Exec(ctx,
+			`UPDATE reminders SET locked_by='w1', locked_at=$2 WHERE id=$1`, rem.ID, now); err != nil {
+			t.Fatal(err)
+		}
+		fanoutAt := now.Add(time.Duration(i) * time.Minute)
+		tx, rollback, err := BeginDomainTx(ctx, pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ok, err := rr.MarkSentWithFanout(ctx, tx, rem.ID, "w1", now,
+			[]domain.Reminder{{DeadlineID: dID, Kind: domain.KindDMDup, TargetUserID: int64Ptr(777), FireAt: fanoutAt}})
+		if err != nil || !ok {
+			rollback()
+			t.Fatalf("fan-out %d = (%v, %v), want (true, nil)", i, ok, err)
+		}
+		if err := CommitDomainTx(ctx, tx); err != nil {
+			rollback()
+			t.Fatal(err)
+		}
+		rollback()
+	}
+
+	list, err := rr.ListByDeadline(ctx, dID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var children int
+	for _, r := range list {
+		if r.Kind == domain.KindDMDup {
+			children++
+			if r.Status != domain.ReminderStatusPending || r.TargetUserID == nil || *r.TargetUserID != 777 {
+				t.Errorf("child = %+v, want pending with target 777", r)
+			}
+		}
+	}
+	if children != len(rems) {
+		t.Errorf("dm_dup children = %d, want %d (one per fan-out)", children, len(rems))
+	}
+}
+
+// Реальная гонка двух fan-out'ов ОДНОГО напоминания (одинаковый fire_at):
+// unique (deadline_id, target_user_id, fire_at) + ON CONFLICT DO NOTHING
+// оставляют ровно одного ребёнка на цель.
+func TestMarkSentWithFanoutSameFireAtRaceDedupes(t *testing.T) {
+	pool := newTestDB(t)
+	ctx := context.Background()
+	uid := insertUser(t, pool, 3005)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	groups := NewGroups(pool)
+	g := newGroup("М8О-915-23", "samefire", uid, nil)
+	if err := groups.Create(ctx, g); err != nil {
+		t.Fatal(err)
+	}
+	dID, rems := insertDeadlineFixture(t, uid, &g.ID, now.Add(48*time.Hour), []time.Duration{24 * time.Hour})
+	rem := rems[0]
+	rr := NewReminders(pool)
+
+	// Первый fan-out вручную (как будто его сделал другой воркер), затем
+	// повторный MarkSentWithFanout с тем же fire_at.
+	if _, err := pool.Exec(ctx,
+		`UPDATE reminders SET locked_by='w1', locked_at=$2 WHERE id=$1`, rem.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	tx1, rb1, err := BeginDomainTx(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rb1()
+	if ok, err := rr.MarkSentWithFanout(ctx, tx1, rem.ID, "w1", now,
+		[]domain.Reminder{{DeadlineID: dID, Kind: domain.KindDMDup, TargetUserID: int64Ptr(9), FireAt: now}}); err != nil || !ok {
+		t.Fatalf("first fan-out = (%v, %v)", ok, err)
+	}
+	if err := CommitDomainTx(ctx, tx1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Повтор того же fan-out: родитель уже sent → ok=false, детей не трогаем.
+	tx2, rb2, err := BeginDomainTx(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rb2()
+	if ok, err := rr.MarkSentWithFanout(ctx, tx2, rem.ID, "w1", now,
+		[]domain.Reminder{{DeadlineID: dID, Kind: domain.KindDMDup, TargetUserID: int64Ptr(9), FireAt: now}}); err != nil || ok {
+		t.Fatalf("repeat fan-out = (%v, %v), want (false, nil)", ok, err)
+	}
+
+	list, _ := rr.ListByDeadline(ctx, dID)
+	var kids int
+	for _, r := range list {
+		if r.Kind == domain.KindDMDup {
+			kids++
+		}
+	}
+	if kids != 1 {
+		t.Errorf("dm_dup children = %d, want 1 (same-fire_at dedupe)", kids)
+	}
+}
+
 func TestListDMTargets(t *testing.T) {
 	pool := newTestDB(t)
 	ctx := context.Background()

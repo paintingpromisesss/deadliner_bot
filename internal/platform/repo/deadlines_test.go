@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sauron/deadliner/internal/domain"
 )
 
@@ -642,7 +640,7 @@ func TestReminderFetchDueSkipLocked(t *testing.T) {
 			return result{err: err}
 		}
 		<-start
-		got, err := rr.FetchDue(ctx, &pgxTxAdapter{tx: tx}, now, 10, worker)
+		got, err := rr.FetchDue(ctx, &PgxTx{Tx: tx}, now, 10, worker)
 		if err != nil {
 			tx.Rollback(ctx)
 			return result{err: err}
@@ -719,7 +717,7 @@ func TestReminderMarkSentIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := rr.FetchDue(ctx, &pgxTxAdapter{tx: tx}, now, 10, "w1")
+	got, err := rr.FetchDue(ctx, &PgxTx{Tx: tx}, now, 10, "w1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -768,7 +766,7 @@ func TestReminderMarkFailedRetryAndExhaust(t *testing.T) {
 		t.Fatal(err)
 	}
 	tx, _ := pool.Begin(ctx)
-	got, err := rr.FetchDue(ctx, &pgxTxAdapter{tx: tx}, now, 10, "w1")
+	got, err := rr.FetchDue(ctx, &PgxTx{Tx: tx}, now, 10, "w1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -804,7 +802,7 @@ func TestReminderMarkFailedRetryAndExhaust(t *testing.T) {
 	// запертой этим воркером, — как в реальном цикле, сначала повторный
 	// FetchDue (retryAt уже наступил), затем MarkFailed.
 	tx2, _ := pool.Begin(ctx)
-	relocked, err := rr.FetchDue(ctx, &pgxTxAdapter{tx: tx2}, retryAt.Add(time.Second), 10, "w1")
+	relocked, err := rr.FetchDue(ctx, &PgxTx{Tx: tx2}, retryAt.Add(time.Second), 10, "w1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -888,7 +886,7 @@ func TestRemindersRepoTxAdapter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pgTx.Rollback(ctx)
-	got, err := rr.FetchDue(ctx, &pgxTxAdapter{tx: pgTx}, now, 10, "w-tx")
+	got, err := rr.FetchDue(ctx, &PgxTx{Tx: pgTx}, now, 10, "w-tx")
 	if err != nil {
 		t.Fatalf("FetchDue via adapter: %v", err)
 	}
@@ -905,18 +903,5 @@ func TestRemindersRepoTxAdapter(t *testing.T) {
 	}
 }
 
-// pgxTxAdapter — минимальная реализация domain.Tx поверх pgx.Tx для теста.
-type pgxTxAdapter struct{ tx pgx.Tx }
-
-func (a *pgxTxAdapter) Exec(ctx context.Context, sql string, args ...any) error {
-	_, err := a.tx.Exec(ctx, sql, args...)
-	return err
-}
-
-func (a *pgxTxAdapter) QueryRow(ctx context.Context, sql string, args ...any) domain.Row {
-	return a.tx.QueryRow(ctx, sql, args...)
-}
-
-func (a *pgxTxAdapter) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	return a.tx.Query(ctx, sql, args...)
-}
+// Адаптер domain.Tx — промоутированный repo.PgxTx (см. reminders.go); в
+// тестах он используется напрямую: &PgxTx{Tx: tx}.

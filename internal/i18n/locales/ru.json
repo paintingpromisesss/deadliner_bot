@@ -9,6 +9,7 @@
   "bot.groups.empty": "У вас пока нет групп. Создайте группу или введите инвайт-код в приложении.",
   "reminder.group.title": "⏰ <b>Дедлайн через %s</b>",
   "reminder.group.body": "📌 %s — %s\n🗓 %s (%s)",
+  "reminder.personal.body": "📌 %s\n🗓 %s (%s)",
   "reminder.personal.title": "⏰ <b>Дедлайн через %s</b>",
   "reminder.dm_dup.title": "⏰ <b>Дедлайн через %s</b> (группа %s)",
   "reminder.overdue.title": "⏰ <b>Дедлайн %s</b>",

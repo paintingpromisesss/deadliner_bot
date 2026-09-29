@@ -13,6 +13,7 @@ const (
 	keyGroupTitle    = "reminder.group.title"
 	keyGroupBody     = "reminder.group.body"
 	keyPersonalTitle = "reminder.personal.title"
+	keyPersonalBody  = "reminder.personal.body"
 	keyDMDupTitle    = "reminder.dm_dup.title"
 	keyOverdueTitle  = "reminder.overdue.title"
 )
@@ -84,11 +85,16 @@ func humanDuration(d time.Duration) string {
 }
 
 // body — тело сообщения (строка после заголовка, спека §6.2):
-// «📌 title — slug\n🗓 когда». Личный дедлайн — пустой слаг.
+// «📌 title — slug\n🗓 когда». Пустой слаг (личный дедлайн) рендерится
+// отдельным шаблоном, чтобы не оставалось висящего « — ».
 func body(dl domain.Deadline, slug string) string {
 	when := formatWhen(dl.DueAt, dl.TZ)
 	datePart, tzPart, _ := strings.Cut(when, " (")
-	return i18n.T(keyGroupBody, dl.Title, slug, datePart, strings.TrimSuffix(tzPart, ")"))
+	tz := strings.TrimSuffix(tzPart, ")")
+	if slug == "" {
+		return i18n.T(keyPersonalBody, dl.Title, datePart, tz)
+	}
+	return i18n.T(keyGroupBody, dl.Title, slug, datePart, tz)
 }
 
 // title — строка заголовка для i18n-ключа kind-зависимого.

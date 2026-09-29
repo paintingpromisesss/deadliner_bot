@@ -29,9 +29,10 @@ func (e *RateLimitError) Error() string {
 func (e *RateLimitError) Unwrap() error { return ErrRateLimit }
 
 // BotBlockedError — отправка в ЛС не удалась, потому что пользователь
-// заблокировал бота. Notifier возвращает её из SendToUser; воркер карантинит
-// reminder на неделю (дешёвый ретрай), use case-ы могут звать
-// UserRepo.MarkBotBlocked.
+// заблокировал бота. Notifier возвращает её из SendToUser; воркер помечает
+// users.bot_blocked (по telegram_id) и карантинит reminder на неделю.
+// UserID — telegram_id получателя (для ЛС chat_id = telegram_id), то есть
+// ровно то, что принимает UserRepo.MarkBotBlocked.
 type BotBlockedError struct {
 	UserID int64
 }

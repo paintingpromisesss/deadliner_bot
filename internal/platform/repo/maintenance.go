@@ -49,10 +49,15 @@ func (r *maintenanceRepo) Stats(ctx context.Context, now time.Time) (domain.Stat
 	return s, nil
 }
 
-// PurgeCounters удаляет окна счётчиков старше olderThan: строки нужны только
-// для проверки текущих лимитов (самое длинное окно — час), поэтому более
-// старые окна — мусор. Оба счётчика чистятся в одной транзакции: частичная
-// уборка оставила бы рассинхрон user/chat-лимитов. Возвращает число строк.
+// PurgeCounters удаляет окна счётчиков старше olderThan. Самое длинное окно
+// лимита — НЕДЕЛЬНОЕ (group_create_week, 168ч, groups.Service), а окно
+// floor-ится на своё начало: живая строка недельного счётчика бывает почти
+// 168 часов от роду. Поэтому olderThan обязан быть больше 168ч (конфиг
+// COUNTER_RETENTION, дефолт 192ч; config.Load отвергает значение ≤ 168ч) —
+// меньшая ретенция удаляла бы ЖИВУЮ строку и LIMIT_GROUP_CREATE_WEEK молча
+// перестал бы срабатывать. Оба счётчика (user и chat) чистятся одной
+// транзакцией: частичная уборка оставила бы рассинхрон user/chat-лимитов.
+// Возвращает число строк.
 func (r *maintenanceRepo) PurgeCounters(ctx context.Context, olderThan time.Time) (int64, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {

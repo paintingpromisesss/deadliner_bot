@@ -1,0 +1,10 @@
+# Build context: мусор от локальной разработки, который замедляет COPY . .
+# и может перезаписать артефакты внутри образа.
+.git
+.superpowers
+bin
+web/node_modules
+web/dist
+internal/platform/tma/dist
+*.md
+.env

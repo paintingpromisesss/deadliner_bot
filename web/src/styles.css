@@ -1,0 +1,140 @@
+/* Точечная раскладка поверх TelegramUI (спека §9: «точечно Tailwind для
+   раскладки»).
+   Tailwind подключается без preflight: тема + утилиты, но без агрессивного
+   сброса, который сломал бы стили TelegramUI (--tgui--* переменные и
+   собственные классы кита). Тёмная/светлая тема — из themeParams через
+   CSS-переменные TelegramUI, поэтому подхватывается автоматически. */
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--tgui--bg_color);
+  color: var(--tgui--text_color);
+}
+
+#root,
+.dl-root {
+  min-height: 100vh;
+}
+
+.dl-root {
+  display: flex;
+  flex-direction: column;
+}
+
+.dl-main {
+  flex: 1 1 auto;
+  /* Отступ под фиксированный таб-бар + safe-area iPhone. */
+  padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+}
+
+.dl-screen {
+  padding: 8px 0 0;
+}
+
+.dl-screen__title {
+  margin: 0;
+  padding: 12px 16px 4px;
+  font-size: 28px;
+  line-height: 34px;
+  font-weight: 700;
+}
+
+.dl-centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+}
+
+.dl-stub {
+  margin: 0;
+  padding: 24px 16px;
+  color: var(--tgui--hint_color);
+}
+
+.dl-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-weight: 600;
+  background: var(--tgui--secondary_bg_color);
+  color: var(--tgui--text_color);
+}
+
+.dl-row {
+  padding: 8px 16px;
+}
+
+.dl-danger {
+  color: var(--tgui--destructive_text_color);
+}
+
+.dl-retry {
+  border: 0;
+  border-radius: 12px;
+  padding: 12px 20px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--tgui--button_color, var(--tgui--link_color));
+  color: var(--tgui--button_text_color, #fff);
+}
+
+/* Нижний таб-бар: 4 таба, фиксирован по низу, учитывает safe-area. */
+.dl-tabbar {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 10;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 4px;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+  background: var(--tgui--bg_color);
+  border-top: 1px solid var(--tgui--divider_color, rgba(128, 128, 128, 0.2));
+}
+
+.dl-tabbar__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  border: 0;
+  background: none;
+  padding: 6px 2px;
+  border-radius: 12px;
+  color: var(--tgui--hint_color);
+  font: inherit;
+  font-size: 11px;
+  line-height: 14px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.dl-tabbar__item[data-selected='true'] {
+  color: var(--tgui--link_color);
+}
+
+.dl-tabbar__icon {
+  display: inline-flex;
+}
+
+.dl-tabbar__label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}

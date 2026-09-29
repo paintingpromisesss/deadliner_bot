@@ -3,3 +3,5 @@ bin/
 .env
 node_modules/
 web/dist/
+internal/platform/tma/dist/*
+!internal/platform/tma/dist/index.html

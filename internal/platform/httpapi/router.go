@@ -18,6 +18,7 @@ import (
 	"github.com/sauron/deadliner/internal/domain"
 	"github.com/sauron/deadliner/internal/platform/httpapi/httpjson"
 	"github.com/sauron/deadliner/internal/platform/httpapi/middleware"
+	"github.com/sauron/deadliner/internal/platform/tma"
 )
 
 // Deps — зависимости роутера; последующие задачи добавляют сюда свои поля.
@@ -120,6 +121,12 @@ func New(d Deps) chi.Router {
 	if d.WebhookHandler != nil {
 		r.Post("/webhook", d.WebhookHandler.ServeHTTP)
 	}
+
+	// Статика TMA монтируется последней и на "/": она отдаёт SPA-fallback для
+	// любого пути, поэтому обязана уступать API, webhook и healthz — те
+	// регистрируются выше и выигрывают маршрутизацию chi. Handler сам
+	// страхует /api/* и /webhook|/healthz ответом 404 (спека §5.3).
+	r.NotFound(tma.Handler().ServeHTTP)
 
 	return r
 }

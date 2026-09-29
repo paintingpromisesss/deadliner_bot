@@ -12,6 +12,52 @@ go run ./cmd/deadliner serve
 
 Режимы: `serve` (бот + API + scheduler), `migrate` (применить миграции), `admin` (админ-операции).
 
+## Фронтенд (Telegram Mini App)
+
+Приложение живёт в `web/`: React 18 + Vite + TypeScript, UI — `@telegram-apps/telegram-ui`, состояние — TanStack Query + zustand, навигация — собственный хеш-роутер (`#/`, `#/calendar`, `#/groups`, `#/settings`).
+
+### Разработка
+
+```bash
+cd web
+npm install
+npm run dev        # http://localhost:5173
+```
+
+Dev-сервер проксирует `/api` на Go-бэкенд (`http://localhost:8080`), поэтому последний нужно поднять рядом:
+
+```bash
+go run ./cmd/deadliner serve   # или: make build && ./deadliner serve
+```
+
+В обычном браузере приложение открывается, но войти не сможет: `initData` выдаёт только клиент Telegram, поэтому экран покажет «откройте приложение из Telegram». Для полноценной отладки откройте Mini App через `@BotFather`-ссылку или tunnel (`APP_PUBLIC_URL`).
+
+Прочие команды: `npm run build` (прод-сборка в `web/dist`), `npm run typecheck` (`tsc --noEmit`), `npm test` (vitest).
+
+### Продакшн-сборка
+
+Бандл встраивается в Go-бинарник через `//go:embed` — каталог `internal/platform/tma/dist` собирается из `web/dist`:
+
+```bash
+make web      # npm ci + vite build + cp web/dist → internal/platform/tma/dist
+make build    # go build ./cmd/deadliner
+```
+
+`internal/platform/tma/dist/index.html` — плейсхолдер в репозитории: без него `go build` падает на `//go:embed` на чистом клоне. Настоящий бандл перезаписывает его при `make web` (и в Docker-сборке).
+
+Один бинарник отдаёт и API, и статику: `tma.Handler()` смонтирован на `/` последним, `index.html` с `Cache-Control: no-cache`, хешированные ассеты из `assets/` — `immutable` (спека §5.3).
+
+### Makefile
+
+| Цель | Действие |
+|---|---|
+| `make web` | сборка TMA и укладка бандла в `internal/platform/tma/dist` |
+| `make build` | `go build ./cmd/deadliner` |
+| `make test` | `go test ./...` + `vitest run` |
+| `make up` | `docker compose up --build -d` |
+| `make fmt` | `gofmt -w .` |
+| `make clean` | удалить артефакты сборки (`dist`, `bin`) |
+
 ## Администрирование
 
 `deadliner admin` работает только с сервера и с уже применённой схемой (миграции — отдельный режим):

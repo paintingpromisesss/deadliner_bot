@@ -1,0 +1,166 @@
+// HTTP-клиент REST API (спека §5): Bearer-токен из стора авторизации,
+// разбор конверта ошибок {"error":{code,message}}, одна повторная
+// авторизация по initData при 401.
+//
+// Зависимость от стора — через инъекцию хуков (configureAuth), а не импортом
+// стора: так `api.ts` не образует цикла импортов со стором и тестируется сам
+// по себе.
+import { getInitData } from './tma';
+
+const API_BASE = '/api/v1';
+
+/** Профиль пользователя — DTO GET /api/v1/me. */
+export interface User {
+  id: number;
+  telegram_id: number;
+  username: string;
+  first_name: string;
+  tz: string;
+  dm_notify_default: boolean;
+  is_superadmin: boolean;
+}
+
+/** Ответ POST /api/v1/auth/telegram. */
+export interface Session {
+  token: string;
+  user: User;
+}
+
+/** Ошибка API: HTTP-статус + код и сообщение из конверта. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/** Хуки авторизации, которые устанавливает стор (stores/auth.ts). */
+export interface AuthHooks {
+  /** Текущий Bearer-токен (null — не авторизованы). */
+  getToken(): string | null;
+  /** Свежий raw initData для повторного входа (null — недоступен). */
+  getInitData(): string | null;
+  /** Сохранить выданную сессию. */
+  onSession(session: Session): void;
+  /** Авторизация невозможна — приложение должно показать экран ошибки. */
+  onAuthFailure(message: string): void;
+}
+
+let hooks: AuthHooks = {
+  getToken: () => null,
+  getInitData: () => getInitData() ?? null,
+  onSession: () => {},
+  onAuthFailure: () => {},
+};
+
+/** Устанавливает (частично) хуки авторизации. Вызывается один раз при старте. */
+export function configureAuth(next: Partial<AuthHooks>): void {
+  hooks = { ...hooks, ...next };
+}
+
+/** Опции запроса. */
+export interface RequestOptions {
+  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  body?: unknown;
+  /** false — запрос без Authorization (например, сам логин). */
+  auth?: boolean;
+  /** true — не пытаться повторно авторизоваться при 401 (logout). */
+  noReauth?: boolean;
+  signal?: AbortSignal;
+}
+
+async function rawRequest(path: string, opts: RequestOptions, token: string | null): Promise<Response> {
+  const headers = new Headers();
+  if (opts.auth !== false && token) headers.set('Authorization', `Bearer ${token}`);
+  let body: string | undefined;
+  if (opts.body !== undefined) {
+    headers.set('Content-Type', 'application/json');
+    body = JSON.stringify(opts.body);
+  }
+  return fetch(`${API_BASE}${path}`, {
+    method: opts.method ?? 'GET',
+    headers,
+    body,
+    signal: opts.signal,
+  });
+}
+
+async function readError(res: Response): Promise<ApiError> {
+  let code = 'http_error';
+  let message = `HTTP ${res.status}`;
+  try {
+    const data = (await res.json()) as { error?: { code?: string; message?: string } };
+    if (data?.error?.code) code = data.error.code;
+    if (data?.error?.message) message = data.error.message;
+  } catch {
+    // Тело не JSON — оставляем сообщение по статусу.
+  }
+  return new ApiError(res.status, code, message);
+}
+
+/** Дедупликация параллельных повторных логинов: один запрос на пачку 401. */
+let reauthInFlight: Promise<Session | null> | null = null;
+
+async function reauthenticate(): Promise<Session | null> {
+  if (reauthInFlight) return reauthInFlight;
+  const initData = hooks.getInitData();
+  if (!initData) return null;
+  reauthInFlight = authenticate(initData)
+    .catch(() => null)
+    .finally(() => {
+      reauthInFlight = null;
+    });
+  return reauthInFlight;
+}
+
+/**
+ * Вход по initData: POST /api/v1/auth/telegram. Выданная сессия сразу
+ * сохраняется через хук onSession.
+ */
+export async function authenticate(initData: string): Promise<Session> {
+  const res = await fetch(`${API_BASE}/auth/telegram`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData }),
+  });
+  if (!res.ok) throw await readError(res);
+  const session = (await res.json()) as Session;
+  hooks.onSession(session);
+  return session;
+}
+
+/**
+ * Запрос к API. При 401 — ровно одна повторная авторизация по initData
+ * и один повтор; повторный 401 переводит приложение в состояние ошибки.
+ */
+export async function apiFetch<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+  const withAuth = opts.auth !== false;
+  let res = await rawRequest(path, opts, withAuth ? hooks.getToken() : null);
+
+  if (res.status === 401 && withAuth && !opts.noReauth) {
+    const session = await reauthenticate();
+    if (!session) {
+      const err = await readError(res);
+      hooks.onAuthFailure(err.message);
+      throw err;
+    }
+    res = await rawRequest(path, opts, session.token);
+    if (res.status === 401) {
+      const err = await readError(res);
+      hooks.onAuthFailure(err.message);
+      throw err;
+    }
+  }
+
+  if (!res.ok) throw await readError(res);
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+/** Пространство имён для читающих вызовов: `api.fetch<T>('/me')`. */
+export const api = { fetch: apiFetch };

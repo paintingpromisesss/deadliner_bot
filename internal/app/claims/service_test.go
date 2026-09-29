@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sauron/deadliner/internal/domain"
+	"github.com/sauron/deadliner/internal/i18n"
 )
 
 // --- fakes ---
@@ -62,7 +63,24 @@ func (r *fakeGroupRepo) SearchByPrefix(ctx context.Context, prefix string, calle
 	return nil, errors.New("not used")
 }
 func (r *fakeGroupRepo) Update(ctx context.Context, g *domain.Group) error {
-	return errors.New("not used")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cur, ok := r.groups[g.ID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	cur.Title = g.Title
+	return nil
+}
+
+// GetByIDInto переименовывает группу (нужно тесту HTML-экранирования названия).
+func (r *fakeGroupRepo) GetByIDInto(ctx context.Context, id int64, title string) error {
+	g, err := r.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	g.Title = title
+	return r.Update(ctx, g)
 }
 
 func (r *fakeGroupRepo) SetStatus(ctx context.Context, id int64, status domain.GroupStatus) error {
@@ -327,6 +345,31 @@ func (r *fakeCounterRepo) IncAndCheck(ctx context.Context, userID int64, action 
 	return r.counts[k], nil
 }
 
+// fakeChatCounterRepo — счётчики НА ЧАТ (спека §3.3): отдельная карта по
+// chat_id, чтобы тест доказывал именно per-chat семантику лимита.
+type fakeChatCounterRepo struct {
+	mu     sync.Mutex
+	counts map[chatCounterKey]int
+}
+
+type chatCounterKey struct {
+	chatID int64
+	action string
+	window time.Time
+}
+
+func newFakeChatCounterRepo() *fakeChatCounterRepo {
+	return &fakeChatCounterRepo{counts: map[chatCounterKey]int{}}
+}
+
+func (r *fakeChatCounterRepo) IncAndCheck(ctx context.Context, chatID int64, action string, windowStart time.Time, limit int) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := chatCounterKey{chatID, action, windowStart}
+	r.counts[k]++
+	return r.counts[k], nil
+}
+
 type fakeUserRepo struct {
 	mu    sync.Mutex
 	users map[int64]*domain.User
@@ -396,6 +439,7 @@ type fakeNotifier struct {
 	chatErr error
 	sent    []sentMessage
 	dms     []int64
+	dmTexts []string
 }
 
 type sentMessage struct {
@@ -420,6 +464,7 @@ func (n *fakeNotifier) SendToUser(ctx context.Context, userID int64, text string
 	defer n.mu.Unlock()
 	*n.events = append(*n.events, "dm.send")
 	n.dms = append(n.dms, userID)
+	n.dmTexts = append(n.dmTexts, text)
 	return nil
 }
 
@@ -432,6 +477,7 @@ type fixture struct {
 	bindings *fakeBindingRepo
 	claims   *fakeClaimRepo
 	counters *fakeCounterRepo
+	chats    *fakeChatCounterRepo
 	users    *fakeUserRepo
 	audit    *fakeAuditRepo
 	notifier *fakeNotifier
@@ -452,6 +498,7 @@ func newFixture(t *testing.T, withBinding bool) *fixture {
 		members:  newFakeMembershipRepo(),
 		bindings: newFakeBindingRepo(),
 		counters: newFakeCounterRepo(),
+		chats:    newFakeChatCounterRepo(),
 		users:    newFakeUserRepo(),
 		audit:    &fakeAuditRepo{},
 		clock:    clock,
@@ -489,7 +536,7 @@ func newFixture(t *testing.T, withBinding bool) *fixture {
 	}
 
 	f.svc = NewService(f.groups, f.members, f.bindings, f.claims, f.counters,
-		f.users, f.audit, f.notifier, Config{
+		f.chats, f.users, f.audit, f.notifier, Config{
 			CodeTTL:          10 * time.Minute,
 			RequestHourLimit: 3,
 			Cooldown:         time.Minute,
@@ -1027,5 +1074,297 @@ func TestGenerateCodeFormat(t *testing.T) {
 				t.Fatalf("code = %q contains non-digit", code)
 			}
 		}
+	}
+}
+
+// --- F-4: лимит запросов кода НА ЧАТ (спека §3.3) ---
+
+// 4-й запрос за час в ОДИН И ТОТ ЖЕ чат от РАЗНЫХ пользователей → RateLimitError.
+// Именно этот тест доказывает per-chat семантику: per-user счётчики каждого
+// участника чисты, а чат уже исчерпал лимит.
+func TestStartClaimHourLimitPerChatDifferentUsers(t *testing.T) {
+	f := newFixture(t, true)
+	ctx := context.Background()
+
+	// Три РАЗНЫХ пользователя (лимит 3/час) — все участники группы, каждый со
+	// своим cooldown'ом: per-user счётчики остаются чистыми, лимит выбирает ЧАТ.
+	for i, uid := range []int64{2, 3, 4} {
+		if err := f.members.Upsert(ctx, &domain.Membership{
+			GroupID: f.groupID, UserID: uid, Role: domain.RoleMember,
+		}); err != nil {
+			t.Fatalf("seed member %d: %v", uid, err)
+		}
+		if _, err := f.svc.StartClaim(ctx, actor(uid), f.groupID); err != nil {
+			t.Fatalf("user %d request %d: %v", uid, i+1, err)
+		}
+	}
+	// Четвёртый пользователь: чат уже выдал 3 кода за час. Его собственный
+	// per-user счётчик пуст — блокирует именно чат.
+	if err := f.members.Upsert(ctx, &domain.Membership{
+		GroupID: f.groupID, UserID: 5, Role: domain.RoleMember,
+	}); err != nil {
+		t.Fatalf("seed member 5: %v", err)
+	}
+	_, err := f.svc.StartClaim(ctx, actor(5), f.groupID)
+	rl := rateLimited(t, err)
+	if rl.RetryAfter <= 0 || rl.RetryAfter > time.Hour {
+		t.Errorf("retry_after = %v, want within (0, 1h]", rl.RetryAfter)
+	}
+	if f.claims.creates != 3 {
+		t.Errorf("claim rows = %d, want 3 (4th rejected by the chat limit)", f.claims.creates)
+	}
+}
+
+// Лимит считается по чату, а не по группе: запросы в ДРУГОЙ chat_id той же
+// группы (перепривязка) не блокируют друг друга.
+func TestStartClaimChatLimitIsPerChatID(t *testing.T) {
+	f := newFixture(t, true)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		if _, err := f.svc.StartClaim(ctx, actor(2), f.groupID); err != nil {
+			t.Fatalf("request %d: %v", i+1, err)
+		}
+		f.clock.advance(time.Minute)
+	}
+	// Тот же чат, следующий запрос — уже лимит.
+	if _, err := f.svc.StartClaim(ctx, actor(2), f.groupID); !errors.Is(err, domain.ErrRateLimit) {
+		t.Fatalf("4th request into the same chat = %v, want ErrRateLimit", err)
+	}
+	// Перепривязка чата к другому chat_id (спека: /unbind → /bind_group) —
+	// счётчик нового чата пуст.
+	if err := f.bindings.Delete(ctx, f.groupID); err != nil {
+		t.Fatalf("unbind: %v", err)
+	}
+	if err := f.bindings.Create(ctx, &domain.ChatBinding{
+		GroupID: f.groupID, ChatID: -100600, ChatTitle: "Второй чат", BoundBy: 1,
+	}); err != nil {
+		t.Fatalf("rebind: %v", err)
+	}
+	// Другой участник: у actor(2) уже исчерпан per-user лимит (defense-in-depth),
+	// а счётчик ЧАТА нового chat_id пуст — именно это и проверяем.
+	if err := f.members.Upsert(ctx, &domain.Membership{
+		GroupID: f.groupID, UserID: 3, Role: domain.RoleMember,
+	}); err != nil {
+		t.Fatalf("seed member: %v", err)
+	}
+	f.clock.advance(time.Minute)
+	if _, err := f.svc.StartClaim(ctx, actor(3), f.groupID); err != nil {
+		t.Fatalf("request after rebind to another chat: %v", err)
+	}
+}
+
+// Per-user лимит сохранён как defense-in-depth: пользователь, разославший
+// запросы по разным чатам, всё равно ограничен 3/час.
+func TestStartClaimUserLimitStillApplies(t *testing.T) {
+	f := newFixture(t, true)
+	ctx := context.Background()
+
+	// Три группы с тремя разными чатами, один и тот же пользователь.
+	for i, slug := range []string{"ИКБО-33-21", "М8О-401Б-23", "М8О-402Б-23"} {
+		g, err := f.groups.GetBySlugNorm(ctx, slug)
+		if err != nil { // «ИКБО-33-21» уже создана фикстурой
+			g = &domain.Group{
+				Slug: slug, SlugNorm: slug, Title: slug,
+				Status: domain.GroupStatusPending, CreatedBy: 1,
+			}
+			if err := f.groups.Create(ctx, g); err != nil {
+				t.Fatalf("create group %s: %v", slug, err)
+			}
+		}
+		if err := f.members.Upsert(ctx, &domain.Membership{
+			GroupID: g.ID, UserID: 2, Role: domain.RoleMember,
+		}); err != nil {
+			t.Fatalf("seed member: %v", err)
+		}
+		if slug != "ИКБО-33-21" {
+			if err := f.bindings.Create(ctx, &domain.ChatBinding{
+				GroupID: g.ID, ChatID: int64(-200000 - i), ChatTitle: slug, BoundBy: 1,
+			}); err != nil {
+				t.Fatalf("bind %s: %v", slug, err)
+			}
+		}
+		if _, err := f.svc.StartClaim(ctx, actor(2), g.ID); err != nil {
+			t.Fatalf("claim #%d in %s: %v", i+1, slug, err)
+		}
+		f.clock.advance(time.Minute)
+	}
+
+	// Четвёртый чат: per-chat счётчики пусты, но пользователь исчерпал 3/час.
+	g := &domain.Group{
+		Slug: "М8О-403Б-23", SlugNorm: "М8О-403Б-23", Title: "Четвёртая",
+		Status: domain.GroupStatusPending, CreatedBy: 1,
+	}
+	if err := f.groups.Create(ctx, g); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := f.members.Upsert(ctx, &domain.Membership{
+		GroupID: g.ID, UserID: 2, Role: domain.RoleMember,
+	}); err != nil {
+		t.Fatalf("seed member: %v", err)
+	}
+	if err := f.bindings.Create(ctx, &domain.ChatBinding{
+		GroupID: g.ID, ChatID: -200999, ChatTitle: "Четвёртая", BoundBy: 1,
+	}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if _, err := f.svc.StartClaim(ctx, actor(2), g.ID); !errors.Is(err, domain.ErrRateLimit) {
+		t.Fatalf("4th request by the same user across chats = %v, want ErrRateLimit", err)
+	}
+}
+
+// --- F-2: brute-force guard на confirm ---
+
+// 11-й неверный ввод кода за окно → RateLimitError (бюджет 10).
+func TestConfirmFailLimit(t *testing.T) {
+	f := newFixture(t, true)
+	ctx := context.Background()
+	code := confirmFixture(t, f)
+	wrong := "999999"
+	if code == wrong {
+		wrong = "000000"
+	}
+
+	for i := 1; i <= 10; i++ {
+		_, err := f.svc.Confirm(ctx, actor(2), f.groupID, wrong)
+		if err == nil {
+			t.Fatalf("attempt %d: wrong code accepted", i)
+		}
+		if !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("attempt %d = %v, want ErrForbidden", i, err)
+		}
+	}
+	_, err := f.svc.Confirm(ctx, actor(2), f.groupID, wrong)
+	rl := rateLimited(t, err)
+	if rl.RetryAfter <= 0 || rl.RetryAfter > 10*time.Minute {
+		t.Errorf("retry_after = %v, want within (0, 10m]", rl.RetryAfter)
+	}
+}
+
+// Исчерпание бюджета ГАСИТ активный код группы: даже верный код после этого
+// непригоден (окно перебора закрыто вместе с кодом).
+func TestConfirmFailLimitBurnsCode(t *testing.T) {
+	f := newFixture(t, true)
+	ctx := context.Background()
+	code := confirmFixture(t, f)
+	wrong := "999999"
+	if code == wrong {
+		wrong = "000000"
+	}
+
+	for i := 0; i < 10; i++ {
+		_, _ = f.svc.Confirm(ctx, actor(2), f.groupID, wrong)
+	}
+	if _, err := f.svc.Confirm(ctx, actor(2), f.groupID, code); !errors.Is(err, domain.ErrRateLimit) {
+		t.Fatalf("correct code after exhausting the budget = %v, want ErrRateLimit", err)
+	}
+	// Код сгорел: даже другой пользователь (со своим бюджетом) видит ErrNotFound.
+	if _, err := f.svc.Confirm(ctx, actor(3), f.groupID, code); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("burned code for another user = %v, want ErrNotFound", err)
+	}
+	if _, err := f.claims.GetActiveByGroup(ctx, f.groupID, f.clock.now); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("code still active after the budget was exhausted: %v", err)
+	}
+	// Аудит фиксирует сожжение кода (диагностика инцидента).
+	var burned bool
+	for _, e := range f.audit.entries {
+		if e.Action == "claim.code_burned" {
+			burned = true
+		}
+	}
+	if !burned {
+		t.Errorf("audit has no claim.code_burned: %+v", f.audit.entries)
+	}
+}
+
+// Успешный confirm бюджетом не пользуется: последующие неверные попытки
+// считаются от нуля, и успех не сбрасывает чужие счётчики.
+func TestConfirmSuccessUnaffectedByFailBudget(t *testing.T) {
+	f := newFixture(t, true)
+	ctx := context.Background()
+	code := confirmFixture(t, f)
+	wrong := "999999"
+	if code == wrong {
+		wrong = "000000"
+	}
+
+	// 3 неверных попытки, затем успех — лимит не достигнут.
+	for i := 0; i < 3; i++ {
+		if _, err := f.svc.Confirm(ctx, actor(2), f.groupID, wrong); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("attempt %d = %v, want ErrForbidden", i, err)
+		}
+	}
+	if _, err := f.svc.Confirm(ctx, actor(2), f.groupID, code); err != nil {
+		t.Fatalf("Confirm with the correct code: %v", err)
+	}
+	// Свежий код для второй фазы (успешный confirm погасил предыдущий) и
+	// проверка, что бюджет третьего пользователя не тронут: его собственные
+	// 10 неверных попыток идут как ErrForbidden, лимит наступает только на 11-й.
+	if err := f.members.Upsert(ctx, &domain.Membership{
+		GroupID: f.groupID, UserID: 3, Role: domain.RoleMember,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.claims.RevokeActiveByGroup(ctx, f.groupID, f.clock.now); err != nil {
+		t.Fatal(err)
+	}
+	secondCode := confirmFixture(t, f)
+	if secondCode == wrong {
+		t.Fatal("fixture collision: second code equals the wrong code")
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := f.svc.Confirm(ctx, actor(3), f.groupID, wrong); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("user 3 attempt %d = %v, want ErrForbidden", i, err)
+		}
+	}
+	if _, err := f.svc.Confirm(ctx, actor(3), f.groupID, secondCode); !errors.Is(err, domain.ErrRateLimit) {
+		t.Fatalf("user 3 11th attempt = %v, want ErrRateLimit", err)
+	}
+}
+
+// Бюджет неверных попыток проверяется ДО поиска кода: пустая группа тоже
+// ограничивает перебор (иначе отсутствие кода давало бы бесплатные запросы).
+func TestConfirmFailLimitWithoutActiveCode(t *testing.T) {
+	f := newFixture(t, true)
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		if _, err := f.svc.Confirm(ctx, actor(2), f.groupID, "000000"); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("attempt %d = %v, want ErrNotFound", i, err)
+		}
+	}
+	if _, err := f.svc.Confirm(ctx, actor(2), f.groupID, "000000"); !errors.Is(err, domain.ErrRateLimit) {
+		t.Fatalf("11th attempt without an active code = %v, want ErrRateLimit", err)
+	}
+}
+
+// --- F-6: HTML-экранирование пользовательских подстановок ---
+
+// Название группы с HTML-спецсимволами экранируется в claim-сообщениях:
+// иначе Telegram отвергнет сообщение (parse_mode=HTML) или подменит разметку.
+func TestClaimMessagesEscapeHTML(t *testing.T) {
+	f := newFixture(t, true)
+	ctx := context.Background()
+	if err := f.groups.GetByIDInto(ctx, f.groupID, "Очень <b>важная</b> & группа"); err != nil {
+		t.Fatalf("rename group: %v", err)
+	}
+	// Действующий админ — сообщение о смене старосты содержит название группы.
+	if err := f.members.SetRole(ctx, f.groupID, 1, domain.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	code := confirmFixture(t, f)
+	if _, err := f.svc.Confirm(ctx, actor(2), f.groupID, code); err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+
+	want := i18n.T("claim.admin_replaced", "Очень &lt;b&gt;важная&lt;/b&gt; &amp; группа")
+	found := false
+	for _, msg := range f.notifier.dmTexts {
+		if msg == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("escaped admin message not sent; DMs = %+v\nwant %q", f.notifier.dmTexts, want)
 	}
 }

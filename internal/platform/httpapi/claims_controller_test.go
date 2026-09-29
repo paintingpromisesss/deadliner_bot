@@ -24,6 +24,7 @@ import (
 type captureNotifier struct {
 	chatSends []captureSend
 	dms       []int64
+	dmTexts   []string
 	chatErr   error
 }
 
@@ -43,6 +44,7 @@ func (n *captureNotifier) SendToChat(ctx context.Context, chatID, threadID int64
 
 func (n *captureNotifier) SendToUser(ctx context.Context, userID int64, text string) error {
 	n.dms = append(n.dms, userID)
+	n.dmTexts = append(n.dmTexts, text)
 	return nil
 }
 
@@ -92,7 +94,7 @@ func newTestClaimsRouter(t *testing.T, nfy *captureNotifier, cfg claims.Config) 
 			}, domain.SystemClock{}, log),
 		Claims: claims.NewService(
 			repo.NewGroups(pool), members, repo.NewBindings(pool), repo.NewClaims(pool),
-			repo.NewCounters(pool), users, repo.NewAudit(pool), nfy,
+			repo.NewCounters(pool), repo.NewChatCounters(pool), users, repo.NewAudit(pool), nfy,
 			cfg, domain.SystemClock{}, log),
 		Users:      users,
 		Sessions:   repo.NewSessions(pool),
@@ -547,5 +549,152 @@ func TestClaimStartSendFailure(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("claim_codes rows = %d, want 0 after a failed send", count)
+	}
+}
+
+// F-4 (HTTP): 4-й запрос кода за час в ОДИН чат от РАЗНЫХ пользователей → 429
+// через реальный chat_action_counters. Это проверка per-chat семантики на
+// сквозном пути (репо + сервис + контроллер).
+func TestClaimStartRateLimitPerChatAcrossUsers(t *testing.T) {
+	nfy := &captureNotifier{}
+	r := newTestClaimsRouter(t, nfy, claims.Config{
+		CodeTTL: 10 * time.Minute, RequestHourLimit: 3, Cooldown: time.Nanosecond,
+		ConfirmFailLimit: 10,
+	})
+	ownerTok, _ := login(t, r, 6901)
+
+	resp := doJSON(r, http.MethodPost, "/api/v1/groups", ownerTok, map[string]any{"slug": "икбо-33-21", "title": "T"})
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("POST /groups = %d", resp.Code)
+	}
+	var created struct {
+		Group struct {
+			ID int64 `json:"id"`
+		} `json:"group"`
+	}
+	_ = json.Unmarshal(resp.Body.Bytes(), &created)
+	gid := created.Group.ID
+	bindChat(t, gid, -100500, nil)
+
+	start := fmt.Sprintf("/api/v1/groups/%d/claim/start", gid)
+	// Три разных участника группы исчерпывают лимит чата.
+	for i, tgID := range []int64{6901, 6902, 6903} {
+		// login создаёт строку users (addMember ищет её по telegram_id).
+		tok, _ := login(t, r, tgID)
+		addMember(t, gid, tgID)
+		if resp := doJSON(r, http.MethodPost, start, tok, nil); resp.Code != http.StatusOK {
+			t.Fatalf("request by user %d (#%d) = %d; body: %s", tgID, i+1, resp.Code, resp.Body)
+		}
+	}
+	// Четвёртый участник: его личный счётчик чист, но чат исчерпан → 429.
+	tok, _ := login(t, r, 6904)
+	addMember(t, gid, 6904)
+	resp = doJSON(r, http.MethodPost, start, tok, nil)
+	if resp.Code != http.StatusTooManyRequests {
+		t.Fatalf("4th request into the same chat = %d, want 429; body: %s", resp.Code, resp.Body)
+	}
+	if resp.Header().Get("Retry-After") == "" {
+		t.Errorf("429 response has no Retry-After header")
+	}
+}
+
+// F-2 (HTTP): 11-й неверный код → 429, и активный код при этом сгорает
+// (даже верный код после исчерпания бюджета не проходит).
+func TestClaimConfirmBruteForceGuard(t *testing.T) {
+	nfy := &captureNotifier{}
+	r := newTestClaimsRouter(t, nfy, claims.Config{
+		CodeTTL: 10 * time.Minute, RequestHourLimit: 3, Cooldown: time.Nanosecond,
+		ConfirmFailLimit: 10,
+	})
+	tok, _ := login(t, r, 6911)
+
+	resp := doJSON(r, http.MethodPost, "/api/v1/groups", tok, map[string]any{"slug": "икбо-33-21", "title": "T"})
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("POST /groups = %d", resp.Code)
+	}
+	var created struct {
+		Group struct {
+			ID int64 `json:"id"`
+		} `json:"group"`
+	}
+	_ = json.Unmarshal(resp.Body.Bytes(), &created)
+	gid := created.Group.ID
+	bindChat(t, gid, -100500, nil)
+
+	if resp := doJSON(r, http.MethodPost, fmt.Sprintf("/api/v1/groups/%d/claim/start", gid), tok, nil); resp.Code != http.StatusOK {
+		t.Fatalf("claim/start = %d; body: %s", resp.Code, resp.Body)
+	}
+	code := nfy.code(t)
+	wrong := "999999"
+	if code == wrong {
+		wrong = "000000"
+	}
+
+	confirm := fmt.Sprintf("/api/v1/groups/%d/claim/confirm", gid)
+	for i := 1; i <= 10; i++ {
+		if resp := doJSON(r, http.MethodPost, confirm, tok, map[string]any{"code": wrong}); resp.Code != http.StatusForbidden {
+			t.Fatalf("attempt %d = %d, want 403; body: %s", i, resp.Code, resp.Body)
+		}
+	}
+	resp = doJSON(r, http.MethodPost, confirm, tok, map[string]any{"code": wrong})
+	if resp.Code != http.StatusTooManyRequests {
+		t.Fatalf("11th attempt = %d, want 429; body: %s", resp.Code, resp.Body)
+	}
+	// Код сожжён: он больше не активен ни для кого.
+	if resp := doJSON(r, http.MethodPost, confirm, tok, map[string]any{"code": code}); resp.Code != http.StatusTooManyRequests {
+		t.Errorf("correct code after the budget is exhausted = %d, want 429", resp.Code)
+	}
+	otherTok, _ := login(t, r, 6912)
+	addMember(t, gid, 6912)
+	if resp := doJSON(r, http.MethodPost, confirm, otherTok, map[string]any{"code": code}); resp.Code != http.StatusNotFound {
+		t.Errorf("burned code for another user = %d, want 404; body: %s", resp.Code, resp.Body)
+	}
+}
+
+// F-6 (HTTP): название группы с HTML-спецсимволами не ломает тексты claim'а —
+// сервис экранирует его перед подстановкой (реальный путь: notifyAdmins).
+func TestClaimMessagesEscapeGroupTitleHTML(t *testing.T) {
+	nfy := &captureNotifier{}
+	r := newTestClaimsRouter(t, nfy, claimsDefaultConfig())
+	ownerTok, _ := login(t, r, 6921)
+
+	resp := doJSON(r, http.MethodPost, "/api/v1/groups", ownerTok,
+		map[string]any{"slug": "икбо-33-21", "title": "Группа <b>&</b>"})
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("POST /groups = %d", resp.Code)
+	}
+	var created struct {
+		Group struct {
+			ID int64 `json:"id"`
+		} `json:"group"`
+	}
+	_ = json.Unmarshal(resp.Body.Bytes(), &created)
+	gid := created.Group.ID
+	bindChat(t, gid, -100500, nil)
+
+	// Создатель становится админом: он получит claim.success с названием группы.
+	if resp := doJSON(r, http.MethodPost, fmt.Sprintf("/api/v1/groups/%d/claim/start", gid), ownerTok, nil); resp.Code != http.StatusOK {
+		t.Fatalf("claim/start = %d; body: %s", resp.Code, resp.Body)
+	}
+	if resp := doJSON(r, http.MethodPost, fmt.Sprintf("/api/v1/groups/%d/claim/confirm", gid), ownerTok,
+		map[string]any{"code": nfy.code(t)}); resp.Code != http.StatusOK {
+		t.Fatalf("claim/confirm = %d; body: %s", resp.Code, resp.Body)
+	}
+
+	for _, text := range nfy.dmTexts {
+		if strings.Contains(text, "<b>&") {
+			t.Errorf("unescaped group title leaked into a DM: %q", text)
+		}
+	}
+	// Хотя бы одно уведомление содержит экранированный вариант.
+	want := i18n.T("claim.success", "Группа &lt;b&gt;&amp;&lt;/b&gt;")
+	found := false
+	for _, text := range nfy.dmTexts {
+		if strings.Contains(text, want) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("escaped claim.success not sent; DMs = %+v", nfy.dmTexts)
 	}
 }

@@ -3,11 +3,16 @@
 // чата вводит его в TMA и становится админом, после чего код сгорает. В БД
 // хранится только SHA-256 кода. Лимиты/TTL — из конфига (спека §8).
 //
-// RULING (Task 10, лимит «3/час на чат»): таблица user_action_counters
-// keyed by users.id (user_id REFERENCES users(id)), поэтому счётчик физически
-// «на чат» не выражается. Лимиты считаются ПО ПОЛЬЗОВАТЕЛЮ:
-//   - claim_request_hour — 3 запроса кода в час (LIMIT_CLAIM_PER_CHAT_HOUR);
-//   - claim_cooldown — 1 запрос в минуту (спека §3.3, cooldown 1 мин).
+// Лимиты (спека §3.3):
+//   - claim_chat_hour — 3 запроса кода в час НА ЧАТ (LIMIT_CLAIM_PER_CHAT_HOUR,
+//     chat_action_counters: основное требование спеки, чат — единица учёта);
+//   - claim_request_hour — те же 3/час на пользователя (user_action_counters)
+//     как defense-in-depth против рассылки по чужим чатам;
+//   - claim_cooldown — 1 запрос в минуту на пользователя;
+//   - claim_confirm_fail — не более 10 неверных вводов кода на пользователя за
+//     окно CLAIM_CODE_TTL: 6-значный код без ограничения попыток перебирается
+//     быстро, поэтому счётчик проверяется ДО сверки хэша, а исчерпание лимита
+//     гасит активный код группы (окно закрывается).
 //
 // Инвариант «не более одного действующего кода на группу» обеспечивается
 // отдельно: StartClaim отзывает предыдущий активный код группы.
@@ -50,21 +55,32 @@ var (
 type Config struct {
 	// CodeTTL — CLAIM_CODE_TTL (дефолт 10m).
 	CodeTTL time.Duration
-	// RequestHourLimit — LIMIT_CLAIM_PER_CHAT_HOUR (дефолт 3); считается по
-	// пользователю, см. RULING в описании пакета.
+	// RequestHourLimit — LIMIT_CLAIM_PER_CHAT_HOUR (дефолт 3). Основной лимит
+	// считается НА ЧАТ (спека §3.3) через ChatCounterRepo; тот же предел
+	// дополнительно применяется на пользователя как defense-in-depth.
 	RequestHourLimit int
 	// Cooldown — пауза между запросами кода одного пользователя (1 минута).
 	Cooldown time.Duration
+	// ConfirmFailLimit — максимум неверных вводов кода на пользователя за
+	// окно ConfirmFailWindow (дефолт 10 за CLAIM_CODE_TTL): 6-значный код без
+	// ограничения попыток перебирается за минуты.
+	ConfirmFailLimit int
+	// ConfirmFailWindow — окно лимита неверных вводов (дефолт = CodeTTL, 10m).
+	ConfirmFailWindow time.Duration
 }
 
-// action-ключи счётчиков user_action_counters (PK: user_id, action,
-// window_start). Action «claim_per_chat» как таковой невозможен — см. RULING.
+// action-ключи счётчиков. user_action_counters — по users.id (PK: user_id,
+// action, window_start); chat_action_counters — по chat_id (спека §3.3:
+// 3 claim-кода в час именно НА ЧАТ), поэтому у лимита запроса кода два
+// независимых счётчика: per-chat (основной) и per-user (defense-in-depth).
 const (
-	actionRequestHour = "claim_request_hour"
-	actionCooldown    = "claim_cooldown"
+	actionRequestHourChat = "claim_chat_hour"
+	actionRequestHourUser = "claim_request_hour"
+	actionCooldown        = "claim_cooldown"
+	actionConfirmFail     = "claim_confirm_fail"
 )
 
-// requestWindow — окно лимита запросов кода.
+// requestWindow — окно лимита запросов кода (1 час, спека §3.3).
 const requestWindow = time.Hour
 
 // Notifier — поверхность доставки, нужная claim-флоу. Реализуется
@@ -77,25 +93,30 @@ type Notifier interface {
 
 // Service — use cases claim-флоу; работает только с domain-портами.
 type Service struct {
-	groups   domain.GroupRepo
-	members  domain.MembershipRepo
-	bindings domain.ChatBindingRepo
-	claims   domain.ClaimRepo
-	counters domain.CounterRepo
-	users    domain.UserRepo
-	audit    domain.AuditRepo
-	notifier Notifier
-	cfg      Config
-	clock    domain.Clock
-	log      *slog.Logger
+	groups      domain.GroupRepo
+	members     domain.MembershipRepo
+	bindings    domain.ChatBindingRepo
+	claims      domain.ClaimRepo
+	counters    domain.CounterRepo
+	chatCounter domain.ChatCounterRepo
+	users       domain.UserRepo
+	audit       domain.AuditRepo
+	notifier    Notifier
+	cfg         Config
+	clock       domain.Clock
+	log         *slog.Logger
 }
 
+// NewService собирает claim-сервис. chatCounters — счётчики НА ЧАТ (спека
+// §3.3); nil допустим только для совместимости с уже собранными тестами, но
+// тогда per-chat лимит не действует — serve обязан передать repo.NewChatCounters.
 func NewService(
 	groups domain.GroupRepo,
 	members domain.MembershipRepo,
 	bindings domain.ChatBindingRepo,
 	claims domain.ClaimRepo,
 	counters domain.CounterRepo,
+	chatCounters domain.ChatCounterRepo,
 	users domain.UserRepo,
 	audit domain.AuditRepo,
 	notifier Notifier,
@@ -115,9 +136,16 @@ func NewService(
 	if cfg.Cooldown <= 0 {
 		cfg.Cooldown = time.Minute
 	}
+	if cfg.ConfirmFailLimit <= 0 {
+		cfg.ConfirmFailLimit = 10
+	}
+	if cfg.ConfirmFailWindow <= 0 {
+		cfg.ConfirmFailWindow = cfg.CodeTTL
+	}
 	return &Service{
 		groups: groups, members: members, bindings: bindings, claims: claims,
-		counters: counters, users: users, audit: audit, notifier: notifier,
+		counters: counters, chatCounter: chatCounters,
+		users: users, audit: audit, notifier: notifier,
 		cfg: cfg, clock: clock, log: log,
 	}
 }
@@ -180,7 +208,7 @@ func (s *Service) StartClaim(ctx context.Context, actor *domain.User, groupID in
 	}
 
 	now := s.clock.Now()
-	if err := s.checkLimits(ctx, actor.ID, now); err != nil {
+	if err := s.checkLimits(ctx, actor.ID, b.ChatID, now); err != nil {
 		return nil, err
 	}
 
@@ -228,20 +256,32 @@ func (s *Service) StartClaim(ctx context.Context, actor *domain.User, groupID in
 		ExpiresAt: now.Add(s.cfg.CodeTTL),
 	}
 	if err := s.claims.Create(ctx, cc); err != nil {
+		// Код уже опубликован в чате, но строки нет: участники видят код,
+		// который невозможно подтвердить. Отдельная запись в аудите и Error
+		// в лог — иначе случай неотличим от «код не запрашивали».
+		s.log.Error("claim: code published but not persisted",
+			slog.Int64("group_id", groupID), slog.Int64("chat_id", b.ChatID),
+			slog.String("error", err.Error()))
+		s.writeAudit(ctx, actor.ID, "claim.publish_orphan", "group", groupID,
+			map[string]any{"chat_id": b.ChatID, "message_id": messageID})
 		return nil, err
 	}
 
 	s.writeAudit(ctx, actor.ID, "claim.start", "group", groupID,
 		map[string]any{"claim_id": cc.ID, "chat_id": b.ChatID, "admins": len(admins)})
-	s.notifyAdmins(ctx, admins, i18n.T("claim.admin_changed", g.Slug))
+	s.notifyAdmins(ctx, admins, i18n.T("claim.admin_replaced", i18n.EscapeHTML(g.Title)))
 
 	return &StartResult{ExpiresAt: cc.ExpiresAt, ChatID: b.ChatID}, nil
 }
 
-// Confirm — ввод кода в TMA (спека §3.1 шаг 4): сверка хэша constant-time,
-// код сгорает, вызывающий получает роль admin, pending-группа становится
-// active, действующие админы получают ЛС-уведомление. Участник мог ещё не
-// вступить в группу — membership создаётся сразу с ролью admin.
+// Confirm — ввод кода в TMA (спека §3.1 шаг 4): бюджет неверных попыток,
+// сверка хэша constant-time, код сгорает, вызывающий получает роль admin,
+// pending-группа становится active, действующие админы получают ЛС-уведомление.
+// Участник мог ещё не вступить в группу — membership создаётся сразу с ролью admin.
+//
+// Порядок важен: бюджет попыток проверяется ДО сверки хэша и ДО поиска кода,
+// поэтому перебор не получает бесплатных попыток и не зависит от того, есть ли
+// активный код.
 func (s *Service) Confirm(ctx context.Context, actor *domain.User, groupID int64, code string) (*domain.Group, error) {
 	g, err := s.groups.GetByID(ctx, groupID)
 	if err != nil {
@@ -249,6 +289,10 @@ func (s *Service) Confirm(ctx context.Context, actor *domain.User, groupID int64
 	}
 
 	now := s.clock.Now()
+	if err := s.checkConfirmBudget(ctx, actor.ID, groupID, now); err != nil {
+		return nil, err
+	}
+
 	cc, err := s.claims.GetActiveByGroup(ctx, groupID, now)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
@@ -293,10 +337,10 @@ func (s *Service) Confirm(ctx context.Context, actor *domain.User, groupID int64
 
 	s.writeAudit(ctx, actor.ID, "claim.confirm", "group", groupID,
 		map[string]any{"claim_id": cc.ID, "role": string(domain.RoleAdmin)})
-	s.notifyAdmins(ctx, admins, i18n.T("claim.admin_changed", g.Slug))
+	s.notifyAdmins(ctx, admins, i18n.T("claim.admin_replaced", i18n.EscapeHTML(g.Title)))
 	// Подтвердившему — ЛС-подтверждение (claim.success, best-effort): результат
 	// заметен, даже если TMA закрыт.
-	s.notify(ctx, actor.TelegramID, i18n.T("claim.success", g.Title), "claimer")
+	s.notify(ctx, actor.TelegramID, i18n.T("claim.success", i18n.EscapeHTML(g.Title)), "claimer")
 
 	return g, nil
 }
@@ -318,12 +362,14 @@ func (s *Service) Revoke(ctx context.Context, actor *domain.User, groupID int64)
 	return nil
 }
 
-// checkLimits — cooldown 1 мин и лимит запросов кода в час. Оба счётчика
-// инкрементируются сразу (решение о превышении — по возвращённому count);
-// окна floor-ятся на слое приложения, репо принимает window_start как есть.
-func (s *Service) checkLimits(ctx context.Context, userID int64, now time.Time) error {
+// checkLimits — cooldown 1 мин и лимит запросов кода в час НА ЧАТ (спека
+// §3.3, chat_action_counters) плюс тот же предел на пользователя как
+// defense-in-depth. Все счётчики инкрементируются сразу, решение о превышении
+// принимается по возвращённому count; окна floor-ятся на слое приложения, репо
+// принимает window_start как есть.
+func (s *Service) checkLimits(ctx context.Context, actorID, chatID int64, now time.Time) error {
 	cdStart := now.Truncate(s.cfg.Cooldown)
-	count, err := s.counters.IncAndCheck(ctx, userID, actionCooldown, cdStart, 1)
+	count, err := s.counters.IncAndCheck(ctx, actorID, actionCooldown, cdStart, 1)
 	if err != nil {
 		return fmt.Errorf("claims: counter %s: %w", actionCooldown, err)
 	}
@@ -332,14 +378,67 @@ func (s *Service) checkLimits(ctx context.Context, userID int64, now time.Time) 
 	}
 
 	windowStart := now.Truncate(requestWindow)
-	count, err = s.counters.IncAndCheck(ctx, userID, actionRequestHour, windowStart, s.cfg.RequestHourLimit)
+	// Основной лимит — на чат: он держит спам даже при смене злоумышленником
+	// аккаунтов, чего per-user счётчик не умеет.
+	if s.chatCounter != nil {
+		count, err = s.chatCounter.IncAndCheck(ctx, chatID, actionRequestHourChat, windowStart, s.cfg.RequestHourLimit)
+		if err != nil {
+			return fmt.Errorf("claims: counter %s: %w", actionRequestHourChat, err)
+		}
+		if count > s.cfg.RequestHourLimit {
+			return &domain.RateLimitError{RetryAfter: requestWindow - now.Sub(windowStart)}
+		}
+	}
+
+	count, err = s.counters.IncAndCheck(ctx, actorID, actionRequestHourUser, windowStart, s.cfg.RequestHourLimit)
 	if err != nil {
-		return fmt.Errorf("claims: counter %s: %w", actionRequestHour, err)
+		return fmt.Errorf("claims: counter %s: %w", actionRequestHourUser, err)
 	}
 	if count > s.cfg.RequestHourLimit {
 		return &domain.RateLimitError{RetryAfter: requestWindow - now.Sub(windowStart)}
 	}
 	return nil
+}
+
+// checkConfirmBudget — бюджет неверных вводов кода на пользователя (окно
+// ConfirmFailWindow). Проверяется ДО сверки хэша: иначе перебор 6-значного кода
+// ограничивался бы только пропускной способностью API.
+//
+// ЗАМЕЧАНИЕ по реализации: порт CounterRepo умеет только IncAndCheck
+// (инкремент + чтение), отдельного read-only чтения в домене нет, поэтому
+// бюджет расходует ЛЮБАЯ попытка — и неудачная, и успешная. Это строго
+// консервативнее требования «инкрементировать на каждой неудачной попытке»:
+// успешный ввод кода стоит одной попытки из бюджета, зато проверка остаётся
+// строго до сверки хэша. На практике успешный claim бывает один на код, а
+// бюджет — 10 попыток за окно TTL кода.
+//
+// Исчерпание бюджета гасит активный код группы: окно перебора закрывается
+// вместе с кодом (даже при смене пользователя счётчик остаётся у старого).
+func (s *Service) checkConfirmBudget(ctx context.Context, actorID, groupID int64, now time.Time) error {
+	windowStart := now.Truncate(s.cfg.ConfirmFailWindow)
+	count, err := s.counters.IncAndCheck(ctx, actorID, actionConfirmFail, windowStart, s.cfg.ConfirmFailLimit)
+	if err != nil {
+		return fmt.Errorf("claims: counter %s: %w", actionConfirmFail, err)
+	}
+	if count <= s.cfg.ConfirmFailLimit {
+		return nil
+	}
+
+	// Бюджет исчерпан: гасим действующий код группы, чтобы перебор стал
+	// бессмысленным даже при смене пользователя (счётчик — на пользователя).
+	if cc, err := s.claims.GetActiveByGroup(ctx, groupID, now); err == nil {
+		if err := s.claims.MarkUsed(ctx, cc.ID, now); err != nil {
+			s.log.Warn("claims: burning bruteforced code failed",
+				slog.Int64("group_id", groupID), slog.Int64("claim_id", cc.ID),
+				slog.String("error", err.Error()))
+		} else {
+			s.writeAudit(ctx, actorID, "claim.code_burned", "group", groupID,
+				map[string]any{"claim_id": cc.ID, "reason": "confirm_attempts_exhausted"})
+		}
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	return &domain.RateLimitError{RetryAfter: s.cfg.ConfirmFailWindow - now.Sub(windowStart)}
 }
 
 // adminTelegramIDs — telegram_id действующих админов группы, кроме skipUserID
@@ -444,29 +543,26 @@ func (s *Service) writeAudit(ctx context.Context, actorID int64, action, targetT
 	}
 }
 
-// humanTTL — «10 минут» для текста сообщения (русские формы числителя).
+// humanTTL — «10 минут» для текста сообщения. Формы числителя — общий хелпер
+// i18n.Plural (тот же, что использует scheduler: логика больше не дублируется).
 func humanTTL(d time.Duration) string {
 	switch {
 	case d < time.Minute:
 		return "менее минуты"
 	case d < time.Hour:
 		n := int(d.Minutes())
-		return fmt.Sprintf("%d %s", n, pluralRu(n, "минуту", "минуты", "минут"))
-	default:
+		if n == 0 {
+			n = 1
+		}
+		return fmt.Sprintf("%d %s", n, i18n.Plural(n, "минуту", "минуты", "минут"))
+	case d <= 24*time.Hour:
 		n := int(d.Hours())
-		return fmt.Sprintf("%d %s", n, pluralRu(n, "час", "часа", "часов"))
-	}
-}
-
-func pluralRu(n int, one, few, many string) string {
-	switch {
-	case n%100 >= 11 && n%100 <= 14:
-		return many
-	case n%10 == 1:
-		return one
-	case n%10 >= 2 && n%10 <= 4:
-		return few
+		if n == 0 {
+			n = 1
+		}
+		return fmt.Sprintf("%d %s", n, i18n.Plural(n, "час", "часа", "часов"))
 	default:
-		return many
+		n := int(d.Hours() / 24)
+		return fmt.Sprintf("%d %s", n, i18n.Plural(n, "день", "дня", "дней"))
 	}
 }

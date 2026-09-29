@@ -51,6 +51,18 @@ func (s *stubTelegram) start(t *testing.T) string {
 	return srv.URL
 }
 
+func (s *stubTelegram) methodCount(method string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, m := range s.methods {
+		if m == method {
+			n++
+		}
+	}
+	return n
+}
+
 func (s *stubTelegram) called(method string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -140,6 +152,11 @@ func TestNewBotSmoke(t *testing.T) {
 	if !stub.called("setChatMenuButton") {
 		t.Errorf("setChatMenuButton not called; methods = %v", stub.methods)
 	}
+	// Спека §6.1: команды регистрируются и для администраторов чатов — значит
+	// setMyCommands вызывается дважды (default + all_chat_administrators).
+	if n := stub.methodCount("setMyCommands"); n != 2 {
+		t.Errorf("setMyCommands calls = %d, want 2 (default + all_chat_administrators)", n)
+	}
 
 	// Handle доставляет апдейт: /start в ЛС обновляет пользователя и отвечает.
 	upd := update(900, "private", 7, "ivan", "/start")
@@ -157,6 +174,59 @@ func TestNewBotSmoke(t *testing.T) {
 func TestNewBotEmptyToken(t *testing.T) {
 	if _, err := NewBot(BotConfig{}, Deps{}, nil); err == nil {
 		t.Fatal("NewBot(empty token) = nil, want error")
+	}
+}
+
+// F-3: webhook-режим без секрета не конструируется. Иначе библиотека приняла бы
+// любой POST /webhook (сверка заголовка включается только при непустом секрете),
+// то есть подделанные апдейты — включая /bind_group в чужом чате.
+func TestNewBotWebhookRequiresSecret(t *testing.T) {
+	_, err := NewBot(BotConfig{
+		Token: "42:TEST", Mode: ModeWebhook, AppPublicURL: "https://example/app",
+	}, Deps{}, nil)
+	if err == nil {
+		t.Fatal("NewBot(webhook without secret) = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "WebhookSecret") {
+		t.Errorf("error = %v, want it to name WebhookSecret", err)
+	}
+
+	// С секретом — конструируется, и секрет попадает в опции библиотеки.
+	b, err := NewBot(BotConfig{
+		Token: "42:TEST", Mode: ModeWebhook, WebhookSecret: "s3cret",
+	}, Deps{}, nil)
+	if err != nil {
+		t.Fatalf("NewBot(webhook with secret) = %v, want success", err)
+	}
+	if b == nil {
+		t.Fatal("NewBot returned nil bot")
+	}
+}
+
+// F-3 (companion): в polling-режиме секрет не требуется.
+func TestNewBotPollingWithoutSecret(t *testing.T) {
+	if _, err := NewBot(BotConfig{Token: "42:TEST", Mode: ModePolling}, Deps{}, nil); err != nil {
+		t.Fatalf("NewBot(polling without secret) = %v, want success", err)
+	}
+}
+
+// BotUserID выводится из токена офлайн (tgbot.Bot.ID разбирает "<id>:<secret>"),
+// поэтому getMe не нужен; явный Deps.BotUserID имеет приоритет.
+func TestNewBotDerivesBotUserIDFromToken(t *testing.T) {
+	b, err := NewBot(BotConfig{Token: "424242:TEST", Mode: ModePolling}, Deps{}, nil)
+	if err != nil {
+		t.Fatalf("NewBot: %v", err)
+	}
+	if got := b.handl.botUserID; got != 424242 {
+		t.Errorf("bot user id = %d, want 424242 (parsed from the token)", got)
+	}
+
+	explicit, err := NewBot(BotConfig{Token: "424242:TEST"}, Deps{BotUserID: 7}, nil)
+	if err != nil {
+		t.Fatalf("NewBot: %v", err)
+	}
+	if got := explicit.handl.botUserID; got != 7 {
+		t.Errorf("bot user id = %d, want the explicit 7", got)
 	}
 }
 

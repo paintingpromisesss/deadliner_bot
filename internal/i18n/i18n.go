@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"strings"
 	"sync"
 )
 
@@ -64,6 +65,26 @@ func MustLoad(fsys embed.FS) {
 	}
 }
 
+// Plural — русская форма числительного: «1 день», «2 дня», «5 дней»,
+// «21 день» (n%100 в 11..14 → родительный множественный). Общий хелпер:
+// используется и напоминаниями (scheduler), и claim-флоу.
+func Plural(n int, one, few, many string) string {
+	nAbs := n
+	if nAbs < 0 {
+		nAbs = -nAbs
+	}
+	switch {
+	case nAbs%100 >= 11 && nAbs%100 <= 14:
+		return many
+	case nAbs%10 == 1:
+		return one
+	case nAbs%10 >= 2 && nAbs%10 <= 4:
+		return few
+	default:
+		return many
+	}
+}
+
 // T возвращает строку каталога по ключу; отсутствующий ключ — сам ключ.
 // При непустых args значение трактуется как форматная строка fmt.
 func T(key string, args ...any) string {
@@ -77,4 +98,44 @@ func T(key string, args ...any) string {
 		return v
 	}
 	return fmt.Sprintf(v, args...)
+}
+
+// EscapeHTML экранирует пользовательский текст под parse_mode=HTML (подмножество
+// Telegram: &, <, >). Единый хелпер для всех путей, где подставляются данные
+// пользователя: напоминания (заголовок дедлайна, слаг), claim-сообщения
+// (название группы) и ответы бота (/groups, /bind_group). Без экранирования
+// Telegram либо отвергнет сообщение («can't parse entities»), либо исполнит
+// чужую разметку.
+func EscapeHTML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	return strings.ReplaceAll(s, ">", "&gt;")
+}
+
+// Plain убирает разметку каталога из готовой строки. Значения каталога
+// размечены под parse_mode=HTML (спека §6.2), но часть сообщений уходит без
+// разметки — например команды бота, чей текст Telegram принимает в HTML-режиме
+// не всегда (ответ на /start в ЛС идёт с web_app-кнопкой, а не с тегами).
+// Поддерживаемое подмножество: <b> <i> <u> <s> <code> <pre> <a href="…">;
+// лишние пробелы от вырезанных тегов схлопываются. Пользовательские значения
+// должны быть предварительно прогнаны через EscapeHTML — иначе Plain вырежет и
+// их «теги».
+func Plain(s string) string {
+	for _, tag := range []string{"b", "i", "u", "s", "code", "pre"} {
+		s = strings.ReplaceAll(s, "<"+tag+">", "")
+		s = strings.ReplaceAll(s, "</"+tag+">", "")
+	}
+	// <a href="...">текст</a> → текст.
+	for {
+		start := strings.Index(s, "<a href=")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(s[start:], ">")
+		if end < 0 {
+			break
+		}
+		s = s[:start] + s[start+end+1:]
+	}
+	return strings.ReplaceAll(s, "</a>", "")
 }

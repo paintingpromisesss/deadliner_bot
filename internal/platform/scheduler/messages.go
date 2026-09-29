@@ -30,25 +30,6 @@ func formatWhen(t time.Time, tz string) string {
 	return fmt.Sprintf("%s (%s)", local.Format("02.01.2006 15:04"), abbr)
 }
 
-// pluralizeRu — русская форма числительного: «1 день», «2 дня», «5 дней»,
-// «21 день» (n%100 в 11..14 → родительный множественный).
-func pluralizeRu(n int, one, few, many string) string {
-	nAbs := n
-	if nAbs < 0 {
-		nAbs = -nAbs
-	}
-	switch {
-	case nAbs%100 >= 11 && nAbs%100 <= 14:
-		return many
-	case nAbs%10 == 1:
-		return one
-	case nAbs%10 >= 2 && nAbs%10 <= 4:
-		return few
-	default:
-		return many
-	}
-}
-
 // titleArg — аргумент заголовка: «24 часа», «3 дня» (в шаблон уже входит
 // «через»); при просроченном дедлайне — «просрочен на 1 час» + overdue=true
 // (используется ключ reminder.overdue.title).
@@ -71,30 +52,31 @@ func humanDuration(d time.Duration) string {
 		if n == 0 {
 			n = 1
 		}
-		return fmt.Sprintf("%d %s", n, pluralizeRu(n, "минуту", "минуты", "минут"))
+		return fmt.Sprintf("%d %s", n, i18n.Plural(n, "минуту", "минуты", "минут"))
 	case d <= 24*time.Hour:
 		n := int(d.Hours())
 		if n == 0 {
 			n = 1
 		}
-		return fmt.Sprintf("%d %s", n, pluralizeRu(n, "час", "часа", "часов"))
+		return fmt.Sprintf("%d %s", n, i18n.Plural(n, "час", "часа", "часов"))
 	default:
 		n := int(d.Hours() / 24)
-		return fmt.Sprintf("%d %s", n, pluralizeRu(n, "день", "дня", "дней"))
+		return fmt.Sprintf("%d %s", n, i18n.Plural(n, "день", "дня", "дней"))
 	}
 }
 
 // body — тело сообщения (строка после заголовка, спека §6.2):
 // «📌 title — slug\n🗓 когда». Пустой слаг (личный дедлайн) рендерится
-// отдельным шаблоном, чтобы не оставалось висящего « — ».
+// отдельным шаблоном, чтобы не оставалось висящего « — ». Значения заголовка и
+// слага — пользовательские, поэтому экранируются (parse_mode=HTML).
 func body(dl domain.Deadline, slug string) string {
 	when := formatWhen(dl.DueAt, dl.TZ)
 	datePart, tzPart, _ := strings.Cut(when, " (")
 	tz := strings.TrimSuffix(tzPart, ")")
 	if slug == "" {
-		return i18n.T(keyPersonalBody, dl.Title, datePart, tz)
+		return i18n.T(keyPersonalBody, i18n.EscapeHTML(dl.Title), datePart, tz)
 	}
-	return i18n.T(keyGroupBody, dl.Title, slug, datePart, tz)
+	return i18n.T(keyGroupBody, i18n.EscapeHTML(dl.Title), i18n.EscapeHTML(slug), datePart, tz)
 }
 
 // title — строка заголовка для i18n-ключа kind-зависимого.
@@ -118,5 +100,5 @@ func personalMessage(rem domain.Reminder, dl domain.Deadline) string {
 
 // dmDupMessage — дубли в ЛС (группа): «… (группа %s)».
 func dmDupMessage(rem domain.Reminder, dl domain.Deadline, slug string) string {
-	return title(rem.FireAt, dl.DueAt, keyDMDupTitle, slug) + "\n" + body(dl, slug)
+	return title(rem.FireAt, dl.DueAt, keyDMDupTitle, i18n.EscapeHTML(slug)) + "\n" + body(dl, slug)
 }

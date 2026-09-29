@@ -60,7 +60,8 @@ type Deps struct {
 	Sender MessageSender
 	// AdminChecker — проверка «бот — администратор чата» (BotSender).
 	AdminChecker ChatAdminChecker
-	// BotUserID — telegram id бота (getMe): подставляется в проверку админства.
+	// BotUserID — telegram id бота для проверки админства. Ноль означает
+	// «выведи из токена» (NewBot делает это офлайн через tgbot.Bot.ID).
 	BotUserID int64
 }
 
@@ -75,9 +76,9 @@ type Bot struct {
 }
 
 // NewBot создаёт бота, транспорт и регистрирует диспетчер апдейтов. Сеть не
-// запрашивается: id бота (для проверок админства) обязан передать вызывающий
-// (serve берёт его из getMe/конфига) — иначе остаётся 0 и /bind_group вернёт
-// «я не админ», что безопаснее ложного «админ».
+// запрашивается (WithSkipGetMe): id бота для проверок админства берётся из
+// самого токена (tgbot.Bot.ID разбирает префикс "<id>:<secret>"), а явный
+// Deps.BotUserID переопределяет его при необходимости.
 func NewBot(cfg BotConfig, deps Deps, log *slog.Logger) (*Bot, error) {
 	if strings.TrimSpace(cfg.Token) == "" {
 		return nil, errors.New("telegram: empty bot token")
@@ -87,6 +88,12 @@ func NewBot(cfg BotConfig, deps Deps, log *slog.Logger) (*Bot, error) {
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = ModePolling
+	}
+	// Fail-closed (спека §6.1): в webhook-режиме без секрета библиотека
+	// принимает любой POST /webhook, то есть подделанные апдейты — включая
+	// /bind_group в чужом чате. Лучше не стартовать, чем стартовать открытым.
+	if cfg.Mode == ModeWebhook && cfg.WebhookSecret == "" {
+		return nil, errors.New("telegram: webhook mode requires WebhookSecret (empty secret accepts forged updates)")
 	}
 
 	opts := []tgbot.Option{tgbot.WithSkipGetMe()}
@@ -102,6 +109,11 @@ func NewBot(cfg BotConfig, deps Deps, log *slog.Logger) (*Bot, error) {
 	api, err := tgbot.New(cfg.Token, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("telegram: new bot: %w", err)
+	}
+	// id бота берётся из самого токена (tgbot.Bot.ID, офлайн-разбор префикса
+	// "<id>:<secret>") — getMe не нужен, NewBot остаётся сетево-нейтральным.
+	if deps.BotUserID == 0 {
+		deps.BotUserID = api.ID()
 	}
 
 	sender := &BotSender{api: api}
@@ -131,16 +143,6 @@ func NewBot(cfg BotConfig, deps Deps, log *slog.Logger) (*Bot, error) {
 
 // Sender — транспорт (нужен serve для Notifier: общий лимитер на отправки).
 func (b *Bot) Sender() *BotSender { return b.sender }
-
-// BotID возвращает telegram id бота (getMe). Serve вызывает его до создания
-// хендлеров: без него проверка «бот — админ чата» отвечает «не админ».
-func (b *Bot) BotID(ctx context.Context) (int64, error) {
-	me, err := b.api.GetMe(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("telegram: getMe: %w", err)
-	}
-	return me.ID, nil
-}
 
 // API — нижележащий клиент (для методов, не покрытых адаптером).
 func (b *Bot) API() *tgbot.Bot { return b.api }

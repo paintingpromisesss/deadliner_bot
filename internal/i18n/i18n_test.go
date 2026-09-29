@@ -57,13 +57,14 @@ func TestRealCatalogLoads(t *testing.T) {
 		t.Fatalf("Load(Locales) = %v", err)
 	}
 
-	// Ключи, зафиксированные брифом задачи 5.
+	// Ключи, зафиксированные брифом задачи 5 (bot.bind.not_group_admin заменён
+	// на bot.bind.not_chat_admin в Task 10: текст говорит про права БОТА в чате).
 	required := []string{
 		"bot.start", "bot.help",
-		"bot.bind.ok", "bot.bind.conflict_already_bound", "bot.bind.not_group_admin", "bot.bind.unknown_slug",
+		"bot.bind.ok", "bot.bind.conflict_already_bound", "bot.bind.not_chat_admin", "bot.bind.unknown_slug",
 		"bot.unbind.ok", "bot.groups.empty",
 		"reminder.group.title", "reminder.group.body", "reminder.personal.title", "reminder.dm_dup.title",
-		"claim.code_message", "claim.success", "claim.revoked",
+		"claim.code_message", "claim.success", "claim.revoked", "claim.admin_replaced",
 		"invite.created", "invite.redeemed", "invite.expired",
 		"api.error.not_found", "api.error.conflict", "api.error.forbidden", "api.error.rate_limit", "api.error.validation",
 		"cleanup.group_deleted",
@@ -71,6 +72,16 @@ func TestRealCatalogLoads(t *testing.T) {
 	for _, k := range required {
 		if got := T(k); got == k {
 			t.Errorf("key %q missing from ru.json", k)
+		}
+	}
+
+	// Каждый ключ каталога рендерится без артефактов форматирования: текст с
+	// verb'ом должен принимать аргумент, иначе вывод ломается
+	// («Привязка чата снята.%!(EXTRA string=…)» — регрессия F-1).
+	for _, k := range []string{"bot.unbind.ok", "bot.bind.ok", "claim.admin_replaced", "claim.success"} {
+		got := T(k, "М8О-401Б-23")
+		if strings.Contains(got, "%!") {
+			t.Errorf("key %q renders a format artifact with an argument: %q", k, got)
 		}
 	}
 }
@@ -160,6 +171,60 @@ func countTopLevelKeys(data []byte) (int, error) {
 				}
 				expectKey = !expectKey
 			}
+		}
+	}
+}
+
+// Каждый ключ каталога, содержащий один %s, рендерится с аргументом без
+// артефактов вида «%!(EXTRA …)»: именно так вылезла регрессия F-1 (шаблон без
+// verb'а при вызове с аргументом).
+func TestCatalogArgsRenderCleanly(t *testing.T) {
+	if err := Load(Locales); err != nil {
+		t.Fatalf("Load(Locales): %v", err)
+	}
+
+	data, err := Locales.ReadFile("locales/ru.json")
+	if err != nil {
+		t.Fatalf("read ru.json: %v", err)
+	}
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	checked := 0
+	for k, v := range m {
+		verbs := strings.Count(v, "%s")
+		if verbs == 0 {
+			continue
+		}
+		checked++
+		args := make([]any, verbs)
+		for i := range args {
+			args[i] = "ЗНАЧЕНИЕ"
+		}
+		got := T(k, args...)
+		if strings.Contains(got, "%!") {
+			t.Errorf("key %q with %d arg(s) renders an artifact: %q", k, verbs, got)
+		}
+	}
+	if checked < 8 {
+		t.Errorf("only %d keys checked, expected the catalog's %%-keys", checked)
+	}
+}
+
+// Plain снимает разметку каталога, но не трогает текст и не оставляет следов.
+func TestPlainStripsMarkup(t *testing.T) {
+	cases := map[string]string{
+		"plain text":                     "plain text",
+		"⏰ <b>Дедлайн</b>":               "⏰ Дедлайн",
+		"<i>a</i> <code>b</code>":        "a b",
+		`<a href="https://x">ссылка</a>`: "ссылка",
+		"5 < 6":                          "5 < 6",
+	}
+	for in, want := range cases {
+		if got := Plain(in); got != want {
+			t.Errorf("Plain(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

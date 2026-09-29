@@ -28,12 +28,16 @@ func (s *BotSender) SendMessage(ctx context.Context, chatID int64, threadID *int
 	})
 }
 
-// Send отправляет OutMessage и возвращает message_id. Ошибки маппятся
-// TelegramError (429/403 → доменные).
+// Send отправляет OutMessage и возвращает message_id. Текст уходит с
+// parse_mode=HTML (спека §6.2: шаблоны каталога содержат <b>), поэтому все
+// пользовательские подстановки обязаны быть экранированы вызывающей стороной —
+// scheduler.escapeHTML и claims.htmlEscape делают это на своих путях. Ошибки
+// маппятся TelegramError (429/403 → доменные).
 func (s *BotSender) Send(ctx context.Context, m OutMessage) (int64, error) {
 	params := &tgbot.SendMessageParams{
-		ChatID: m.ChatID,
-		Text:   m.Text,
+		ChatID:    m.ChatID,
+		Text:      m.Text,
+		ParseMode: models.ParseModeHTML,
 	}
 	if m.ThreadID != nil && *m.ThreadID != 0 {
 		// В SendMessageParams поле int с omitempty: в топик форума нужно
@@ -92,19 +96,43 @@ func (s *BotSender) IsChatAdmin(ctx context.Context, chatID, userID int64) (bool
 		member.Type == models.ChatMemberTypeAdministrator, nil
 }
 
-// SetCommands — setMyCommands для дефолтного scope (спека §6.1).
+// SetCommands — setMyCommands в двух scope (спека §6.1: personal +
+// all_chat_administrators): пользователи видят клиентские команды, а
+// администраторы чатов — ещё и команды привязки, которыми они распоряжаются.
 func (s *BotSender) SetCommands(ctx context.Context, cmds []BotCommand) error {
-	list := make([]models.BotCommand, 0, len(cmds))
+	all := make([]models.BotCommand, 0, len(cmds))
+	adminOnly := make([]models.BotCommand, 0, len(cmds))
 	for _, c := range cmds {
-		list = append(list, models.BotCommand{Command: c.Command, Description: c.Description})
+		bc := models.BotCommand{Command: c.Command, Description: c.Description}
+		all = append(all, bc)
+		if isAdminCommand(c.Command) {
+			adminOnly = append(adminOnly, bc)
+		}
 	}
-	if _, err := s.api.SetMyCommands(ctx, &tgbot.SetMyCommandsParams{
-		Commands: list,
-		Scope:    &models.BotCommandScopeDefault{},
-	}); err != nil {
-		return fmt.Errorf("telegram: setMyCommands: %w", err)
+
+	scopes := []struct {
+		name  string
+		cmds  []models.BotCommand
+		scope models.BotCommandScope
+	}{
+		{"default", all, &models.BotCommandScopeDefault{}},
+		{"all_chat_administrators", adminOnly, &models.BotCommandScopeAllChatAdministrators{}},
+	}
+	for _, sc := range scopes {
+		if _, err := s.api.SetMyCommands(ctx, &tgbot.SetMyCommandsParams{
+			Commands: sc.cmds,
+			Scope:    sc.scope,
+		}); err != nil {
+			return fmt.Errorf("telegram: setMyCommands (%s): %w", sc.name, err)
+		}
 	}
 	return nil
+}
+
+// isAdminCommand — команды, которые имеет смысл показывать только
+// администраторам чатов (привязка/отвязка чата, спека §6.1).
+func isAdminCommand(cmd string) bool {
+	return cmd == "bind_group" || cmd == "unbind"
 }
 
 // SetMenuButton — menu button типа web_app (спека §6.1).

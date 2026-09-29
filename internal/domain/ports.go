@@ -185,6 +185,16 @@ type CounterRepo interface {
 	IncAndCheck(ctx context.Context, userID int64, action string, windowStart time.Time, limit int) (int, error)
 }
 
+// ChatCounterRepo — счётчики, привязанные к ЧАТУ, а не к пользователю
+// (спека §3.3: «лимит claim-кодов — 3/час на ЧАТ»). Отдельная таблица
+// chat_action_counters без FK: чат существует только как Telegram chat_id и
+// может быть ещё не привязан к группе. Семантика IncAndCheck — как у
+// CounterRepo: возвращает счётчик ПОСЛЕ инкремента, политика (count > limit)
+// остаётся в app-слое.
+type ChatCounterRepo interface {
+	IncAndCheck(ctx context.Context, chatID int64, action string, windowStart time.Time, limit int) (int, error)
+}
+
 type Session struct {
 	TokenHash string
 	UserID    int64

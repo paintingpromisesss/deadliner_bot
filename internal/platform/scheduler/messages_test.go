@@ -26,19 +26,19 @@ func TestPluralizeRu(t *testing.T) {
 		want string
 	}{1, "день"}
 	for _, c := range cases {
-		if got := pluralizeRu(c.n, "день", "дня", "дней"); got != c.want {
-			t.Errorf("pluralizeRu(%d) = %q, want %q", c.n, got, c.want)
+		if got := i18n.Plural(c.n, "день", "дня", "дней"); got != c.want {
+			t.Errorf("i18n.Plural(%d) = %q, want %q", c.n, got, c.want)
 		}
 	}
 	// Часы: 1 час, 2 часа, 5 часов, 21 час.
 	for n, want := range map[int]string{1: "час", 2: "часа", 5: "часов", 21: "час", 24: "часа"} {
-		if got := pluralizeRu(n, "час", "часа", "часов"); got != want {
-			t.Errorf("pluralizeRu(%d, часы) = %q, want %q", n, got, want)
+		if got := i18n.Plural(n, "час", "часа", "часов"); got != want {
+			t.Errorf("i18n.Plural(%d, часы) = %q, want %q", n, got, want)
 		}
 	}
 	// Отрицательные — модуль.
-	if got := pluralizeRu(-3, "день", "дня", "дней"); got != "дня" {
-		t.Errorf("pluralizeRu(-3) = %q", got)
+	if got := i18n.Plural(-3, "день", "дня", "дней"); got != "дня" {
+		t.Errorf("i18n.Plural(-3) = %q", got)
 	}
 }
 
@@ -136,5 +136,75 @@ func TestPersonalMessage(t *testing.T) {
 	}
 	if strings.Contains(got, " — ") {
 		t.Errorf("personalMessage contains dangling dash: %q", got)
+	}
+}
+
+// F-6: сообщения уходят с parse_mode=HTML, поэтому пользовательские значения
+// (заголовок дедлайна, слаг группы) обязаны экранироваться — иначе Telegram
+// отвергнет сообщение или подставит свою разметку.
+func TestMessagesEscapeUserText(t *testing.T) {
+	if err := i18n.Load(i18n.Locales); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = i18n.Load(i18n.Locales) })
+
+	loc, _ := time.LoadLocation("Europe/Moscow")
+	due := time.Date(2026, 9, 29, 23, 59, 0, 0, loc)
+	rem := domain.Reminder{Kind: domain.KindPreset, FireAt: due.Add(-24 * time.Hour)}
+
+	// Заголовок с полным набором спецсимволов HTML-подмножества Telegram.
+	dl := domain.Deadline{
+		Title: "<script>alert('&')</script>", DueAt: due, TZ: "Europe/Moscow",
+	}
+	got := groupMessage(rem, dl, "М8О-401Б-23")
+	if strings.Contains(got, "<script>") {
+		t.Errorf("title leaked unescaped into the message: %q", got)
+	}
+	if !strings.Contains(got, "&lt;script&gt;alert('&amp;')&lt;/script&gt;") {
+		t.Errorf("escaped title missing in %q", got)
+	}
+	// Собственная разметка шаблона остаётся рабочей (теги <b> не утекли).
+	if !strings.Contains(got, "⏰ <b>Дедлайн через 24 часа</b>") {
+		t.Errorf("template markup broke: %q", got)
+	}
+
+	// Слаг группы — тоже пользовательское значение.
+	gotDup := dmDupMessage(rem, dl, "М8О<401>&23")
+	if strings.Contains(gotDup, "М8О<401>&23") {
+		t.Errorf("slug leaked unescaped into the dm_dup message: %q", gotDup)
+	}
+	if !strings.Contains(gotDup, "М8О&lt;401&gt;&amp;23") {
+		t.Errorf("escaped slug missing in %q", gotDup)
+	}
+
+	// Личный дедлайн: тот же экранированный заголовок, без сегмента слага.
+	gotPersonal := personalMessage(rem, dl)
+	if strings.Contains(gotPersonal, "<script>") {
+		t.Errorf("title leaked unescaped into the personal message: %q", gotPersonal)
+	}
+
+	// Обычный кириллический текст не меняется (экранирование не портит вывод).
+	plain := domain.Deadline{Title: "Курсовая работа по БД", DueAt: due, TZ: "Europe/Moscow"}
+	if got := groupMessage(rem, plain, "М8О-401Б-23"); !strings.Contains(got, "Курсовая работа по БД") {
+		t.Errorf("plain text was altered: %q", got)
+	}
+}
+
+// i18n.EscapeHTML экранирует ровно подмножество Telegram-разметки (&, <, >);
+// общий хелпер — им пользуются и scheduler, и claims, и бот.
+func TestEscapeHTML(t *testing.T) {
+	cases := map[string]string{
+		"plain":          "plain",
+		"Курсовая":       "Курсовая",
+		"a & b":          "a &amp; b",
+		"<b>x</b>":       "&lt;b&gt;x&lt;/b&gt;",
+		"&lt;":           "&amp;lt;",
+		"quote\" '":      "quote\" '",
+		"5 > 3 && 2 < 4": "5 &gt; 3 &amp;&amp; 2 &lt; 4",
+	}
+	for in, want := range cases {
+		if got := i18n.EscapeHTML(in); got != want {
+			t.Errorf("i18n.EscapeHTML(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

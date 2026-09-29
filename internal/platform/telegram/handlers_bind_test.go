@@ -205,6 +205,35 @@ func TestStartPrivateSendsWelcomeWithWebAppButton(t *testing.T) {
 		t.Errorf("upserted = %+v, want one user telegram_id=7", hs.users.upserted)
 	}
 	if len(hs.users.unblocked) != 1 || hs.users.unblocked[0] != 7 {
+		t.Errorf("unblocked = %v, want [7] for a private-chat update", hs.users.unblocked)
+	}
+}
+
+// F-5: групповой апдейт пользователя обновляет, но bot_blocked НЕ снимает:
+// пользователь мог заблокировать бота в ЛС и продолжать писать в общий чат —
+// сброс флага заставил бы воркер снова тратить 403-отправки (§7.3).
+func TestGroupUpdateDoesNotClearBotBlocked(t *testing.T) {
+	hs := newHarness()
+	for _, upd := range []*models.Update{
+		update(-100500, models.ChatTypeSupergroup, 7, "ivan", "просто текст"),
+		update(-100500, models.ChatTypeSupergroup, 7, "ivan", "/help"),
+		withThread(update(-100500, models.ChatTypeSupergroup, 8, "petr", "/bind_group ИКБО-33-21"), 5),
+	} {
+		hs.h.Handle(context.Background(), upd)
+	}
+	if len(hs.users.unblocked) != 0 {
+		t.Errorf("unblocked = %v, want none for group updates", hs.users.unblocked)
+	}
+	if len(hs.users.upserted) != 3 {
+		t.Errorf("upserted = %d, want 3 (user refresh still happens in groups)", len(hs.users.upserted))
+	}
+}
+
+// F-5 (companion): приватный апдейт снимает флаг (пишущий боту не блокировал его).
+func TestPrivateUpdateClearsBotBlocked(t *testing.T) {
+	hs := newHarness()
+	hs.h.Handle(context.Background(), update(500, models.ChatTypePrivate, 7, "ivan", "привет"))
+	if len(hs.users.unblocked) != 1 || hs.users.unblocked[0] != 7 {
 		t.Errorf("unblocked = %v, want [7]", hs.users.unblocked)
 	}
 }
@@ -253,8 +282,12 @@ func TestBindGroupSuccess(t *testing.T) {
 		update(-100500, models.ChatTypeSupergroup, 7, "ivan", "/bind_group икбо-33-21"))
 
 	got := hs.sender.last(t)
-	if got.text != i18n.T("bot.bind.ok", "Чат группы") {
-		t.Errorf("text = %q, want bot.bind.ok with the chat title", got.text)
+	const want = "✅ Чат привязан к группе Чат группы."
+	if got.text != want {
+		t.Errorf("text = %q, want %q", got.text, want)
+	}
+	if strings.Contains(got.text, "%!") {
+		t.Errorf("text contains a format artifact: %q", got.text)
 	}
 	if got.threadID != nil {
 		t.Errorf("thread = %v, want nil for a non-forum chat", got.threadID)
@@ -376,8 +409,16 @@ func TestBindGroupWrongChatAndUsage(t *testing.T) {
 func TestUnbindSuccess(t *testing.T) {
 	hs := newHarness()
 	hs.h.Handle(context.Background(), update(-100500, models.ChatTypeSupergroup, 7, "ivan", "/unbind"))
-	if got := hs.sender.last(t); got.text != i18n.T("bot.unbind.ok", "Моя группа") {
-		t.Errorf("text = %q, want bot.unbind.ok", got.text)
+	// Литерал, а не повторный вызов i18n.T с теми же аргументами: тест должен
+	// ловить отсутствие глагола в шаблоне (F-1: раньше выводилось
+	// «Привязка чата снята.%!(EXTRA string=Моя группа)»).
+	got := hs.sender.last(t)
+	const want = "Привязка чата «Моя группа» снята."
+	if got.text != want {
+		t.Errorf("text = %q, want %q", got.text, want)
+	}
+	if strings.Contains(got.text, "%!") {
+		t.Errorf("text contains a format artifact: %q", got.text)
 	}
 }
 
@@ -567,6 +608,11 @@ func TestBotSenderSendAgainstStubAPI(t *testing.T) {
 	if gotForm["message_thread_id"] != "9" {
 		t.Errorf("message_thread_id = %q, want 9", gotForm["message_thread_id"])
 	}
+	// F-6: тексты каталога размечены под HTML (спека §6.2), поэтому parse_mode
+	// обязан доехать до API — иначе теги <b> уйдут в чат как текст.
+	if gotForm["parse_mode"] != "HTML" {
+		t.Errorf("parse_mode = %q, want HTML", gotForm["parse_mode"])
+	}
 	// Групповой чат (chat_id < 0): обычная url-кнопка, web_app запрещён Telegram.
 	if !strings.Contains(gotForm["reply_markup"], `"url":"https://example/app"`) {
 		t.Errorf("reply_markup = %q, want a url button", gotForm["reply_markup"])
@@ -752,4 +798,52 @@ func (s *minimalSender) SendMessage(ctx context.Context, chatID int64, threadID 
 	s.calls++
 	s.lastChat, s.lastText = chatID, text
 	return int64(s.calls) + 1000, nil
+}
+
+// F-6: ответы бота тоже уходят с parse_mode=HTML, поэтому пользовательские
+// значения в них экранируются — иначе Telegram отвергнет сообщение (400) или
+// покажет чужую разметку.
+func TestBotRepliesEscapeUserText(t *testing.T) {
+	hs := newHarness()
+	// Слаг с HTML-спецсимволами доходит до текста об ошибке.
+	hs.binder.bindChat = func(context.Context, *domain.User, int64, *int64, string, string) (*domain.Group, error) {
+		return nil, fmt.Errorf("%w: group slug_norm=X", domain.ErrNotFound)
+	}
+	hs.h.Handle(context.Background(),
+		update(-100500, models.ChatTypeSupergroup, 7, "ivan", "/bind_group <b>ЗЛОЙ</b>"))
+
+	got := hs.sender.last(t)
+	if strings.Contains(got.text, "<b>ЗЛОЙ</b>") {
+		t.Errorf("slug leaked unescaped into the reply: %q", got.text)
+	}
+	if !strings.Contains(got.text, "&lt;B&gt;ЗЛОЙ&lt;/B&gt;") {
+		t.Errorf("escaped slug missing in the reply: %q", got.text)
+	}
+
+	// Название группы в /groups и в подтверждении привязки — тоже.
+	hs.binder.mine = []groups.MyGroup{{
+		Group: domain.Group{Slug: "ИКБО-33-21", Title: "<i>&</i> Моя группа"},
+		Role:  domain.RoleAdmin,
+	}}
+	hs.h.Handle(context.Background(), update(500, models.ChatTypePrivate, 7, "ivan", "/groups"))
+	if got := hs.sender.last(t); strings.Contains(got.text, "<i>&</i>") {
+		t.Errorf("group title leaked unescaped into /groups: %q", got.text)
+	}
+
+	hs.binder.bindChat = nil
+	hs.h.Handle(context.Background(),
+		update(-100500, models.ChatTypeSupergroup, 7, "ivan", "/bind_group ИКБО-33-21"))
+	if got := hs.sender.last(t); strings.Contains(got.text, "<") {
+		t.Errorf("unexpected markup in the bind confirmation: %q", got.text)
+	}
+}
+
+// Разметка каталога в ответах бота снимается (i18n.Plain): пользователь не
+// должен видеть литеральные теги, даже если шаблон их содержит.
+func TestBotRepliesStripCatalogMarkup(t *testing.T) {
+	hs := newHarness()
+	hs.h.Handle(context.Background(), update(500, models.ChatTypePrivate, 7, "ivan", "/start"))
+	if got := hs.sender.last(t); strings.Contains(got.text, "<b>") || strings.Contains(got.text, "</b>") {
+		t.Errorf("catalog markup leaked into the reply: %q", got.text)
+	}
 }

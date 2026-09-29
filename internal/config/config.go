@@ -41,6 +41,15 @@ type Bot struct {
 	RatePerChat   int
 }
 
+// PollingModeWebhook — значение POLLING_MODE, включающее webhook-режим.
+const PollingModeWebhook = "webhook"
+
+// usesWebhook — режим приёма апдейтов: POLLING_MODE=webhook или заданный
+// WEBHOOK_URL. Используется валидацией секрета (fail-closed) и serve.
+func (b Bot) usesWebhook() bool {
+	return b.PollingMode == PollingModeWebhook || b.WebhookURL != ""
+}
+
 type Scheduler struct {
 	PollInterval time.Duration
 	Batch        int
@@ -151,6 +160,14 @@ func Load() (*Config, error) {
 	}
 	if cfg.DB.URL == "" {
 		l.errs = append(l.errs, errors.New("missing required env var DATABASE_URL"))
+	}
+	// Fail-closed: webhook-режим без секрета принимает ЛЮБОЙ POST /webhook
+	// (библиотека сверяет заголовок только при непустом секрете) — то есть
+	// подделанные апдейты, включая /bind_group в чужом чате. Режим webhook
+	// определяется POLLING_MODE=webhook либо непустым WEBHOOK_URL.
+	if cfg.Bot.usesWebhook() && cfg.Bot.WebhookSecret == "" {
+		l.errs = append(l.errs, errors.New(
+			"missing required env var WEBHOOK_SECRET: webhook mode without a secret token accepts forged updates"))
 	}
 
 	if len(l.errs) > 0 {

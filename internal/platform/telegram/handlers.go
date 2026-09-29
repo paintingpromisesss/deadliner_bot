@@ -97,7 +97,10 @@ func (h *Handlers) Handle(ctx context.Context, upd *models.Update) {
 	// /delete_group — Task 12 и здесь сознательно не реализуются.
 }
 
-// touchUser обновляет users (UpsertByTelegram) и снимает bot_blocked.
+// touchUser обновляет users (UpsertByTelegram) и — только в ЛС — снимает
+// bot_blocked. Групповой апдейт НЕ доказывает, что бот не заблокирован в ЛС:
+// пользователь мог заблокировать бота и продолжать писать в общий чат, а
+// сброс флага заставил бы воркер снова тратить 403-отправки (§7.3).
 // Возвращает входные данные автора или nil, если автора нет / БД недоступна —
 // команды, требующие личности, в этом случае не выполняются.
 func (h *Handlers) touchUser(ctx context.Context, msg *models.Message) *domain.User {
@@ -115,8 +118,10 @@ func (h *Handlers) touchUser(ctx context.Context, msg *models.Message) *domain.U
 			slog.Int64("telegram_id", from.ID), slog.String("error", err.Error()))
 		return nil
 	}
-	// Запись «не заблокирован» идемпотентна и дёшева: сбрасываем только при
-	// активном флаге, чтобы не платить UPDATE на каждый апдейт.
+	if !isPrivate(msg.Chat.Type) {
+		return u
+	}
+	// Личное сообщение боту — доказательство, что он не заблокирован.
 	if err := h.users.MarkBotBlocked(ctx, from.ID, false); err != nil {
 		h.log.Warn("telegram: mark bot unblocked failed",
 			slog.Int64("telegram_id", from.ID), slog.String("error", err.Error()))
@@ -176,8 +181,10 @@ func (h *Handlers) handleGroups(ctx context.Context, msg *models.Message, actor 
 	lines := make([]string, 0, len(mine)+1)
 	lines = append(lines, i18n.T("bot.groups.header"))
 	for _, mg := range mine {
-		lines = append(lines, i18n.T("bot.groups.item", mg.Group.Slug,
-			i18n.T("bot.role."+string(mg.Role)), mg.Group.Title))
+		lines = append(lines, i18n.T("bot.groups.item",
+			i18n.EscapeHTML(mg.Group.Slug),
+			i18n.EscapeHTML(i18n.T("bot.role."+string(mg.Role))),
+			i18n.EscapeHTML(mg.Group.Title)))
 	}
 	h.send(ctx, msg.Chat.ID, nil, strings.Join(lines, "\n"), true)
 }
@@ -227,7 +234,7 @@ func (h *Handlers) handleBindGroup(ctx context.Context, msg *models.Message, act
 		h.send(ctx, msg.Chat.ID, thread, bindErrorText(arg, err), false)
 		return
 	}
-	h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.bind.ok", g.Title), false)
+	h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.bind.ok", i18n.EscapeHTML(g.Title)), false)
 }
 
 // handleUnbind — /unbind: снять привязку (роль admin группы, спека §6.1).
@@ -246,7 +253,7 @@ func (h *Handlers) handleUnbind(ctx context.Context, msg *models.Message, actor 
 		h.send(ctx, msg.Chat.ID, thread, unbindErrorText(err), false)
 		return
 	}
-	h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.unbind.ok", g.Title), false)
+	h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.unbind.ok", i18n.EscapeHTML(g.Title)), false)
 }
 
 // bindErrorText — доменная ошибка → текст для чата: максимально конкретно,
@@ -260,11 +267,11 @@ func bindErrorText(slug string, err error) string {
 	case errors.Is(err, groups.ErrChatAlreadyBound):
 		return i18n.T("bot.bind.conflict_already_bound")
 	case errors.Is(err, groups.ErrGroupAlreadyBound):
-		return i18n.T("bot.bind.group_bound_elsewhere", domain.Normalize(slug))
+		return i18n.T("bot.bind.group_bound_elsewhere", i18n.EscapeHTML(domain.Normalize(slug)))
 	case errors.Is(err, domain.ErrForbidden):
 		return i18n.T("bot.bind.not_member")
 	case errors.Is(err, domain.ErrNotFound):
-		return i18n.T("bot.bind.unknown_slug", domain.Normalize(slug))
+		return i18n.T("bot.bind.unknown_slug", i18n.EscapeHTML(domain.Normalize(slug)))
 	default:
 		return i18n.T("bot.error.generic")
 	}
@@ -288,7 +295,9 @@ func (h *Handlers) send(ctx context.Context, chatID int64, threadID *int64, text
 	if h.sender == nil || text == "" {
 		return
 	}
-	m := OutMessage{ChatID: chatID, ThreadID: threadID, Text: text, LinkPreviewOff: true}
+	// Тексты команд — без разметки: i18n.Plain снимает HTML-теги каталога,
+	// чтобы пользователь не увидел литеральные <b> при любом parse_mode.
+	m := OutMessage{ChatID: chatID, ThreadID: threadID, Text: i18n.Plain(text), LinkPreviewOff: true}
 	if withButton && h.appURL != "" {
 		m.ButtonText = i18n.T("bot.button.open_app")
 		m.ButtonURL = h.appURL

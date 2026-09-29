@@ -88,8 +88,8 @@ func newTestDB(t *testing.T) *pgxpool.Pool {
 	defer cancel()
 	_, err := testPool.Exec(ctx, `TRUNCATE
 		users, groups, chat_bindings, group_memberships, deadlines, reminders,
-		invites, claim_codes, user_action_counters, sessions, outbox_messages,
-		audit_log CASCADE`)
+		invites, claim_codes, user_action_counters, chat_action_counters, sessions,
+		outbox_messages, audit_log CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

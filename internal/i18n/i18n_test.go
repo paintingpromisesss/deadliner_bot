@@ -64,7 +64,8 @@ func TestRealCatalogLoads(t *testing.T) {
 		"bot.bind.ok", "bot.bind.conflict_already_bound", "bot.bind.not_chat_admin", "bot.bind.unknown_slug",
 		"bot.unbind.ok", "bot.groups.empty",
 		"reminder.group.title", "reminder.group.body", "reminder.personal.title", "reminder.dm_dup.title",
-		"claim.code_message", "claim.success", "claim.revoked", "claim.admin_replaced",
+		"claim.code_message", "claim.success", "claim.revoked",
+		"claim.admin_change_started", "claim.admin_replaced",
 		"invite.created", "invite.redeemed", "invite.expired",
 		"api.error.not_found", "api.error.conflict", "api.error.forbidden", "api.error.rate_limit", "api.error.validation",
 		"cleanup.group_deleted",
@@ -75,13 +76,31 @@ func TestRealCatalogLoads(t *testing.T) {
 		}
 	}
 
-	// Каждый ключ каталога рендерится без артефактов форматирования: текст с
-	// verb'ом должен принимать аргумент, иначе вывод ломается
-	// («Привязка чата снята.%!(EXTRA string=…)» — регрессия F-1).
+	// Каждый ключ каталога рендерится без артефактов форматирования: число
+	// аргументов берётся из самого шаблона, поэтому двухаргументный
+	// claim.admin_replaced тоже проверяется (неверное число даёт «%!s(MISSING)»
+	// или «%!(EXTRA …)» — регрессия F-1).
+	data, err := Locales.ReadFile("locales/ru.json")
+	if err != nil {
+		t.Fatalf("read ru.json: %v", err)
+	}
+	var all map[string]string
+	if err := json.Unmarshal(data, &all); err != nil {
+		t.Fatalf("decode ru.json: %v", err)
+	}
 	for _, k := range []string{"bot.unbind.ok", "bot.bind.ok", "claim.admin_replaced", "claim.success"} {
-		got := T(k, "М8О-401Б-23")
+		tmpl, ok := all[k]
+		if !ok {
+			t.Errorf("key %q missing from ru.json", k)
+			continue
+		}
+		args := make([]any, strings.Count(tmpl, "%s"))
+		for i := range args {
+			args[i] = "М8О-401Б-23"
+		}
+		got := T(k, args...)
 		if strings.Contains(got, "%!") {
-			t.Errorf("key %q renders a format artifact with an argument: %q", k, got)
+			t.Errorf("key %q renders a format artifact with %d arg(s): %q", k, len(args), got)
 		}
 	}
 }

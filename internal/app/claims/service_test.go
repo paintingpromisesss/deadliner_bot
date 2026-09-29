@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -333,13 +334,18 @@ type counterKey struct {
 	window time.Time
 }
 
-type fakeCounterRepo struct{ counts map[counterKey]int }
+type fakeCounterRepo struct {
+	mu     sync.Mutex
+	counts map[counterKey]int
+}
 
 func newFakeCounterRepo() *fakeCounterRepo {
 	return &fakeCounterRepo{counts: map[counterKey]int{}}
 }
 
 func (r *fakeCounterRepo) IncAndCheck(ctx context.Context, userID int64, action string, windowStart time.Time, limit int) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	k := counterKey{userID, action, windowStart}
 	r.counts[k]++
 	return r.counts[k], nil
@@ -771,6 +777,12 @@ func TestStartClaimNotifiesExistingAdmins(t *testing.T) {
 			t.Errorf("requester notified himself: %v", f.notifier.dms)
 		}
 	}
+	// Текст — «запрошена смена», а не «администратор изменён»: на этом шаге код
+	// ещё жив и его можно отозвать (Fix round 2).
+	wantStarted := i18n.T("claim.admin_change_started", "Моя группа")
+	if !containsText(f.notifier.dmTexts, wantStarted) {
+		t.Errorf("DM texts = %+v, want %q", f.notifier.dmTexts, wantStarted)
+	}
 	if len(f.audit.entries) != 1 || f.audit.entries[0].Action != "claim.start" {
 		t.Errorf("audit = %+v, want single claim.start", f.audit.entries)
 	}
@@ -820,10 +832,15 @@ func TestConfirmSuccess(t *testing.T) {
 	if _, err := f.claims.GetActiveByGroup(ctx, f.groupID, f.clock.now); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("GetActiveByGroup after Confirm = %v, want ErrNotFound", err)
 	}
-	// Действующий админ (5000) — уведомление о смене старосты; сам
+	// Действующий админ (5000) — уведомление о состоявшейся смене старосты
+	// (Fix round 2: claim.admin_replaced с именем нового админа); сам
 	// подтвердивший (actor(2).TelegramID = 1002) — claim.success.
 	if len(f.notifier.dms) != 2 || f.notifier.dms[0] != 5000 || f.notifier.dms[1] != actor(2).TelegramID {
 		t.Errorf("DMs = %v, want [5000 %d]", f.notifier.dms, actor(2).TelegramID)
+	}
+	wantReplaced := i18n.T("claim.admin_replaced", "Моя группа", i18n.EscapeHTML(displayName(actor(2))))
+	if !containsText(f.notifier.dmTexts, wantReplaced) {
+		t.Errorf("DM texts = %+v, want %q among them", f.notifier.dmTexts, wantReplaced)
 	}
 	var confirmed bool
 	for _, e := range f.audit.entries {
@@ -1357,14 +1374,90 @@ func TestClaimMessagesEscapeHTML(t *testing.T) {
 		t.Fatalf("Confirm: %v", err)
 	}
 
-	want := i18n.T("claim.admin_replaced", "Очень &lt;b&gt;важная&lt;/b&gt; &amp; группа")
-	found := false
+	// Сообщение «смена состоялась» с экранированным названием группы и именем
+	// нового админа (actor(2).FirstName пуст → @username, здесь тоже пуст →
+	// «участник»).
+	wantReplaced := i18n.T("claim.admin_replaced",
+		"Очень &lt;b&gt;важная&lt;/b&gt; &amp; группа", i18n.EscapeHTML(displayName(actor(2))))
+	if !containsText(f.notifier.dmTexts, wantReplaced) {
+		t.Errorf("escaped claim.admin_replaced not sent; DMs = %+v\nwant %q", f.notifier.dmTexts, wantReplaced)
+	}
+
+	// Сообщение «запрошена смена» уходит на StartClaim с тем же экранированием
+	// (запрашивать код может только участник группы).
+	if err := f.members.Upsert(ctx, &domain.Membership{
+		GroupID: f.groupID, UserID: 3, Role: domain.RoleMember,
+	}); err != nil {
+		t.Fatalf("seed member: %v", err)
+	}
+	f.notifier.dmTexts = nil
+	if _, err := f.svc.StartClaim(ctx, actor(3), f.groupID); err != nil {
+		t.Fatalf("StartClaim: %v", err)
+	}
+	wantStarted := i18n.T("claim.admin_change_started", "Очень &lt;b&gt;важная&lt;/b&gt; &amp; группа")
+	if !containsText(f.notifier.dmTexts, wantStarted) {
+		t.Errorf("escaped claim.admin_change_started not sent; DMs = %+v\nwant %q", f.notifier.dmTexts, wantStarted)
+	}
 	for _, msg := range f.notifier.dmTexts {
-		if msg == want {
-			found = true
+		if strings.Contains(msg, "<b>") || strings.Contains(msg, "&amp;amp;") {
+			t.Errorf("unescaped group title leaked into a DM: %q", msg)
 		}
 	}
-	if !found {
-		t.Errorf("escaped admin message not sent; DMs = %+v\nwant %q", f.notifier.dmTexts, want)
+}
+
+// containsText — есть ли точное совпадение среди отправленных текстов.
+func containsText(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// --- Fix round 2: сжигание кода только для участников группы ---
+
+// Посторонний (не участник) исчерпал свой бюджет: он получает RateLimitError,
+// но код группы остаётся живым — иначе любой авторизованный пользователь мог бы
+// бесконечно вынуждать админов выпускать код заново (DoS на смену старосты).
+func TestConfirmBudgetNonMemberDoesNotBurnCode(t *testing.T) {
+	f := newFixture(t, true)
+	ctx := context.Background()
+	code := confirmFixture(t, f)
+	wrong := "999999"
+	if code == wrong {
+		wrong = "000000"
+	}
+
+	// actor(99) в группе не состоит: StartClaim ему запрещён, а Confirm — нет
+	// (эндпоинт доступен любому авторизованному).
+	if _, err := f.members.Get(ctx, f.groupID, 99); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("fixture: user 99 must not be a member, got %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := f.svc.Confirm(ctx, actor(99), f.groupID, wrong); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("outsider attempt %d = %v, want ErrForbidden", i, err)
+		}
+	}
+	// 11-я попытка — лимит только для него самого.
+	if _, err := f.svc.Confirm(ctx, actor(99), f.groupID, wrong); !errors.Is(err, domain.ErrRateLimit) {
+		t.Fatalf("outsider 11th attempt = %v, want ErrRateLimit", err)
+	}
+	// Код не сгорел и подтверждается участником группы.
+	if _, err := f.claims.GetActiveByGroup(ctx, f.groupID, f.clock.now); err != nil {
+		t.Fatalf("code must stay active after a non-member exhausted the budget: %v", err)
+	}
+	g, err := f.svc.Confirm(ctx, actor(2), f.groupID, code)
+	if err != nil {
+		t.Fatalf("member Confirm after outsider exhausted the budget: %v", err)
+	}
+	if g.Status != domain.GroupStatusActive {
+		t.Errorf("group status = %q, want active", g.Status)
+	}
+	// Аудит не содержит сожжения кода.
+	for _, e := range f.audit.entries {
+		if e.Action == "claim.code_burned" {
+			t.Errorf("code was burned for a non-member: %+v", e)
+		}
 	}
 }

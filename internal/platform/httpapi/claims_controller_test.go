@@ -507,15 +507,61 @@ func TestClaimStartNotifiesExistingAdmins(t *testing.T) {
 	}
 
 	// Второй пользователь (участник группы) запрашивает код: действующий админ
-	// получает ЛС-уведомление о смене старосты.
+	// получает ЛС-уведомление о ЗАПРОШЕННОЙ смене (не о состоявшейся: код ещё
+	// жив и его можно отозвать).
 	addMember(t, gid, 6602)
 	nfy.dms = nil
+	nfy.dmTexts = nil
 	if resp := doJSON(r, http.MethodPost, fmt.Sprintf("/api/v1/groups/%d/claim/start", gid), otherTok, nil); resp.Code != http.StatusOK {
 		t.Fatalf("second claim/start = %d; body: %s", resp.Code, resp.Body)
 	}
 	if len(nfy.dms) != 1 || nfy.dms[0] != 6601 {
 		t.Errorf("admin DMs = %v, want [6601]", nfy.dms)
 	}
+	// Текст — «запрошена смена», а не «администратор изменён» (Fix round 2:
+	// сообщение о состоявшейся смене уходит только после успешного confirm).
+	started := i18n.T("claim.admin_change_started", "T")
+	if len(nfy.dmTexts) != 1 || nfy.dmTexts[0] != started {
+		t.Errorf("admin DM = %q, want %q", nfy.dmTexts, started)
+	}
+	// Подтверждение вторым пользователем → админ получает сообщение о факте
+	// смены, с именем нового админа.
+	nfy.dmTexts = nil
+	if resp := doJSON(r, http.MethodPost, fmt.Sprintf("/api/v1/groups/%d/claim/confirm", gid), otherTok,
+		map[string]any{"code": nfy.code(t)}); resp.Code != http.StatusOK {
+		t.Fatalf("second claim/confirm = %d; body: %s", resp.Code, resp.Body)
+	}
+	name := displayNameOf(t, 6602)
+	replaced := i18n.T("claim.admin_replaced", "T", i18n.EscapeHTML(name))
+	found := false
+	for _, text := range nfy.dmTexts {
+		if text == replaced {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("admin DM after confirm = %+v, want %q", nfy.dmTexts, replaced)
+	}
+}
+
+// displayNameOf — имя пользователя так, как его видит claims.displayName:
+// first_name, иначе @username, иначе «участник». login() создаёт пользователя
+// без имени, поэтому здесь фиксируется фактический фолбэк.
+func displayNameOf(t *testing.T, telegramID int64) string {
+	t.Helper()
+	var first, username *string
+	if err := testPool.QueryRow(t.Context(),
+		`SELECT first_name, username FROM users WHERE telegram_id = $1`, telegramID).
+		Scan(&first, &username); err != nil {
+		t.Fatalf("read user %d: %v", telegramID, err)
+	}
+	if first != nil && strings.TrimSpace(*first) != "" {
+		return *first
+	}
+	if username != nil && strings.TrimSpace(*username) != "" {
+		return "@" + *username
+	}
+	return "участник"
 }
 
 // Сбой публикации кода в чат → 409 и код не сохраняется (следующий запрос

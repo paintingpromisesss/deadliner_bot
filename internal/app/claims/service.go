@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/sauron/deadliner/internal/domain"
@@ -269,7 +270,9 @@ func (s *Service) StartClaim(ctx context.Context, actor *domain.User, groupID in
 
 	s.writeAudit(ctx, actor.ID, "claim.start", "group", groupID,
 		map[string]any{"claim_id": cc.ID, "chat_id": b.ChatID, "admins": len(admins)})
-	s.notifyAdmins(ctx, admins, i18n.T("claim.admin_replaced", i18n.EscapeHTML(g.Title)))
+	// «Запрошена смена»: код только что опубликован, подтверждения ещё не было
+	// — админам нужен шанс отозвать код (спека §3.1), а не уведомление о факте.
+	s.notifyAdmins(ctx, admins, i18n.T("claim.admin_change_started", i18n.EscapeHTML(g.Title)))
 
 	return &StartResult{ExpiresAt: cc.ExpiresAt, ChatID: b.ChatID}, nil
 }
@@ -337,7 +340,9 @@ func (s *Service) Confirm(ctx context.Context, actor *domain.User, groupID int64
 
 	s.writeAudit(ctx, actor.ID, "claim.confirm", "group", groupID,
 		map[string]any{"claim_id": cc.ID, "role": string(domain.RoleAdmin)})
-	s.notifyAdmins(ctx, admins, i18n.T("claim.admin_replaced", i18n.EscapeHTML(g.Title)))
+	// Смена состоялась: имя нового админа в тексте — first_name, иначе @username.
+	s.notifyAdmins(ctx, admins, i18n.T("claim.admin_replaced",
+		i18n.EscapeHTML(g.Title), i18n.EscapeHTML(displayName(actor))))
 	// Подтвердившему — ЛС-подтверждение (claim.success, best-effort): результат
 	// заметен, даже если TMA закрыт.
 	s.notify(ctx, actor.TelegramID, i18n.T("claim.success", i18n.EscapeHTML(g.Title)), "claimer")
@@ -412,8 +417,11 @@ func (s *Service) checkLimits(ctx context.Context, actorID, chatID int64, now ti
 // строго до сверки хэша. На практике успешный claim бывает один на код, а
 // бюджет — 10 попыток за окно TTL кода.
 //
-// Исчерпание бюджета гасит активный код группы: окно перебора закрывается
-// вместе с кодом (даже при смене пользователя счётчик остаётся у старого).
+// Исчерпание бюджета гасит активный код группы ТОЛЬКО если исчерпавший —
+// участник группы: посторонний, дожигая свой личный бюджет, иначе мог бы
+// вынуждать админов выпускать код заново бесконечно (DoS на смену старосты).
+// Не-участник получает лишь собственный RateLimitError, код остаётся живым —
+// он всё равно не видит код чата (социальный контроль, спека §3.1).
 func (s *Service) checkConfirmBudget(ctx context.Context, actorID, groupID int64, now time.Time) error {
 	windowStart := now.Truncate(s.cfg.ConfirmFailWindow)
 	count, err := s.counters.IncAndCheck(ctx, actorID, actionConfirmFail, windowStart, s.cfg.ConfirmFailLimit)
@@ -424,8 +432,22 @@ func (s *Service) checkConfirmBudget(ctx context.Context, actorID, groupID int64
 		return nil
 	}
 
-	// Бюджет исчерпан: гасим действующий код группы, чтобы перебор стал
-	// бессмысленным даже при смене пользователя (счётчик — на пользователя).
+	rateLimited := &domain.RateLimitError{RetryAfter: s.cfg.ConfirmFailWindow - now.Sub(windowStart)}
+
+	member, err := s.isMember(ctx, groupID, actorID)
+	if err != nil {
+		return err
+	}
+	if !member {
+		// Посторонний исчерпал свой бюджет попыток: ограничиваем его самого,
+		// но НЕ трогаем код группы.
+		s.log.Info("claims: confirm budget exhausted by a non-member",
+			slog.Int64("group_id", groupID), slog.Int64("user_id", actorID))
+		return rateLimited
+	}
+
+	// Участник группы: гасим действующий код, окно перебора закрывается вместе
+	// с кодом (счётчик — на пользователя, поэтому сам код и есть общий барьер).
 	if cc, err := s.claims.GetActiveByGroup(ctx, groupID, now); err == nil {
 		if err := s.claims.MarkUsed(ctx, cc.ID, now); err != nil {
 			s.log.Warn("claims: burning bruteforced code failed",
@@ -438,7 +460,37 @@ func (s *Service) checkConfirmBudget(ctx context.Context, actorID, groupID int64
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return err
 	}
-	return &domain.RateLimitError{RetryAfter: s.cfg.ConfirmFailWindow - now.Sub(windowStart)}
+	return rateLimited
+}
+
+// displayName — человекочитаемое имя пользователя для уведомлений о смене
+// старосты: first_name, иначе @username, иначе нейтральное «участник».
+// Экранируется вызывающей стороной (тексты уходят с parse_mode=HTML).
+func displayName(u *domain.User) string {
+	if u == nil {
+		return "участник"
+	}
+	if strings.TrimSpace(u.FirstName) != "" {
+		return u.FirstName
+	}
+	if strings.TrimSpace(u.Username) != "" {
+		return "@" + u.Username
+	}
+	return "участник"
+}
+
+// isMember — есть ли у пользователя membership группы (ровно то, что вернул бы
+// MembershipRepo.Get). Создатель, вышедший из группы, и superadmin сюда не
+// попадают: право «сжечь» код намеренно минимально (правило ревью — гаснуть
+// код может только для участника), ошибиться в сторону «не жечь» безопасно.
+func (s *Service) isMember(ctx context.Context, groupID, userID int64) (bool, error) {
+	if _, err := s.members.Get(ctx, groupID, userID); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // adminTelegramIDs — telegram_id действующих админов группы, кроме skipUserID

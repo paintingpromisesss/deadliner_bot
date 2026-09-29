@@ -30,9 +30,9 @@ func (s *BotSender) SendMessage(ctx context.Context, chatID int64, threadID *int
 
 // Send отправляет OutMessage и возвращает message_id. Текст уходит с
 // parse_mode=HTML (спека §6.2: шаблоны каталога содержат <b>), поэтому все
-// пользовательские подстановки обязаны быть экранированы вызывающей стороной —
-// scheduler.escapeHTML и claims.htmlEscape делают это на своих путях. Ошибки
-// маппятся TelegramError (429/403 → доменные).
+// пользовательские подстановки обязаны быть экранированы вызывающей стороной
+// через общий хелпер i18n.EscapeHTML (им пользуются scheduler, claims и
+// handlers). Ошибки маппятся TelegramError (429/403 → доменные).
 func (s *BotSender) Send(ctx context.Context, m OutMessage) (int64, error) {
 	params := &tgbot.SendMessageParams{
 		ChatID:    m.ChatID,

@@ -14,6 +14,7 @@ type Config struct {
 	Bot       Bot
 	Scheduler Scheduler
 	Limits    Limits
+	Cleanup   Cleanup
 }
 
 type App struct {
@@ -55,6 +56,13 @@ type Scheduler struct {
 	Batch        int
 	LockTTL      time.Duration
 	MaxAttempts  int
+}
+
+// Cleanup — параметры cleanup-джобы pending-групп (спека §3.3, §8).
+type Cleanup struct {
+	// Interval — CLEANUP_INTERVAL: период прогона автоудаления протухших
+	// pending-групп и служебной уборки (дефолт 1h — спека §12 п.7).
+	Interval time.Duration
 }
 
 type Limits struct {
@@ -143,6 +151,9 @@ func Load() (*Config, error) {
 			Batch:        l.int("SCHED_BATCH", 50),
 			LockTTL:      l.duration("SCHED_LOCK_TTL", 2*time.Minute),
 			MaxAttempts:  l.int("SCHED_MAX_ATTEMPTS", 5),
+		},
+		Cleanup: Cleanup{
+			Interval: l.duration("CLEANUP_INTERVAL", time.Hour),
 		},
 		Limits: Limits{
 			GroupPendingTTL:      l.days("GROUP_PENDING_TTL_DAYS", 14),

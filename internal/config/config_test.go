@@ -52,6 +52,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Scheduler.MaxAttempts != 5 {
 		t.Errorf("Scheduler.MaxAttempts = %d, want 5", cfg.Scheduler.MaxAttempts)
 	}
+	if cfg.Cleanup.Interval != time.Hour {
+		t.Errorf("Cleanup.Interval = %v, want %v", cfg.Cleanup.Interval, time.Hour)
+	}
 	if cfg.Bot.RateGlobal != 25 {
 		t.Errorf("Bot.RateGlobal = %d, want 25", cfg.Bot.RateGlobal)
 	}
@@ -105,6 +108,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("SCHED_BATCH", "100")
 	t.Setenv("SCHED_LOCK_TTL", "5m")
 	t.Setenv("SCHED_MAX_ATTEMPTS", "3")
+	t.Setenv("CLEANUP_INTERVAL", "15m")
 	t.Setenv("TG_RATE_GLOBAL", "20")
 	t.Setenv("TG_RATE_PER_CHAT", "15")
 	t.Setenv("GROUP_PENDING_TTL_DAYS", "30")
@@ -164,6 +168,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.Scheduler.MaxAttempts != 3 {
 		t.Errorf("Scheduler.MaxAttempts = %d", cfg.Scheduler.MaxAttempts)
+	}
+	if cfg.Cleanup.Interval != 15*time.Minute {
+		t.Errorf("Cleanup.Interval = %v, want 15m", cfg.Cleanup.Interval)
 	}
 	if cfg.Limits.GroupPendingTTL != 30*24*time.Hour {
 		t.Errorf("Limits.GroupPendingTTL = %v", cfg.Limits.GroupPendingTTL)

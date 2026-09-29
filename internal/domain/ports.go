@@ -211,6 +211,34 @@ type SessionRepo interface {
 	RevokeAllForUser(ctx context.Context, userID int64) error
 }
 
+// Stats — счётчики инстанса для /stats и CLI `admin stats` (спека §6.1, §7.2
+// п.4): состояние очереди напоминаний видно супер-админу.
+type Stats struct {
+	Users            int64
+	GroupsTotal      int64
+	GroupsActive     int64
+	GroupsPending    int64
+	DeadlinesActive  int64
+	RemindersPending int64
+	RemindersFailed  int64
+	SessionsActive   int64
+}
+
+// MaintenanceRepo — служебные операции над таблицами, у которых нет
+// доменной сущности с собственным use case: счётчики rate-limit и сессии.
+// Нужен cleanup-джобе (Task 12: старые окна счётчиков + истёкшие сессии) и
+// статистике инстанса.
+type MaintenanceRepo interface {
+	// Stats собирает счётчики инстанса на момент now (сессии — активные).
+	Stats(ctx context.Context, now time.Time) (Stats, error)
+	// PurgeCounters удаляет окна счётчиков (user_action_counters и
+	// chat_action_counters) старше olderThan и возвращает число строк.
+	PurgeCounters(ctx context.Context, olderThan time.Time) (int64, error)
+	// PurgeExpiredSessions удаляет строки сессий, истёкшие до olderThan
+	// (сама сессия недействительна уже в expires_at — olderThan задаёт грейс).
+	PurgeExpiredSessions(ctx context.Context, olderThan time.Time) (int64, error)
+}
+
 type AuditEntry struct {
 	ID          int64
 	ActorUserID *int64

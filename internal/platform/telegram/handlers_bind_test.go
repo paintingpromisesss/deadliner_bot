@@ -76,10 +76,21 @@ type fakeUsers struct {
 	upserted  []*domain.User
 	unblocked []int64
 	err       error
+	// me — что возвращает GetByTelegramID (гидратация для guard'а
+	// супер-админа); nil → ErrNotFound.
+	me    *domain.User
+	meErr error
 }
 
 func (u *fakeUsers) GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error) {
-	return nil, domain.ErrNotFound
+	if u.meErr != nil {
+		return nil, u.meErr
+	}
+	if u.me == nil {
+		return nil, domain.ErrNotFound
+	}
+	cp := *u.me
+	return &cp, nil
 }
 func (u *fakeUsers) GetByID(ctx context.Context, id int64) (*domain.User, error) {
 	return nil, domain.ErrNotFound
@@ -554,16 +565,8 @@ func TestPlainTextIgnored(t *testing.T) {
 	}
 }
 
-// Superadmin-команды Task 12 не реализованы и не отвечают.
-func TestSuperadminCommandsNotImplemented(t *testing.T) {
-	hs := newHarness()
-	for _, cmd := range []string{"/promote 1 ИКБО-33-21", "/ban 1", "/stats", "/delete_group ИКБО-33-21"} {
-		hs.h.Handle(context.Background(), update(500, models.ChatTypePrivate, 7, "ivan", cmd))
-	}
-	if len(hs.sender.sent) != 0 {
-		t.Errorf("sent = %+v, want none for Task 12 commands", hs.sender.sent)
-	}
-}
+// Superadmin-команды: реализованы в Task 12 и проверяются в
+// handlers_superadmin_test.go (guard is_superadmin, отказ в ЛС, действия).
 
 // Callback-запросы и пустые апдейты игнорируются.
 func TestNonMessageUpdatesIgnored(t *testing.T) {
@@ -593,11 +596,15 @@ func TestSplitCommand(t *testing.T) {
 	}
 }
 
-// commands() перечисляет только клиентские команды v1 (Task 12 — отдельно).
+// commands() перечисляет команды меню: клиентские + служебные (последние
+// защищены is_superadmin, но регистрируются в default-scope — спека §6.1).
 func TestCommandsList(t *testing.T) {
 	hs := newHarness()
 	cmds := hs.h.commands()
-	want := []string{"start", "help", "groups", "new_deadline", "bind_group", "unbind"}
+	want := []string{
+		"start", "help", "groups", "new_deadline", "bind_group", "unbind",
+		"promote", "ban", "unban", "stats", "delete_group",
+	}
 	if len(cmds) != len(want) {
 		t.Fatalf("commands = %d, want %d", len(cmds), len(want))
 	}

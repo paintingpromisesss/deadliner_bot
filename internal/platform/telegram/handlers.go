@@ -20,6 +20,7 @@ import (
 type Handlers struct {
 	users        domain.UserRepo
 	binder       GroupBinder
+	superadmin   Superadmin
 	sender       MessageSender
 	adminChecker ChatAdminChecker
 	botUserID    int64
@@ -33,6 +34,9 @@ type HandlersDeps struct {
 	Binder       GroupBinder
 	Sender       MessageSender
 	AdminChecker ChatAdminChecker
+	// Superadmin — служебные команды (§6.1). nil отключает их (в тестах
+	// административных сценариев передаётся явно).
+	Superadmin   Superadmin
 	BotUserID    int64
 	AppPublicURL string
 }
@@ -42,14 +46,17 @@ func NewHandlers(d HandlersDeps, log *slog.Logger) *Handlers {
 		log = slog.Default()
 	}
 	return &Handlers{
-		users: d.Users, binder: d.Binder, sender: d.Sender,
-		adminChecker: d.AdminChecker, botUserID: d.BotUserID,
+		users: d.Users, binder: d.Binder, superadmin: d.Superadmin,
+		sender: d.Sender, adminChecker: d.AdminChecker, botUserID: d.BotUserID,
 		appURL: d.AppPublicURL, log: log,
 	}
 }
 
-// commands — набор setMyCommands (спека §6.1): только клиентские команды.
-// Superadmin-команды (Task 12) в меню не публикуются.
+// commands — набор setMyCommands (спека §6.1). Superadmin-команды (Task 12)
+// публикуются ТОЛЬКО в default-scope (личный чат): они защищены проверкой
+// is_superadmin, но их существование не должно попадать в меню
+// администраторов ЧАТОВ (all_chat_administrators) — там эти команды
+// бессмысленны и выглядели бы как права, которых у чат-админа нет.
 func (h *Handlers) commands() []BotCommand {
 	return []BotCommand{
 		{Command: "start", Description: i18n.T("bot.cmd.start")},
@@ -58,6 +65,11 @@ func (h *Handlers) commands() []BotCommand {
 		{Command: "new_deadline", Description: i18n.T("bot.cmd.new_deadline")},
 		{Command: "bind_group", Description: i18n.T("bot.cmd.bind_group")},
 		{Command: "unbind", Description: i18n.T("bot.cmd.unbind")},
+		{Command: "promote", Description: i18n.T("bot.cmd.promote")},
+		{Command: "ban", Description: i18n.T("bot.cmd.ban")},
+		{Command: "unban", Description: i18n.T("bot.cmd.unban")},
+		{Command: "stats", Description: i18n.T("bot.cmd.stats")},
+		{Command: "delete_group", Description: i18n.T("bot.cmd.delete_group")},
 	}
 }
 
@@ -65,6 +77,14 @@ func (h *Handlers) commands() []BotCommand {
 // команды. Любой апдейт в ЛС обновляет users и снимает bot_blocked (сам факт
 // сообщения боту доказывает, что пользователь его не блокировал), в группах
 // пользователь обновляется только при наличии message.from.
+//
+// Забаненный пользователь на уровне обычных сообщений НЕ проверяется
+// намеренно: UpsertByTelegram возвращает частичного пользователя (is_banned не
+// читается), и гидратация на каждое сообщение стоила бы лишнего чтения. Бан
+// закрывает пути записи (создание группы, claim, привязка чата), а они идут
+// через API: middleware.Auth отвергает забаненного 403, auth.Login не выдаёт
+// ему сессию. Служебные команды (/promote, /ban, /unban, /stats,
+// /delete_group) гидратируют вызывающего и бан учитывают (спека §3.3).
 func (h *Handlers) Handle(ctx context.Context, upd *models.Update) {
 	if upd == nil || upd.Message == nil {
 		// Прочие типы апдейтов (callback_query и т.п.) вне периметра v1.
@@ -92,9 +112,11 @@ func (h *Handlers) Handle(ctx context.Context, upd *models.Update) {
 		h.handleBindGroup(ctx, msg, actor, arg)
 	case "unbind":
 		h.handleUnbind(ctx, msg, actor)
+	case "promote", "ban", "unban", "stats", "delete_group":
+		// Служебные команды (§6.1): guard is_superadmin внутри.
+		h.handleSuperadmin(ctx, msg, actor, cmd, arg)
 	}
-	// Неизвестные команды молча игнорируются: /promote, /ban, /stats,
-	// /delete_group — Task 12 и здесь сознательно не реализуются.
+	// Неизвестные команды молча игнорируются.
 }
 
 // touchUser обновляет users (UpsertByTelegram) и — только в ЛС — снимает

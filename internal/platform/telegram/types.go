@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/sauron/deadliner/internal/app/groups"
+	"github.com/sauron/deadliner/internal/app/moderation"
 	"github.com/sauron/deadliner/internal/domain"
 )
 
@@ -54,6 +55,17 @@ type GroupBinder interface {
 	ListMine(ctx context.Context, actor *domain.User) ([]groups.MyGroup, error)
 }
 
+// Superadmin — use case-поверхность служебных команд (§6.1). Реализуется
+// internal/app/moderation.Service (сигнатуры совпадают, адаптер не нужен);
+// пакет telegram может импортировать app по правилу зависимостей.
+type Superadmin interface {
+	PromoteSuperadmin(ctx context.Context, actor *domain.User, telegramID int64) error
+	BanUser(ctx context.Context, actor *domain.User, telegramID int64) error
+	UnbanUser(ctx context.Context, actor *domain.User, telegramID int64) error
+	DeleteGroup(ctx context.Context, actor *domain.User, slug string) (*domain.Group, error)
+	Stats(ctx context.Context, actor *domain.User) (domain.Stats, error)
+}
+
 // Проверки совместимости на этапе компиляции: реальные реализации обязаны
 // удовлетворять интерфейсам без адаптеров (иначе serve сломается на сборке,
 // а не в рантайме).
@@ -62,4 +74,5 @@ var (
 	_ MessageSender    = (*BotSender)(nil)
 	_ ChatAdminChecker = (*BotSender)(nil)
 	_ Sender           = (*BotSender)(nil)
+	_ Superadmin       = (*moderation.Service)(nil)
 )

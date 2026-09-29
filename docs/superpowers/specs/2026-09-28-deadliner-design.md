@@ -334,9 +334,9 @@ DTO-валидация: `due_at` — RFC3339, не в прошлом (для н�
 | `/unbind` | группа/топик | снять привязку (admin группы) |
 | `/groups` | ЛС | мои группы + роли |
 | `/new_deadline` | ЛС | inline-форма → Web App (deeplink `#add`) |
-| `/promote <user_id> <slug>`, `/ban <user_id>`, `/stats`, `/delete_group <slug>` | ЛС superadmin | управление инстансом |
+| `/promote <user_id>`, `/ban <user_id>`, `/unban <user_id>`, `/stats`, `/delete_group <slug>` | ЛС superadmin | управление инстансом |
 
-Регистрация команд: `setMyCommands` (scope: personal + all_chat_administrators), menu button → URL TMA.
+Регистрация команд: `setMyCommands` — клиентские и superadmin-команды в scope personal (default), команды привязки чата дополнительно в all_chat_administrators; menu button → URL TMA.
 
 ### 6.2 Уведомления (формат)
 
@@ -393,6 +393,7 @@ DATABASE_URL, DB_POOL_MAX=10
 APP_PUBLIC_URL            # базовый URL TMA (https обязателен для Telegram)
 SESSION_TTL_DAYS=30, AUTH_DATE_MAX_AGE_HOURS=24
 SCHED_POLL_INTERVAL=10s, SCHED_BATCH=50, SCHED_LOCK_TTL=2m, SCHED_MAX_ATTEMPTS=5
+CLEANUP_INTERVAL=1h        # период cleanup-джобы: pending-TTL, счётчики, сессии
 TG_RATE_GLOBAL=25, TG_RATE_PER_CHAT=18
 GROUP_PENDING_TTL_DAYS=14
 LIMIT_GROUP_CREATE_DAY=3, LIMIT_GROUP_CREATE_WEEK=5, LIMIT_CLAIM_PER_CHAT_HOUR=3

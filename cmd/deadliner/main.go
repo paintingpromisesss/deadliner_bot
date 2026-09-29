@@ -50,9 +50,22 @@ func main() {
 		}
 		return
 	case "admin":
-		log.Info("admin: not implemented")
+		if err := cmd.Admin(ctx, adminArgs(os.Args), log); err != nil {
+			// CLI печатает детали сам; main выставляет код (1 — ошибка
+			// операции, 2 — ошибка использования).
+			os.Exit(cmd.ExitCode(err))
+		}
+		return
 	}
 
 	<-ctx.Done()
 	log.Info("shutdown signal received")
+}
+
+// adminArgs — аргументы подрежима admin (всё после «admin»).
+func adminArgs(args []string) []string {
+	if len(args) >= 2 {
+		return args[2:]
+	}
+	return nil
 }

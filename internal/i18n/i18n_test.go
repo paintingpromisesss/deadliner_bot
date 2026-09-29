@@ -70,6 +70,13 @@ func TestRealCatalogLoads(t *testing.T) {
 		"invite.created", "invite.redeemed", "invite.expired",
 		"api.error.not_found", "api.error.conflict", "api.error.forbidden", "api.error.rate_limit", "api.error.validation",
 		"cleanup.group_deleted",
+		"superadmin.only", "superadmin.promoted", "superadmin.banned", "superadmin.unbanned",
+		"superadmin.deleted", "superadmin.stats", "superadmin.usage_promote", "superadmin.usage_user",
+		"superadmin.usage_delete_group", "superadmin.error.ban_self", "superadmin.error.not_found",
+		"admin.usage", "admin.promoted", "admin.banned", "admin.unbanned", "admin.group_deleted",
+		"admin.stats.row", "admin.stats.users", "admin.stats.groups", "admin.stats.sessions_active",
+		"admin.cleanup.done", "admin.cleanup.groups", "admin.cleanup.sessions",
+		"admin.error.not_found", "admin.error.forbidden", "admin.error.generic",
 	}
 	for _, k := range required {
 		if got := T(k); got == k {

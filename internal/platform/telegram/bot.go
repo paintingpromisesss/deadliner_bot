@@ -56,6 +56,10 @@ type Deps struct {
 	Users domain.UserRepo
 	// Binder — use case привязки чата (groups.Service).
 	Binder GroupBinder
+	// Superadmin — служебные команды /promote, /ban, /unban, /stats,
+	// /delete_group (moderation.Service); nil — команды отвечают отказом
+	// (generic), как и при отсутствии сервиса.
+	Superadmin Superadmin
 	// Sender — транспорт отправки (BotSender).
 	Sender MessageSender
 	// AdminChecker — проверка «бот — администратор чата» (BotSender).
@@ -128,6 +132,7 @@ func NewBot(cfg BotConfig, deps Deps, log *slog.Logger) (*Bot, error) {
 	b.handl = NewHandlers(HandlersDeps{
 		Users:        deps.Users,
 		Binder:       deps.Binder,
+		Superadmin:   deps.Superadmin,
 		Sender:       deps.Sender,
 		AdminChecker: deps.AdminChecker,
 		BotUserID:    deps.BotUserID,

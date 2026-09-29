@@ -63,6 +63,7 @@ func TestRealCatalogLoads(t *testing.T) {
 		"bot.start", "bot.help",
 		"bot.bind.ok", "bot.bind.conflict_already_bound", "bot.bind.not_chat_admin", "bot.bind.unknown_slug",
 		"bot.unbind.ok", "bot.groups.empty",
+		"bot.new_deadline", "bot.button.add_deadline", "bot.cmd.new_deadline",
 		"reminder.group.title", "reminder.group.body", "reminder.personal.title", "reminder.dm_dup.title",
 		"claim.code_message", "claim.success", "claim.revoked",
 		"claim.admin_change_started", "claim.admin_replaced",

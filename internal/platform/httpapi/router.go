@@ -14,6 +14,7 @@ import (
 	"github.com/sauron/deadliner/internal/app/claims"
 	"github.com/sauron/deadliner/internal/app/deadlines"
 	"github.com/sauron/deadliner/internal/app/groups"
+	"github.com/sauron/deadliner/internal/app/notifications"
 	"github.com/sauron/deadliner/internal/domain"
 	"github.com/sauron/deadliner/internal/platform/httpapi/httpjson"
 	"github.com/sauron/deadliner/internal/platform/httpapi/middleware"
@@ -21,15 +22,16 @@ import (
 
 // Deps — зависимости роутера; последующие задачи добавляют сюда свои поля.
 type Deps struct {
-	Auth       *auth.Service
-	Groups     *groups.Service
-	Deadlines  *deadlines.Service
-	Claims     *claims.Service
-	Users      domain.UserRepo
-	Sessions   domain.SessionRepo
-	Log        *slog.Logger
-	I18nLoaded bool
-	SessionTTL time.Duration
+	Auth          *auth.Service
+	Groups        *groups.Service
+	Deadlines     *deadlines.Service
+	Claims        *claims.Service
+	Notifications *notifications.Service
+	Users         domain.UserRepo
+	Sessions      domain.SessionRepo
+	Log           *slog.Logger
+	I18nLoaded    bool
+	SessionTTL    time.Duration
 	// WebhookHandler — POST /webhook бота в webhook-режиме (Task 10:
 	// telegram.Bot.WebhookHandler()). nil в polling-режиме.
 	WebhookHandler http.Handler
@@ -102,6 +104,12 @@ func New(d Deps) chi.Router {
 				r.Post("/groups/{id}/claim/start", claimsCtl.Start)
 				r.Post("/groups/{id}/claim/confirm", claimsCtl.Confirm)
 				r.Post("/groups/{id}/claim/revoke", claimsCtl.Revoke)
+			}
+
+			if d.Notifications != nil {
+				notificationsCtl := newNotificationsController(d.Notifications)
+				r.Get("/notifications/settings", notificationsCtl.Get)
+				r.Patch("/notifications/settings", notificationsCtl.Patch)
 			}
 		})
 	})

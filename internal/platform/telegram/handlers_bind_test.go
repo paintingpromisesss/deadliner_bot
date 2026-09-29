@@ -22,10 +22,11 @@ import (
 // --- fakes ---
 
 type sentMessage struct {
-	chatID   int64
-	threadID *int64
-	text     string
-	button   string
+	chatID    int64
+	threadID  *int64
+	text      string
+	button    string
+	buttonURL string
 }
 
 // fakeMsgSender — фейковый транспорт (implements both Sender and
@@ -45,7 +46,10 @@ func (s *fakeMsgSender) Send(ctx context.Context, m OutMessage) (int64, error) {
 	if s.err != nil {
 		return 0, s.err
 	}
-	s.sent = append(s.sent, sentMessage{chatID: m.ChatID, threadID: m.ThreadID, text: m.Text, button: m.ButtonText})
+	s.sent = append(s.sent, sentMessage{
+		chatID: m.ChatID, threadID: m.ThreadID, text: m.Text,
+		button: m.ButtonText, buttonURL: m.ButtonURL,
+	})
 	return int64(len(s.sent)), nil
 }
 
@@ -475,8 +479,49 @@ func TestGroupsEmptyAndGroupChat(t *testing.T) {
 func TestNewDeadlinePrivate(t *testing.T) {
 	hs := newHarness()
 	hs.h.Handle(context.Background(), update(500, models.ChatTypePrivate, 7, "ivan", "/new_deadline"))
-	if got := hs.sender.last(t); got.text != i18n.T("bot.new_deadline") || got.button == "" {
-		t.Errorf("msg = %+v, want bot.new_deadline with a button", got)
+
+	got := hs.sender.last(t)
+	if got.text != i18n.T("bot.new_deadline") {
+		t.Errorf("text = %q, want bot.new_deadline", got.text)
+	}
+	// Спека §6.1: inline-форма живёт в TMA, поэтому кнопка ведёт прямо на
+	// deeplink #add (а не на корень приложения).
+	if got.button != i18n.T("bot.button.add_deadline") {
+		t.Errorf("button = %q, want bot.button.add_deadline", got.button)
+	}
+	if want := hs.appURL + "#/add"; got.buttonURL != want {
+		t.Errorf("button url = %q, want %q", got.buttonURL, want)
+	}
+	hs.h.Handle(context.Background(), update(500, models.ChatTypePrivate, 7, "ivan", "/new_deadline@DeadlinerBot"))
+	if got := hs.sender.last(t); !strings.HasSuffix(got.buttonURL, "#/add") {
+		t.Errorf("button url = %q, want a #/add suffix (bot suffix in the command)", got.buttonURL)
+	}
+}
+
+// /new_deadline в группе: команда приватная, в чате группы отвечаем подсказкой
+// (как /groups), форму там открывать нечему.
+func TestNewDeadlineInGroup(t *testing.T) {
+	hs := newHarness()
+	hs.h.Handle(context.Background(), update(-100500, models.ChatTypeSupergroup, 7, "ivan", "/new_deadline"))
+
+	got := hs.sender.last(t)
+	if got.text != i18n.T("bot.command.private_only") {
+		t.Errorf("text = %q, want bot.command.private_only", got.text)
+	}
+	if got.buttonURL != "" {
+		t.Errorf("button url = %q, want none in a group chat", got.buttonURL)
+	}
+}
+
+// Без APP_PUBLIC_URL кнопку отдавать нечем: текст уходит без ссылки.
+func TestNewDeadlineWithoutAppURL(t *testing.T) {
+	hs := newHarness()
+	hs.h.appURL = ""
+	hs.h.Handle(context.Background(), update(500, models.ChatTypePrivate, 7, "ivan", "/new_deadline"))
+
+	got := hs.sender.last(t)
+	if got.text != i18n.T("bot.new_deadline") || got.buttonURL != "" {
+		t.Errorf("msg = %+v, want the text without a button", got)
 	}
 }
 

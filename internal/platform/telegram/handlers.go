@@ -189,15 +189,8 @@ func (h *Handlers) handleGroups(ctx context.Context, msg *models.Message, actor 
 	h.send(ctx, msg.Chat.ID, nil, strings.Join(lines, "\n"), true)
 }
 
-// handleNewDeadline — /new_deadline в ЛС: форма дедлайна живёт в TMA (спека
-// §6.1, deeplink #add — Task 13), поэтому бот только подсказывает открыть её.
-func (h *Handlers) handleNewDeadline(ctx context.Context, msg *models.Message) {
-	if !isPrivate(msg.Chat.Type) {
-		h.send(ctx, msg.Chat.ID, threadIDOf(msg), i18n.T("bot.command.private_only"), false)
-		return
-	}
-	h.send(ctx, msg.Chat.ID, nil, i18n.T("bot.new_deadline"), true)
-}
+// handleNewDeadline живёт в handlers_deadline.go (Task 11: web_app-кнопка на
+// deeplink #add).
 
 // handleBindGroup — /bind_group <slug> (спека §6.1): привязать этот
 // chat_id(+thread_id) к группе. Порядок: чат (не ЛС) → аргумент → бот —
@@ -292,9 +285,6 @@ func unbindErrorText(err error) string {
 // send — отправка в чат апдейта (тема форума сохраняется). Ошибка отправки не
 // роняет обработку апдейта: логируется и проглатывается (ответ — не транзакция).
 func (h *Handlers) send(ctx context.Context, chatID int64, threadID *int64, text string, withButton bool) {
-	if h.sender == nil || text == "" {
-		return
-	}
 	// Тексты команд — без разметки: i18n.Plain снимает HTML-теги каталога,
 	// чтобы пользователь не увидел литеральные <b> при любом parse_mode.
 	m := OutMessage{ChatID: chatID, ThreadID: threadID, Text: i18n.Plain(text), LinkPreviewOff: true}
@@ -302,9 +292,18 @@ func (h *Handlers) send(ctx context.Context, chatID int64, threadID *int64, text
 		m.ButtonText = i18n.T("bot.button.open_app")
 		m.ButtonURL = h.appURL
 	}
+	h.deliver(ctx, m)
+}
+
+// deliver отправляет готовый OutMessage и проглатывает ошибку отправки: ответ
+// пользователю — не транзакция, падать из-за него незачем.
+func (h *Handlers) deliver(ctx context.Context, m OutMessage) {
+	if h.sender == nil || m.Text == "" {
+		return
+	}
 	if _, err := h.sender.Send(ctx, m); err != nil {
 		h.log.Warn("telegram: send failed",
-			slog.Int64("chat_id", chatID), slog.String("error", err.Error()))
+			slog.Int64("chat_id", m.ChatID), slog.String("error", err.Error()))
 	}
 }
 

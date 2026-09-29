@@ -11,6 +11,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/sauron/deadliner/internal/app/auth"
+	"github.com/sauron/deadliner/internal/app/claims"
 	"github.com/sauron/deadliner/internal/app/deadlines"
 	"github.com/sauron/deadliner/internal/app/groups"
 	"github.com/sauron/deadliner/internal/domain"
@@ -23,11 +24,15 @@ type Deps struct {
 	Auth       *auth.Service
 	Groups     *groups.Service
 	Deadlines  *deadlines.Service
+	Claims     *claims.Service
 	Users      domain.UserRepo
 	Sessions   domain.SessionRepo
 	Log        *slog.Logger
 	I18nLoaded bool
 	SessionTTL time.Duration
+	// WebhookHandler — POST /webhook бота в webhook-режиме (Task 10:
+	// telegram.Bot.WebhookHandler()). nil в polling-режиме.
+	WebhookHandler http.Handler
 }
 
 // New собирает HTTP-роутер приложения.
@@ -91,8 +96,22 @@ func New(d Deps) chi.Router {
 				r.Get("/groups/{id}/deadlines", deadlinesCtl.ListGroup)
 				r.Get("/me/deadlines", deadlinesCtl.ListMine)
 			}
+
+			if d.Claims != nil {
+				claimsCtl := newClaimsController(d.Claims)
+				r.Post("/groups/{id}/claim/start", claimsCtl.Start)
+				r.Post("/groups/{id}/claim/confirm", claimsCtl.Confirm)
+				r.Post("/groups/{id}/claim/revoke", claimsCtl.Revoke)
+			}
 		})
 	})
+
+	// POST /webhook — приём апдейтов Telegram в webhook-режиме (Task 16
+	// передаёт сюда telegram.Bot.WebhookHandler). Вне /api/v1: это не REST API
+	// TMA, а канал Telegram, и секрет проверяется библиотекой.
+	if d.WebhookHandler != nil {
+		r.Post("/webhook", d.WebhookHandler.ServeHTTP)
+	}
 
 	return r
 }

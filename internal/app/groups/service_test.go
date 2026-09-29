@@ -375,16 +375,65 @@ func (r *fakeCounterRepo) IncAndCheck(ctx context.Context, userID int64, action 
 	return r.counts[k], nil
 }
 
-type fakeBindingRepo struct{}
+// fakeBindingRepo — привязки чатов в памяти: повторяет уникальные индексы
+// chat_bindings (group_id и (chat_id, thread_id) NULLS NOT DISTINCT) → ErrConflict.
+type fakeBindingRepo struct {
+	byGroup map[int64]*domain.ChatBinding
+}
 
-func (fakeBindingRepo) Create(ctx context.Context, b *domain.ChatBinding) error { return nil }
-func (fakeBindingRepo) GetByGroup(ctx context.Context, groupID int64) (*domain.ChatBinding, error) {
+func newFakeBindingRepo() *fakeBindingRepo {
+	return &fakeBindingRepo{byGroup: map[int64]*domain.ChatBinding{}}
+}
+
+func (r *fakeBindingRepo) Create(ctx context.Context, b *domain.ChatBinding) error {
+	if _, ok := r.byGroup[b.GroupID]; ok {
+		return fmt.Errorf("%w: group_id=%d", domain.ErrConflict, b.GroupID)
+	}
+	for _, other := range r.byGroup {
+		if other.ChatID == b.ChatID && sameThread(other.MessageThreadID, b.MessageThreadID) {
+			return fmt.Errorf("%w: chat_id=%d", domain.ErrConflict, b.ChatID)
+		}
+	}
+	cp := *b
+	cp.ID = int64(len(r.byGroup) + 1)
+	r.byGroup[b.GroupID] = &cp
+	return nil
+}
+
+func (r *fakeBindingRepo) GetByGroup(ctx context.Context, groupID int64) (*domain.ChatBinding, error) {
+	b, ok := r.byGroup[groupID]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	cp := *b
+	return &cp, nil
+}
+
+func (r *fakeBindingRepo) GetByChat(ctx context.Context, chatID int64, threadID *int64) (*domain.ChatBinding, error) {
+	for _, b := range r.byGroup {
+		if b.ChatID == chatID && sameThread(b.MessageThreadID, threadID) {
+			cp := *b
+			return &cp, nil
+		}
+	}
 	return nil, domain.ErrNotFound
 }
-func (fakeBindingRepo) GetByChat(ctx context.Context, chatID int64, threadID *int64) (*domain.ChatBinding, error) {
-	return nil, domain.ErrNotFound
+
+func (r *fakeBindingRepo) Delete(ctx context.Context, groupID int64) error {
+	if _, ok := r.byGroup[groupID]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.byGroup, groupID)
+	return nil
 }
-func (fakeBindingRepo) Delete(ctx context.Context, groupID int64) error { return nil }
+
+// sameThread — NULLS NOT DISTINCT: nil и nil равны, nil и значение — нет.
+func sameThread(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
 
 type fakeAuditRepo struct {
 	entries []*domain.AuditEntry
@@ -404,6 +453,7 @@ type fixture struct {
 	members  *fakeMembershipRepo
 	invites  *fakeInviteRepo
 	counters *fakeCounterRepo
+	bindings *fakeBindingRepo
 	audit    *fakeAuditRepo
 	clock    *fakeClock
 }
@@ -415,6 +465,7 @@ func newFixture(cfg Config) *fixture {
 		members:  newFakeMembershipRepo(),
 		invites:  newFakeInviteRepo(clock),
 		counters: newFakeCounterRepo(),
+		bindings: newFakeBindingRepo(),
 		audit:    &fakeAuditRepo{},
 		clock:    clock,
 	}
@@ -431,7 +482,7 @@ func newFixture(cfg Config) *fixture {
 		cfg.InviteDefaultTTL = 7 * 24 * time.Hour
 	}
 	f.svc = NewService(f.groups, f.members, f.invites, f.counters, f.audit,
-		fakeBindingRepo{}, cfg, f.clock, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		f.bindings, cfg, f.clock, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return f
 }
 
@@ -1135,5 +1186,239 @@ func TestListMine_WithRoles(t *testing.T) {
 	}
 	if roles[g1.ID] != domain.RoleAdmin || roles[g2.ID] != domain.RoleMember {
 		t.Errorf("roles = %v", roles)
+	}
+}
+
+// --- BindChat / UnbindChat (спека §6.1) ---
+
+func TestBindChat_Success(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	g, err := f.svc.Create(ctx, user(1, false), "ИКБО-33-21", "Моя группа")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	bound, err := f.svc.BindChat(ctx, user(1, false), -100500, nil, "икбо-33-21", "Чат группы")
+	if err != nil {
+		t.Fatalf("BindChat: %v", err)
+	}
+	if bound.ID != g.ID {
+		t.Errorf("returned group = %d, want %d", bound.ID, g.ID)
+	}
+	if bound.Status != domain.GroupStatusPending {
+		t.Errorf("status = %q, want pending (активирует только claim)", bound.Status)
+	}
+	b, err := f.bindings.GetByGroup(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("GetByGroup: %v", err)
+	}
+	if b.ChatID != -100500 || b.ChatTitle != "Чат группы" || b.BoundBy != 1 {
+		t.Errorf("binding = %+v", b)
+	}
+	if len(f.audit.entries) == 0 || f.audit.entries[len(f.audit.entries)-1].Action != "chat.bind" {
+		t.Errorf("audit = %+v, want chat.bind", f.audit.entries)
+	}
+}
+
+func TestBindChat_ForumThreadPreserved(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	if _, err := f.svc.Create(ctx, user(1, false), "ИКБО-33-21", "T"); err != nil {
+		t.Fatal(err)
+	}
+	thread := int64(42)
+	if _, err := f.svc.BindChat(ctx, user(1, false), -100500, &thread, "ИКБО-33-21", "T"); err != nil {
+		t.Fatalf("BindChat: %v", err)
+	}
+	got, err := f.svc.BindingByChat(ctx, -100500, &thread)
+	if err != nil {
+		t.Fatalf("BindingByChat: %v", err)
+	}
+	if got.MessageThreadID == nil || *got.MessageThreadID != 42 {
+		t.Errorf("thread = %v, want 42", got.MessageThreadID)
+	}
+	// Другой топик того же чата — другая привязка (NULLS NOT DISTINCT).
+	if _, err := f.svc.BindingByChat(ctx, -100500, nil); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("BindingByChat(nil thread) = %v, want ErrNotFound", err)
+	}
+}
+
+func TestBindChat_SecondSlugOnSameChatConflicts(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	for _, slug := range []string{"ИКБО-33-21", "М8О-401Б-23"} {
+		if _, err := f.svc.Create(ctx, user(1, false), slug, slug); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.svc.BindChat(ctx, user(1, false), -100500, nil, "ИКБО-33-21", "Чат"); err != nil {
+		t.Fatalf("first BindChat: %v", err)
+	}
+	_, err := f.svc.BindChat(ctx, user(1, false), -100500, nil, "М8О-401Б-23", "Чат")
+	if !errors.Is(err, domain.ErrConflict) || !errors.Is(err, ErrChatAlreadyBound) {
+		t.Fatalf("second BindChat = %v, want ErrConflict+ErrChatAlreadyBound", err)
+	}
+}
+
+func TestBindChat_GroupAlreadyBoundElsewhere(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	if _, err := f.svc.Create(ctx, user(1, false), "ИКБО-33-21", "T"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.BindChat(ctx, user(1, false), -100500, nil, "ИКБО-33-21", "Первый чат"); err != nil {
+		t.Fatalf("first BindChat: %v", err)
+	}
+	_, err := f.svc.BindChat(ctx, user(1, false), -100600, nil, "ИКБО-33-21", "Второй чат")
+	if !errors.Is(err, domain.ErrConflict) || !errors.Is(err, ErrGroupAlreadyBound) {
+		t.Fatalf("rebind = %v, want ErrConflict+ErrGroupAlreadyBound", err)
+	}
+}
+
+func TestBindChat_UnknownSlug(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	_, err := f.svc.BindChat(ctx, user(1, false), -100500, nil, "НЕТ-00-00", "Чат")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("BindChat(unknown slug) = %v, want ErrNotFound", err)
+	}
+}
+
+// Не-участник не может привязать чужой чат к чужой группе.
+func TestBindChat_NotMember(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	if _, err := f.svc.Create(ctx, user(1, false), "ИКБО-33-21", "T"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.svc.BindChat(ctx, user(2, false), -100500, nil, "ИКБО-33-21", "Чат")
+	if !errors.Is(err, domain.ErrForbidden) || !errors.Is(err, ErrNotMember) {
+		t.Fatalf("BindChat(non-member) = %v, want ErrForbidden+ErrNotMember", err)
+	}
+}
+
+// Участник группы (не создатель) может привязать чат.
+func TestBindChat_MemberAllowed(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	g, err := f.svc.Create(ctx, user(1, false), "ИКБО-33-21", "T")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.members.Upsert(ctx, &domain.Membership{
+		GroupID: g.ID, UserID: 2, Role: domain.RoleMember,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.BindChat(ctx, user(2, false), -100500, nil, "ИКБО-33-21", "Чат"); err != nil {
+		t.Fatalf("BindChat(member): %v", err)
+	}
+}
+
+// Создатель сохраняет право привязки, даже если вышел из membership.
+func TestBindChat_CreatorAllowedAfterLeaving(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	g, err := f.svc.Create(ctx, user(1, false), "ИКБО-33-21", "T")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.members.Delete(ctx, g.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.BindChat(ctx, user(1, false), -100500, nil, "ИКБО-33-21", "Чат"); err != nil {
+		t.Fatalf("BindChat(creator): %v", err)
+	}
+}
+
+func TestUnbindChat_Success(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	g, err := f.svc.Create(ctx, user(1, false), "ИКБО-33-21", "Моя группа")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.BindChat(ctx, user(1, false), -100500, nil, "ИКБО-33-21", "Чат"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.members.SetRole(ctx, g.ID, 1, domain.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := f.svc.UnbindChat(ctx, user(1, false), -100500, nil)
+	if err != nil {
+		t.Fatalf("UnbindChat: %v", err)
+	}
+	if got.ID != g.ID {
+		t.Errorf("returned group = %d, want %d", got.ID, g.ID)
+	}
+	if _, err := f.bindings.GetByGroup(ctx, g.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("binding still present: %v", err)
+	}
+}
+
+// Только админ группы может снять привязку.
+func TestUnbindChat_RequiresAdmin(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	if _, err := f.svc.Create(ctx, user(1, false), "ИКБО-33-21", "T"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.BindChat(ctx, user(1, false), -100500, nil, "ИКБО-33-21", "Чат"); err != nil {
+		t.Fatal(err)
+	}
+	// Создатель — member (спека §3.1): отказ, привязка на месте.
+	if _, err := f.svc.UnbindChat(ctx, user(1, false), -100500, nil); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("UnbindChat(member) = %v, want ErrForbidden", err)
+	}
+	if _, err := f.bindings.GetByGroup(ctx, 1); err != nil {
+		t.Errorf("binding must survive a forbidden unbind: %v", err)
+	}
+}
+
+func TestUnbindChat_NotBound(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	_, err := f.svc.UnbindChat(ctx, user(1, false), -100500, nil)
+	if !errors.Is(err, domain.ErrNotFound) || !errors.Is(err, ErrBindingNotFound) {
+		t.Fatalf("UnbindChat(unbound) = %v, want ErrNotFound+ErrBindingNotFound", err)
+	}
+}
+
+// Смена привязки: /unbind → /bind_group на другую группу в том же чате.
+func TestUnbindChat_ThenBindAnotherGroup(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+
+	g1, err := f.svc.Create(ctx, user(1, false), "ИКБО-33-21", "Первая")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.Create(ctx, user(1, false), "М8О-401Б-23", "Вторая"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.BindChat(ctx, user(1, false), -100500, nil, "ИКБО-33-21", "Чат"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.members.SetRole(ctx, g1.ID, 1, domain.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.UnbindChat(ctx, user(1, false), -100500, nil); err != nil {
+		t.Fatalf("UnbindChat: %v", err)
+	}
+	if _, err := f.svc.BindChat(ctx, user(1, false), -100500, nil, "М8О-401Б-23", "Чат"); err != nil {
+		t.Fatalf("rebind to another group: %v", err)
 	}
 }

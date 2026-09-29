@@ -165,9 +165,20 @@ type InviteRepo interface {
 
 type ClaimRepo interface {
 	Create(ctx context.Context, c *ClaimCode) error
-	GetActiveByGroup(ctx context.Context, groupID int64) (*ClaimCode, error)
+	// GetActiveByGroup — самый свежий действующий код группы: used_at IS NULL
+	// и expires_at > now; ErrNotFound, если активного кода нет (истёкший и
+	// отсутствующий неразличимы — спека §3.1, не раскрываем существование).
+	GetActiveByGroup(ctx context.Context, groupID int64, now time.Time) (*ClaimCode, error)
+	// ListActiveByGroup — все действующие коды группы, по id.
+	ListActiveByGroup(ctx context.Context, groupID int64, now time.Time) ([]ClaimCode, error)
+	// MarkUsed условно гасит код (WHERE used_at IS NULL): ErrNotFound, если
+	// строку уже погасили/отозвали. Гонка двух Confirm разрешается здесь —
+	// успех получает ровно один вызов.
 	MarkUsed(ctx context.Context, id int64, now time.Time) error
-	Revoke(ctx context.Context, id int64) error
+	// RevokeActiveByGroup гасит все действующие коды группы (used_at = now).
+	// Отдельного маркера revoked в схеме нет (Task 10 ruling): «отозван» и
+	// «использован» помечены одинаково — used_at NOT NULL = неактивен.
+	RevokeActiveByGroup(ctx context.Context, groupID int64, now time.Time) error
 }
 
 type CounterRepo interface {

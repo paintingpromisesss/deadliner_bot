@@ -21,6 +21,20 @@ import (
 // domain.ErrConflict): понижение, кик или выход единственного админа.
 var ErrLastAdmin = errors.New("last admin: transfer admin role first")
 
+// Сентинелы привязки чата (спека §6.1, /bind_group): несут точный текст для
+// пользователя, поэтому различаются, хотя оба — конфликты.
+var (
+	// ErrChatAlreadyBound — чат (или топик) уже привязан к другой группе:
+	// инструкция — /unbind в том чате.
+	ErrChatAlreadyBound = errors.New("chat already bound to another group")
+	// ErrGroupAlreadyBound — у группы уже есть другой чат.
+	ErrGroupAlreadyBound = errors.New("group already bound to another chat")
+	// ErrNotMember — вызывающий не участник группы (и не её создатель).
+	ErrNotMember = errors.New("actor is not a member of the group")
+	// ErrBindingNotFound — у чата нет привязки (/unbind нечего снимать).
+	ErrBindingNotFound = errors.New("chat is not bound to any group")
+)
+
 // Config — лимиты и TTL из env (спека §8).
 type Config struct {
 	PendingTTL       time.Duration // TTL pending-группы (дефолт 14 дней)
@@ -431,6 +445,121 @@ func (s *Service) RevokeInvite(ctx context.Context, actor *domain.User, groupID 
 	}
 	s.writeAudit(ctx, actor.ID, "invite.revoke", "group", groupID, nil)
 	return nil
+}
+
+// BindChat привязывает чат (или топик форума) к группе по слагу (спека §6.1,
+// /bind_group). Проверки: слаг существует, вызывающий — участник группы (её
+// создатель считается участником: membership создаётся при Create), 1 чат =
+// 1 группа и 1 группа = 1 чат (уникальные индексы chat_bindings → ErrConflict
+// с точной подсказкой). Проверка «бот — админ чата» выполняется в бот-хендлере
+// через Telegram API (ChatAdminChecker) и сюда не входит: use case не знает
+// про Telegram.
+//
+// Группа НЕ активируется: статус переводит claim (спека §3.1).
+func (s *Service) BindChat(ctx context.Context, actor *domain.User, chatID int64, threadID *int64, slug, chatTitle string) (*domain.Group, error) {
+	g, err := s.groups.GetBySlugNorm(ctx, domain.Normalize(slug))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.requireMembership(ctx, actor, g); err != nil {
+		return nil, err
+	}
+
+	b := &domain.ChatBinding{
+		GroupID:         g.ID,
+		ChatID:          chatID,
+		MessageThreadID: threadID,
+		ChatTitle:       chatTitle,
+		BoundBy:         actor.ID,
+	}
+	if err := s.bindings.Create(ctx, b); err != nil {
+		if errors.Is(err, domain.ErrConflict) {
+			return nil, s.classifyBindConflict(ctx, g.ID, chatID, threadID)
+		}
+		return nil, err
+	}
+
+	s.writeAudit(ctx, actor.ID, "chat.bind", "group", g.ID,
+		map[string]any{"chat_id": chatID, "thread_id": threadID})
+	return g, nil
+}
+
+// classifyBindConflict различает два уникальных индекса chat_bindings: у
+// пользователя должны быть разные подсказки на «этот чат занят другой группой»
+// (→ /unbind здесь) и «эта группа занята другим чатом». Групповой индекс
+// проверяется первым: он уникален, а (chat_id, thread_id) может быть занят
+// той же самой строкой.
+func (s *Service) classifyBindConflict(ctx context.Context, groupID, chatID int64, threadID *int64) error {
+	if _, err := s.bindings.GetByGroup(ctx, groupID); err == nil {
+		return fmt.Errorf("%w: %w", domain.ErrConflict, ErrGroupAlreadyBound)
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	if _, err := s.bindings.GetByChat(ctx, chatID, threadID); err == nil {
+		return fmt.Errorf("%w: %w", domain.ErrConflict, ErrChatAlreadyBound)
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	// Обе строки исчезли между INSERT и чтением (unbind в гонке) — общий конфликт.
+	return fmt.Errorf("%w: chat binding race", domain.ErrConflict)
+}
+
+// UnbindChat снимает привязку чата. Требует роль admin группы (или
+// superadmin): иначе привязку в общем чате снял бы любой его участник.
+// Группа опознаётся по (chat_id, thread_id) — команде /unbind известен только
+// чат и топик.
+func (s *Service) UnbindChat(ctx context.Context, actor *domain.User, chatID int64, threadID *int64) (*domain.Group, error) {
+	b, err := s.bindings.GetByChat(ctx, chatID, threadID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, fmt.Errorf("%w: %w", domain.ErrNotFound, ErrBindingNotFound)
+		}
+		return nil, err
+	}
+	if err := s.requireAdmin(ctx, actor, b.GroupID); err != nil {
+		return nil, err
+	}
+	if err := s.bindings.Delete(ctx, b.GroupID); err != nil {
+		return nil, err
+	}
+	s.writeAudit(ctx, actor.ID, "chat.unbind", "group", b.GroupID,
+		map[string]any{"chat_id": chatID, "thread_id": threadID})
+	g, err := s.groups.GetByID(ctx, b.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+// BindingByChat — привязка чата/топика (бот-командам нужна группа по чату).
+// Отсутствие привязки → ErrBindingNotFound.
+func (s *Service) BindingByChat(ctx context.Context, chatID int64, threadID *int64) (*domain.ChatBinding, error) {
+	b, err := s.bindings.GetByChat(ctx, chatID, threadID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, fmt.Errorf("%w: %w", domain.ErrNotFound, ErrBindingNotFound)
+		}
+		return nil, err
+	}
+	return b, nil
+}
+
+// requireMembership — вызывающий состоит в группе (любая роль), он её создатель
+// или superadmin. Создатель сохраняет право привязки и после выхода из
+// membership: привязка чата — часть онбординга созданной им группы.
+func (s *Service) requireMembership(ctx context.Context, actor *domain.User, g *domain.Group) error {
+	if actor.IsSuperadmin || g.CreatedBy == actor.ID {
+		return nil
+	}
+	_, err := s.members.Get(ctx, g.ID, actor.ID)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, domain.ErrNotFound) {
+		return fmt.Errorf("%w: %w: group id=%d", domain.ErrForbidden, ErrNotMember, g.ID)
+	}
+	return err
 }
 
 // SetRole — promote/demote участника (admin). Понижение админа идёт через

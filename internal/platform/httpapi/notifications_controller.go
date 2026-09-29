@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -51,19 +52,39 @@ func toNotificationsSettingsDTO(s *notifications.Settings) notificationSettingsD
 	return notificationSettingsDTO{DMNotifyDefault: s.DMNotifyDefault, Groups: groups}
 }
 
-// queryGroupID — необязательный ?group_id= в фильтре GET; отсутствие → nil,
-// мусор/неположительное → 400 (ok=false).
+// queryGroupID — необязательный ?group_id= в фильтре GET. Отсутствие ключа →
+// nil; переданный ключ с пустым или нечисловым/неположительным значением → 400
+// (ok=false): «group_id=» — это явный фильтр с невалидным значением, а не
+// «фильтра нет».
 func queryGroupID(w http.ResponseWriter, r *http.Request) (*int64, bool) {
-	raw := r.URL.Query().Get("group_id")
-	if raw == "" {
+	vals, present := r.URL.Query()["group_id"]
+	if !present {
 		return nil, true
 	}
-	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || id <= 0 {
-		httpjson.WriteError(w, http.StatusBadRequest, "validation", i18n.T("api.error.validation"))
+	id, err := parseGroupID(vals[0])
+	if err != nil {
+		writeValidationError(w)
 		return nil, false
 	}
 	return &id, true
+}
+
+// parseGroupID — положительный числовой идентификатор группы: id <= 0 и мусор
+// неотличимы для клиента (такой группы не существует).
+func parseGroupID(raw string) (int64, error) {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || !validGroupID(id) {
+		return 0, fmt.Errorf("invalid group_id %q", raw)
+	}
+	return id, nil
+}
+
+// validGroupID — один критерий валидности id для query и тела: неположительный
+// идентификатор отвергается 400 ещё до обращения к БД, а не превращается в 404.
+func validGroupID(id int64) bool { return id > 0 }
+
+func writeValidationError(w http.ResponseWriter) {
+	httpjson.WriteError(w, http.StatusBadRequest, "validation", i18n.T("api.error.validation"))
 }
 
 // Get — GET /api/v1/notifications/settings?group_id= → 200 {dm_notify_default,
@@ -129,7 +150,13 @@ func (c *notificationsController) Patch(w http.ResponseWriter, r *http.Request) 
 	}
 	dmNotify, hasDMNotify, err := req.dmNotify()
 	if err != nil {
-		httpjson.WriteError(w, http.StatusBadRequest, "validation", i18n.T("api.error.validation"))
+		writeValidationError(w)
+		return
+	}
+	// group_id валидируется ДО обращения к членству: id <= 0 — невалидный
+	// параметр (400), как и в GET, а не «нет доступа к группе» (404).
+	if req.GroupID != nil && !validGroupID(*req.GroupID) {
+		writeValidationError(w)
 		return
 	}
 	settings, err := c.svc.Update(r.Context(), actor, notifications.UpdateInput{

@@ -136,13 +136,21 @@ func TestNotificationsGetForeignGroupNotFound(t *testing.T) {
 	}
 }
 
-// Мусор в group_id → 400.
+// Мусор в group_id → 400; параметр, переданный пустым («?group_id=»), тоже 400:
+// это явный фильтр с невалидным значением, а не отсутствие фильтра.
 func TestNotificationsGetBadGroupID(t *testing.T) {
 	r := newTestNotificationsRouter(t)
 	tok, _ := login(t, r, 4004)
-	resp := doJSON(r, http.MethodGet, "/api/v1/notifications/settings?group_id=abc", tok, nil)
-	if resp.Code != http.StatusBadRequest {
-		t.Fatalf("GET bad group_id = %d, want 400; body: %s", resp.Code, resp.Body)
+	for _, path := range []string{
+		"/api/v1/notifications/settings?group_id=abc",
+		"/api/v1/notifications/settings?group_id=",
+		"/api/v1/notifications/settings?group_id=0",
+		"/api/v1/notifications/settings?group_id=-7",
+	} {
+		resp := doJSON(r, http.MethodGet, path, tok, nil)
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("GET %s = %d, want 400; body: %s", path, resp.Code, resp.Body)
+		}
 	}
 }
 
@@ -215,6 +223,9 @@ func TestNotificationsPatchValidation(t *testing.T) {
 		{"null without group", map[string]any{"dm_notify": nil}, http.StatusBadRequest},
 		{"group without dm_notify", map[string]any{"group_id": gid}, http.StatusBadRequest},
 		{"garbage dm_notify", map[string]any{"dm_notify": "yes"}, http.StatusBadRequest},
+		// group_id <= 0 — невалидный параметр (400), как и в GET, а не 404.
+		{"zero group", map[string]any{"group_id": 0, "dm_notify": true}, http.StatusBadRequest},
+		{"negative group", map[string]any{"group_id": -5, "dm_notify": true}, http.StatusBadRequest},
 		// Несуществующая группа — тот же путь, что «не участник»: 404.
 		{"unknown group", map[string]any{"group_id": gid + 9999, "dm_notify": true}, http.StatusNotFound},
 	}
@@ -239,6 +250,58 @@ func TestNotificationsPatchForeignGroupNotFound(t *testing.T) {
 		map[string]any{"group_id": gid, "dm_notify": true})
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("PATCH foreign group = %d, want 404; body: %s", resp.Code, resp.Body)
+	}
+}
+
+// Soft-deleted группа: GET и PATCH отвечают одинаково (404), override в БД не
+// меняется — участник не может «настроить» несуществующую группу.
+func TestNotificationsSoftDeletedGroupConsistent(t *testing.T) {
+	r := newTestNotificationsRouter(t)
+	tok, _ := login(t, r, 4009)
+	gid := setupGroupWithAdmin(t, r, tok, "икбо-44-29")
+
+	// Явный override до удаления — по нему проверим, что PATCH не пишет.
+	resp := doJSON(r, http.MethodPatch, "/api/v1/notifications/settings", tok,
+		map[string]any{"group_id": gid, "dm_notify": true})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("PATCH before delete = %d; body: %s", resp.Code, resp.Body)
+	}
+
+	softDeleteGroup(t, gid)
+
+	getResp := doJSON(r, http.MethodGet, groupPath(gid), tok, nil)
+	patchResp := doJSON(r, http.MethodPatch, "/api/v1/notifications/settings", tok,
+		map[string]any{"group_id": gid, "dm_notify": nil})
+	if getResp.Code != http.StatusNotFound || patchResp.Code != http.StatusNotFound {
+		t.Fatalf("GET = %d, PATCH = %d, want 404 for both", getResp.Code, patchResp.Code)
+	}
+	// Список тоже не содержит удалённую группу.
+	listResp := doJSON(r, http.MethodGet, "/api/v1/notifications/settings", tok, nil)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("GET list = %d", listResp.Code)
+	}
+	for _, g := range decodeNotifications(t, listResp.Body.Bytes()).Groups {
+		if g.GroupID == gid {
+			t.Errorf("soft-deleted group leaked into the list: %+v", g)
+		}
+	}
+	// Значение override не затёрто неудачным PATCH.
+	var dm *bool
+	if err := testPool.QueryRow(t.Context(),
+		`SELECT dm_notify FROM group_memberships WHERE group_id = $1`, gid).Scan(&dm); err != nil {
+		t.Fatalf("read membership: %v", err)
+	}
+	if dm == nil || !*dm {
+		t.Errorf("dm_notify = %v, want the pre-delete override true", dm)
+	}
+}
+
+// softDeleteGroup помечает группу удалённой (soft delete, спека §4).
+func softDeleteGroup(t *testing.T, groupID int64) {
+	t.Helper()
+	if _, err := testPool.Exec(t.Context(),
+		`UPDATE groups SET deleted_at = now() WHERE id = $1`, groupID); err != nil {
+		t.Fatalf("soft delete group: %v", err)
 	}
 }
 

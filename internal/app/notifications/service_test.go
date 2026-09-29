@@ -166,18 +166,24 @@ func (r *fakeMembershipRepo) CountAdmins(ctx context.Context, groupID int64) (in
 
 type fakeGroupRepo struct {
 	groups map[int64]*domain.Group
+	// deleted — soft-deleted группы: реальный репозиторий фильтрует
+	// `deleted_at IS NULL`, поэтому GetByID и ListMine их не видят.
+	deleted map[int64]bool
 	// mine — состав групп участника: реальный ListMine делает JOIN
 	// group_memberships, поэтому фейк не отдаёт справочник целиком.
 	mine []int64
 }
 
 func newFakeGroups(groups ...*domain.Group) *fakeGroupRepo {
-	r := &fakeGroupRepo{groups: map[int64]*domain.Group{}}
+	r := &fakeGroupRepo{groups: map[int64]*domain.Group{}, deleted: map[int64]bool{}}
 	for _, g := range groups {
 		r.groups[g.ID] = g
 	}
 	return r
 }
+
+// softDelete помечает группу удалённой (строка в справочнике остаётся).
+func (r *fakeGroupRepo) softDelete(groupID int64) { r.deleted[groupID] = true }
 
 func (r *fakeGroupRepo) Create(ctx context.Context, g *domain.Group) error {
 	return errors.New("not used")
@@ -185,7 +191,7 @@ func (r *fakeGroupRepo) Create(ctx context.Context, g *domain.Group) error {
 
 func (r *fakeGroupRepo) GetByID(ctx context.Context, id int64) (*domain.Group, error) {
 	g, ok := r.groups[id]
-	if !ok {
+	if !ok || r.deleted[id] {
 		return nil, fmt.Errorf("%w: group id=%d", domain.ErrNotFound, id)
 	}
 	cp := *g
@@ -215,7 +221,7 @@ func (r *fakeGroupRepo) SoftDelete(ctx context.Context, id int64) error {
 func (r *fakeGroupRepo) ListMine(ctx context.Context, userID int64) ([]domain.Group, error) {
 	out := make([]domain.Group, 0, len(r.mine))
 	for _, id := range r.mine {
-		if g, ok := r.groups[id]; ok {
+		if g, ok := r.groups[id]; ok && !r.deleted[id] {
 			out = append(out, *g)
 		}
 	}
@@ -486,6 +492,47 @@ func TestUpdateGroupNotMember(t *testing.T) {
 	}
 	if len(hs.mems.setCalls) != 0 {
 		t.Errorf("set calls = %+v, want none", hs.mems.setCalls)
+	}
+}
+
+// Soft-deleted группа с уцелевшим членством: PATCH обязан отвечать так же, как
+// GET ?group_id= (ErrNotFound), а не молча писать в невидимую группу.
+func TestUpdateSoftDeletedGroup(t *testing.T) {
+	hs := newSvcHarness(t, false)
+	hs.groups.softDelete(1)
+	gid := int64(1)
+
+	// GET уже отдаёт ErrNotFound для этой группы.
+	if _, err := hs.svc.Get(context.Background(), hs.actor, &gid); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Get err = %v, want ErrNotFound", err)
+	}
+
+	_, err := hs.svc.Update(context.Background(), hs.actor, UpdateInput{
+		GroupID: &gid, DMNotify: boolPtr(true), HasDMNotify: true,
+	})
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Update err = %v, want ErrNotFound", err)
+	}
+	if len(hs.mems.setCalls) != 0 {
+		t.Errorf("set calls = %+v, want none for a soft-deleted group", hs.mems.setCalls)
+	}
+	if hs.mems.mems[memKey{1, 5}].DMNotify != nil {
+		t.Errorf("override = %v, want untouched for a soft-deleted group",
+			hs.mems.mems[memKey{1, 5}].DMNotify)
+	}
+}
+
+// Удалённая группа исчезает и из списка GET.
+func TestGetSkipsSoftDeletedGroups(t *testing.T) {
+	hs := newSvcHarness(t, false)
+	hs.groups.softDelete(1)
+
+	got, err := hs.svc.Get(context.Background(), hs.actor, nil)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Groups) != 1 || got.Groups[0].GroupID != 2 {
+		t.Errorf("groups = %+v, want only the live group 2", got.Groups)
 	}
 }
 

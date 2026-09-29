@@ -138,6 +138,12 @@ func (s *Service) Update(ctx context.Context, actor *domain.User, in UpdateInput
 		if _, err := s.members.Get(ctx, *in.GroupID, actor.ID); err != nil {
 			return nil, err
 		}
+		// Симметрия с Get: soft-deleted группа невидима (GroupRepo.GetByID
+		// фильтрует deleted_at). Без этой проверки PATCH возвращал бы 200 и
+		// молча писал в группу, которую GET по тому же id отдаёт как 404.
+		if _, err := s.groups.GetByID(ctx, *in.GroupID); err != nil {
+			return nil, err
+		}
 		if err := s.members.SetDMNotify(ctx, *in.GroupID, actor.ID, in.DMNotify); err != nil {
 			return nil, err
 		}

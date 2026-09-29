@@ -29,7 +29,10 @@ func newTestModerationService(pool *pgxpool.Pool) *moderation.Service {
 		Maintenance: repo.NewMaintenance(pool),
 		Audit:       repo.NewAudit(pool),
 		Clock:       domain.SystemClock{},
-		Config:      moderation.Config{PendingTTL: 14 * 24 * time.Hour},
+		Config: moderation.Config{
+			PendingTTL:       14 * 24 * time.Hour,
+			CounterRetention: 8 * 24 * time.Hour,
+		},
 	})
 }
 

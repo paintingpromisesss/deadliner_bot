@@ -2,7 +2,6 @@ package repo
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -93,19 +92,4 @@ func (r *maintenanceRepo) PurgeExpiredSessions(ctx context.Context, olderThan ti
 		return 0, mapErr(err)
 	}
 	return tag.RowsAffected(), nil
-}
-
-// tableCount — тестовый помощник: число строк таблицы. Имя таблицы приходит из
-// теста (константа), параметров в SQL для имён таблиц не существует, поэтому
-// подстановка допустима; запрос явный, без SELECT *.
-func tableCount(ctx context.Context, pool *pgxpool.Pool, table string) (int64, error) {
-	if table != "user_action_counters" && table != "chat_action_counters" &&
-		table != "sessions" && table != "audit_log" {
-		return 0, fmt.Errorf("tableCount: unexpected table %q", table)
-	}
-	var n int64
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil {
-		return 0, err
-	}
-	return n, nil
 }

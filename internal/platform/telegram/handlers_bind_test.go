@@ -76,8 +76,10 @@ type fakeUsers struct {
 	upserted  []*domain.User
 	unblocked []int64
 	err       error
-	// me — что возвращает GetByTelegramID (гидратация для guard'а
-	// супер-админа); nil → ErrNotFound.
+	// me — гидратированный пользователь для GetByTelegramID (проверка бана в
+	// /bind_group, guard супер-админа). nil → синтетический не-забаненный
+	// пользователь с запрошенным telegram_id (репо в проде тоже нашёл бы
+	// строку: touchUser только что сделал upsert). meErr задаёт сбой чтения.
 	me    *domain.User
 	meErr error
 }
@@ -87,7 +89,7 @@ func (u *fakeUsers) GetByTelegramID(ctx context.Context, telegramID int64) (*dom
 		return nil, u.meErr
 	}
 	if u.me == nil {
-		return nil, domain.ErrNotFound
+		return &domain.User{ID: telegramID, TelegramID: telegramID}, nil
 	}
 	cp := *u.me
 	return &cp, nil
@@ -123,6 +125,8 @@ type fakeBinder struct {
 	lastSlug   string
 	lastChat   int64
 	lastThread *int64
+	// unbindCalls — число вызовов UnbindChat (проверка бана в /unbind).
+	unbindCalls []int64
 }
 
 func (b *fakeBinder) BindChat(ctx context.Context, actor *domain.User, chatID int64, threadID *int64, slug, chatTitle string) (*domain.Group, error) {
@@ -134,6 +138,7 @@ func (b *fakeBinder) BindChat(ctx context.Context, actor *domain.User, chatID in
 }
 
 func (b *fakeBinder) UnbindChat(ctx context.Context, actor *domain.User, chatID int64, threadID *int64) (*domain.Group, error) {
+	b.unbindCalls = append(b.unbindCalls, chatID)
 	if b.unbindChat != nil {
 		return b.unbindChat(ctx, actor, chatID, threadID)
 	}
@@ -537,6 +542,66 @@ func TestNewDeadlineWithoutAppURL(t *testing.T) {
 }
 
 // --- служебные инварианты ---
+
+// F-2 (fix round): забаненный не привязывает и не отвязывает чат. Привязка
+// живёт только в боте — middleware.Auth её не прикрывает, поэтому проверка
+// бана обязана быть здесь: use case НЕ вызывается, привязка не создаётся.
+func TestBindGroupAndUnbindRefuseBannedUser(t *testing.T) {
+	hs := newHarness()
+	hs.users.me = &domain.User{ID: 7, TelegramID: 777, IsBanned: true}
+
+	hs.h.Handle(context.Background(),
+		update(-100500, models.ChatTypeSupergroup, 777, "ivan", "/bind_group ИКБО-33-21"))
+	if got := hs.sender.last(t); got.text != i18n.T("bot.forbidden") {
+		t.Errorf("bind text = %q, want bot.forbidden", got.text)
+	}
+	if hs.binder.lastChat != 0 || hs.binder.lastSlug != "" {
+		t.Errorf("BindChat must not be called for a banned user (chat=%d slug=%q)",
+			hs.binder.lastChat, hs.binder.lastSlug)
+	}
+	if len(hs.admin.calls) != 0 {
+		t.Errorf("admin checks = %v, want none (ban is checked before Telegram calls)", hs.admin.calls)
+	}
+
+	hs.h.Handle(context.Background(), update(-100500, models.ChatTypeSupergroup, 777, "ivan", "/unbind"))
+	if got := hs.sender.last(t); got.text != i18n.T("bot.forbidden") {
+		t.Errorf("unbind text = %q, want bot.forbidden", got.text)
+	}
+	if len(hs.binder.unbindCalls) != 0 {
+		t.Errorf("UnbindChat calls = %d, want 0 for a banned user", len(hs.binder.unbindCalls))
+	}
+}
+
+// Сбой гидратации на проверке бана: отказ generic (fail-closed — пропустить
+// забаненного хуже, чем отказать в привязке при сбое БД), use case не вызван.
+func TestBindGroupBanCheckFailureFailsClosed(t *testing.T) {
+	hs := newHarness()
+	hs.users.meErr = errors.New("db down")
+
+	hs.h.Handle(context.Background(),
+		update(-100500, models.ChatTypeSupergroup, 7, "ivan", "/bind_group ИКБО-33-21"))
+	if got := hs.sender.last(t); got.text != i18n.T("bot.error.generic") {
+		t.Errorf("text = %q, want bot.error.generic", got.text)
+	}
+	if hs.binder.lastChat != 0 {
+		t.Error("BindChat must not be called when the ban check fails")
+	}
+}
+
+// Не-забаненный пользователь проходит проверку: /bind_group работает как раньше.
+func TestBindGroupUnaffectedForActiveUser(t *testing.T) {
+	hs := newHarness()
+	hs.users.me = &domain.User{ID: 7, TelegramID: 7}
+
+	hs.h.Handle(context.Background(),
+		update(-100500, models.ChatTypeSupergroup, 7, "ivan", "/bind_group ИКБО-33-21"))
+	if got := hs.sender.last(t); got.text != i18n.T("bot.bind.ok", "Чат группы") {
+		t.Errorf("text = %q, want bot.bind.ok", got.text)
+	}
+	if hs.binder.lastChat != -100500 {
+		t.Errorf("chat = %d, want -100500", hs.binder.lastChat)
+	}
+}
 
 // Апдейт без автора (анонимный пост канала): пользователь не обновляется,
 // команда не выполняется — но обработка не падает.

@@ -78,13 +78,15 @@ func (h *Handlers) commands() []BotCommand {
 // сообщения боту доказывает, что пользователь его не блокировал), в группах
 // пользователь обновляется только при наличии message.from.
 //
-// Забаненный пользователь на уровне обычных сообщений НЕ проверяется
-// намеренно: UpsertByTelegram возвращает частичного пользователя (is_banned не
-// читается), и гидратация на каждое сообщение стоила бы лишнего чтения. Бан
-// закрывает пути записи (создание группы, claim, привязка чата), а они идут
-// через API: middleware.Auth отвергает забаненного 403, auth.Login не выдаёт
-// ему сессию. Служебные команды (/promote, /ban, /unban, /stats,
-// /delete_group) гидратируют вызывающего и бан учитывают (спека §3.3).
+// Забаненный пользователь на уровне ВСЕХ сообщений не проверяется намеренно:
+// UpsertByTelegram возвращает частичного пользователя (is_banned не читается),
+// и гидратация на каждое сообщение стоила бы лишнего чтения. Покрытие бана
+// неполное ровно по этой причине: API-пути (создание группы, claim, привязка
+// через REST) защищены middleware.Auth (403) и auth.Login, но привязка чата
+// (/bind_group, /unbind) существует ТОЛЬКО в боте и под middleware не попадает
+// — эти команды гидратируют вызывающего сами (Handlers.isBanned). Служебные
+// команды (/promote, /ban, /unban, /stats, /delete_group) гидратируют по той же
+// причине (guard is_superadmin).
 func (h *Handlers) Handle(ctx context.Context, upd *models.Update) {
 	if upd == nil || upd.Message == nil {
 		// Прочие типы апдейтов (callback_query и т.п.) вне периметра v1.
@@ -215,9 +217,9 @@ func (h *Handlers) handleGroups(ctx context.Context, msg *models.Message, actor 
 // deeplink #add).
 
 // handleBindGroup — /bind_group <slug> (спека §6.1): привязать этот
-// chat_id(+thread_id) к группе. Порядок: чат (не ЛС) → аргумент → бот —
-// админ чата (знание Telegram, не домена) → use case (слаг существует,
-// вызывающий участник, 1 чат = 1 группа).
+// chat_id(+thread_id) к группе. Порядок: чат (не ЛС) → аргумент → бан
+// вызывающего → бот — админ чата (знание Telegram, не домена) → use case
+// (слаг существует, вызывающий участник, 1 чат = 1 группа).
 func (h *Handlers) handleBindGroup(ctx context.Context, msg *models.Message, actor *domain.User, arg string) {
 	if isPrivate(msg.Chat.Type) {
 		h.send(ctx, msg.Chat.ID, nil, i18n.T("bot.bind.wrong_chat"), false)
@@ -230,6 +232,13 @@ func (h *Handlers) handleBindGroup(ctx context.Context, msg *models.Message, act
 	}
 	if actor == nil || h.binder == nil || h.adminChecker == nil {
 		h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.error.generic"), false)
+		return
+	}
+	if banned, err := h.isBanned(ctx, actor.TelegramID); err != nil {
+		h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.error.generic"), false)
+		return
+	} else if banned {
+		h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.forbidden"), false)
 		return
 	}
 
@@ -253,6 +262,9 @@ func (h *Handlers) handleBindGroup(ctx context.Context, msg *models.Message, act
 }
 
 // handleUnbind — /unbind: снять привязку (роль admin группы, спека §6.1).
+// Забаненный вызывающий отсекается так же, как в /bind_group: привязка
+// существует только через бота, поэтому middleware-проверка бана на этом пути
+// не работает.
 func (h *Handlers) handleUnbind(ctx context.Context, msg *models.Message, actor *domain.User) {
 	if isPrivate(msg.Chat.Type) {
 		h.send(ctx, msg.Chat.ID, nil, i18n.T("bot.bind.wrong_chat"), false)
@@ -263,12 +275,42 @@ func (h *Handlers) handleUnbind(ctx context.Context, msg *models.Message, actor 
 		h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.error.generic"), false)
 		return
 	}
+	if banned, err := h.isBanned(ctx, actor.TelegramID); err != nil {
+		h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.error.generic"), false)
+		return
+	} else if banned {
+		h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.forbidden"), false)
+		return
+	}
 	g, err := h.binder.UnbindChat(ctx, actor, msg.Chat.ID, thread)
 	if err != nil {
 		h.send(ctx, msg.Chat.ID, thread, unbindErrorText(err), false)
 		return
 	}
 	h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.unbind.ok", i18n.EscapeHTML(g.Title)), false)
+}
+
+// isBanned — гидратация вызывающего ради флага бана. Вызывается ТОЛЬКО из
+// команд записи, доступных из чата (/bind_group, /unbind): actor из touchUser
+// частичный (is_banned не читается), а привязка чата живёт исключительно в
+// боте — middleware.Auth её не прикрывает, в отличие от API-путей (создание
+// группы, claim, удаление), где забаненный получает 403 и без этой проверки.
+// Одно чтение на команду, а не на каждое сообщение: цена приемлема, потому что
+// команды редкие и именно они меняют состояние чата.
+//
+// Ошибка чтения считается «не знаем» и трактуется вызывающим как generic:
+// пропустить забаненного хуже, чем отказать в привязке при сбое БД.
+func (h *Handlers) isBanned(ctx context.Context, telegramID int64) (bool, error) {
+	if h.users == nil {
+		return false, nil
+	}
+	u, err := h.users.GetByTelegramID(ctx, telegramID)
+	if err != nil {
+		h.log.Warn("telegram: ban check hydration failed",
+			slog.Int64("telegram_id", telegramID), slog.String("error", err.Error()))
+		return false, err
+	}
+	return u.IsBanned, nil
 }
 
 // bindErrorText — доменная ошибка → текст для чата: максимально конкретно,

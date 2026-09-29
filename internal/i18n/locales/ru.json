@@ -20,6 +20,7 @@
   "bot.role.member": "участник",
   "bot.new_deadline": "Откройте форму добавления дедлайна в приложении — кнопка ниже.",
   "bot.error.generic": "Не получилось. Попробуйте позже.",
+  "bot.forbidden": "Действие недоступно: доступ к боту ограничен.",
   "bot.button.open_app": "Открыть Deadliner",
   "bot.button.add_deadline": "Добавить дедлайн",
   "bot.cmd.start": "Открыть Deadliner",

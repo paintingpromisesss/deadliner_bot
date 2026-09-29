@@ -269,6 +269,9 @@ func newModerationService(pool *pgxpool.Pool, cfg *config.Config, log *slog.Logg
 		Audit:       repo.NewAudit(pool),
 		Clock:       domain.SystemClock{},
 		Log:         log,
-		Config:      moderation.Config{PendingTTL: cfg.Limits.GroupPendingTTL},
+		Config: moderation.Config{
+			PendingTTL:       cfg.Limits.GroupPendingTTL,
+			CounterRetention: cfg.Limits.CounterRetention,
+		},
 	})
 }

@@ -65,6 +65,12 @@ type Cleanup struct {
 	Interval time.Duration
 }
 
+// longestLimitWindow — самое длинное окно rate-limit-счётчика
+// (group_create_week в groups.Service: 168 часов). Retention уборки обязан
+// быть строго больше него, иначе cleanup удалит ЖИВУЮ строку недельного
+// лимита и LIMIT_GROUP_CREATE_WEEK молча перестанет срабатывать.
+const longestLimitWindow = 168 * time.Hour
+
 type Limits struct {
 	GroupPendingTTL      time.Duration
 	GroupCreateDay       int
@@ -73,6 +79,11 @@ type Limits struct {
 	ClaimCodeTTL         time.Duration
 	InviteDefaultTTLDays int
 	SlugRegex            string
+	// CounterRetention — COUNTER_RETENTION: сколько живёт окно rate-limit-
+	// счётчика после его начала (дефолт 192ч). Должен быть больше самого
+	// длинного окна (longestLimitWindow) — валидируется в Load, потому что
+	// оператор, повысивший окно, обязан повысить и retention.
+	CounterRetention time.Duration
 }
 
 type loader struct {
@@ -163,6 +174,7 @@ func Load() (*Config, error) {
 			ClaimCodeTTL:         l.duration("CLAIM_CODE_TTL", 10*time.Minute),
 			InviteDefaultTTLDays: l.int("INVITE_DEFAULT_TTL_DAYS", 7),
 			SlugRegex:            l.string("SLUG_REGEX", `^[А-ЯA-Z0-9]+(-[А-ЯA-Z0-9]+)*$`),
+			CounterRetention:     l.duration("COUNTER_RETENTION", 8*24*time.Hour),
 		},
 	}
 
@@ -179,6 +191,17 @@ func Load() (*Config, error) {
 	if cfg.Bot.usesWebhook() && cfg.Bot.WebhookSecret == "" {
 		l.errs = append(l.errs, errors.New(
 			"missing required env var WEBHOOK_SECRET: webhook mode without a secret token accepts forged updates"))
+	}
+	// Retention уборки счётчиков обязан быть больше самого длинного окна
+	// лимита (168ч = неделя): окно floor-ится на своё начало, поэтому живая
+	// строка недельного счётчика может быть почти 168 часов от роду, и
+	// retention ≤ 168ч удалял бы её — лимит «5 групп в неделю» молча
+	// переставал бы срабатывать.
+	if cfg.Limits.CounterRetention <= longestLimitWindow {
+		l.errs = append(l.errs, fmt.Errorf(
+			"COUNTER_RETENTION=%s must exceed the longest rate-limit window (%s, week limit): "+
+				"a shorter retention purges the live weekly counter row",
+			cfg.Limits.CounterRetention, longestLimitWindow))
 	}
 
 	if len(l.errs) > 0 {

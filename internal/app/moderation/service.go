@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/sauron/deadliner/internal/domain"
@@ -25,11 +26,18 @@ import (
 // таблицей (следующий прогон доберёт остаток).
 const pendingScanLimit = 500
 
+// defaultCounterRetention — ретенция окна rate-limit-счётчика по умолчанию:
+// 8 суток. Обязана быть больше самого длинного окна лимита — недельного
+// «group_create_week» (168ч, groups.Service.checkCreateLimit): окно
+// floor-ится на своё начало, поэтому живая строка недельного счётчика бывает
+// почти 168 часов от роду, и любая ретенция ≤ 168ч удаляла бы её — лимит
+// «5 групп в неделю» (LIMIT_GROUP_CREATE_WEEK) молча переставал бы
+// срабатывать. Реальное значение приходит из конфига
+// (COUNTER_RETENTION, дефолт 192ч) — см. config.Load, где оно валидируется
+// строго больше 168ч.
+const defaultCounterRetention = 8 * 24 * time.Hour
+
 const (
-	// counterRetention — сколько живёт окно rate-limit-счётчика после его
-	// начала (Task 10: самое длинное окно — час, поэтому 48 часов с запасом:
-	// счётчики нужны только для проверки текущих лимитов).
-	counterRetention = 48 * time.Hour
 	// sessionGrace — грейс после expires_at, на который сессия ещё остаётся в
 	// БД (Task 6: GetActive и так отвергает истёкшие; здесь только уборка).
 	sessionGrace = 7 * 24 * time.Hour
@@ -44,6 +52,11 @@ type Config struct {
 	// claim_expires_at группы (он и есть created_at + TTL), поэтому джоба не
 	// зависит от значения в момент прогона.
 	PendingTTL time.Duration
+	// CounterRetention — сколько живёт окно rate-limit-счётчика после начала
+	// окна (COUNTER_RETENTION, дефолт 192ч). Ноль/отрицательное значение
+	// заменяется дефолтом; конфиг обязан гарантировать значение больше
+	// недельного окна лимита (проверяется в config.Load).
+	CounterRetention time.Duration
 }
 
 // Deps — зависимости сервиса модерации (только domain-порты).
@@ -77,6 +90,11 @@ func NewService(d Deps) *Service {
 	}
 	if d.Clock == nil {
 		d.Clock = domain.SystemClock{}
+	}
+	if d.Config.CounterRetention <= 0 {
+		// Защита от нулевого значения у вызывающего без конфига (тесты):
+		// 48ч и меньше было бы багом (см. defaultCounterRetention).
+		d.Config.CounterRetention = defaultCounterRetention
 	}
 	return &Service{deps: d, cfg: d.Config, log: d.Log}
 }
@@ -138,6 +156,11 @@ func (s *Service) CleanupExpiredPending(ctx context.Context) (CleanupReport, err
 			continue
 		}
 		report.Groups++
+		// Reminders — число pending-напоминаний, УВИДЕННЫХ перед гашением
+		// (ListByDeadline → CancelByDeadline). Величина справочная: при гонке
+		// с воркером (напоминание успело стать sent между чтением и UPDATE)
+		// она может быть на единицу больше фактически погашенных — реальный
+		// эффект всё равно идемпотентен.
 		report.Reminders += cancelled
 		s.log.Info("cleanup: pending group deleted",
 			slog.Int64("group_id", g.ID), slog.String("slug", g.Slug))
@@ -145,7 +168,10 @@ func (s *Service) CleanupExpiredPending(ctx context.Context) (CleanupReport, err
 
 	// Служебная уборка (ledger Task 6/10): окна счётчиков и протухшие сессии.
 	// Сбой уборки не отменяет уже удалённые группы и не роняет прогон.
-	counters, err := s.deps.Maintenance.PurgeCounters(ctx, now.Add(-counterRetention))
+	// Ретенция счётчиков — из конфига (COUNTER_RETENTION): она обязана быть
+	// больше самого длинного окна лимита, иначе удалила бы живую строку
+	// недельного лимита (LIMIT_GROUP_CREATE_WEEK).
+	counters, err := s.deps.Maintenance.PurgeCounters(ctx, now.Add(-s.cfg.CounterRetention))
 	if err != nil {
 		s.log.Warn("cleanup: counter purge failed", slog.String("error", err.Error()))
 	} else {
@@ -332,14 +358,13 @@ func (s *Service) requireSuperadmin(actor *domain.User) error {
 }
 
 // writeAudit — best-effort запись в audit_log: сбой аудита не роняет уже
-// согласованную операцию, но остаётся предупреждением в логе. actor == nil —
-// системное действие (cleanup-джоба): actor_user_id остаётся NULL.
+// согласованную операцию, но остаётся предупреждением в логе. actor == nil
+// (cleanup-джоба) и actor.ID == 0 (SystemActor CLI) дают actor_user_id = NULL —
+// это и есть нужная семантика для системного действия (audit_log.actor_user_id
+// объявлен nullable и без FK на users, так что «пользователь 0» был бы не
+// ошибкой БД, а вводящей в заблуждение записью).
 func (s *Service) writeAudit(ctx context.Context, actor *domain.User, action, targetType string, targetID *int64, meta map[string]any) {
 	var actorID *int64
-	// actor == nil — системное действие cleanup-джобы; actor.ID == 0 —
-	// синтетический SystemActor CLI-пути (строки users у оператора нет):
-	// в обоих случаях actor_user_id остаётся NULL, а не «пользователь 0»
-	// (FK на users такой строки не имеет).
 	if actor != nil && actor.ID != 0 {
 		actorID = &actor.ID
 	}
@@ -373,7 +398,8 @@ type Cleaner interface {
 // прогон сразу на старте (рестарт не должен откладывать уборку на час),
 // дальше — interval. Блокирующая: serve гоняет её в горутине и закрывает по
 // ctx.Done. Ошибка прогона логируется и не завершает петлю — следующая
-// попытка через интервал.
+// попытка через интервал; паника в прогоне ловится отдельно (runCleanupOnce),
+// иначе она убила бы весь процесс serve.
 func StartCleanupLoop(ctx context.Context, svc Cleaner, interval time.Duration, log *slog.Logger) {
 	if log == nil {
 		log = slog.Default()
@@ -394,20 +420,39 @@ func StartCleanupLoop(ctx context.Context, svc Cleaner, interval time.Duration, 
 		if ctx.Err() != nil {
 			return
 		}
-		report, err := svc.CleanupExpiredPending(ctx)
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Error("cleanup: run failed", slog.String("error", err.Error()))
-			}
-		} else if report != (CleanupReport{}) {
-			log.Info("cleanup: done",
-				slog.Int("groups", report.Groups),
-				slog.Int("reminders", report.Reminders),
-				slog.Int("counters_purged", report.CountersPurged),
-				slog.Int("sessions_purged", report.SessionsPurged),
+		runCleanupOnce(ctx, svc, log)
+		timer.Reset(interval)
+	}
+}
+
+// runCleanupOnce — один прогон с защитой от паники: джоба служебная, и паника
+// в репозитории (например, nil-разыменование в адаптере) не должна ронять
+// процесс serve, обслуживающий бота и API. Ошибка и паника логируются
+// одинаково; петля продолжает работу по расписанию.
+func runCleanupOnce(ctx context.Context, svc Cleaner, log *slog.Logger) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("cleanup: run panicked",
+				slog.Any("panic", r),
+				slog.String("stack", string(debug.Stack())),
 			)
 		}
-		timer.Reset(interval)
+	}()
+
+	report, err := svc.CleanupExpiredPending(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Error("cleanup: run failed", slog.String("error", err.Error()))
+		}
+		return
+	}
+	if report != (CleanupReport{}) {
+		log.Info("cleanup: done",
+			slog.Int("groups", report.Groups),
+			slog.Int("reminders", report.Reminders),
+			slog.Int("counters_purged", report.CountersPurged),
+			slog.Int("sessions_purged", report.SessionsPurged),
+		)
 	}
 }
 

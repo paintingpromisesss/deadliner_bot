@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -498,7 +499,10 @@ func newFixture() *fixture {
 		Audit:       f.audit,
 		Clock:       f.clock,
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Config:      Config{PendingTTL: 14 * 24 * time.Hour},
+		Config: Config{
+			PendingTTL:       14 * 24 * time.Hour,
+			CounterRetention: 8 * 24 * time.Hour,
+		},
 	})
 	return f
 }
@@ -632,8 +636,8 @@ func TestCleanupCancelsRemindersOfDeletedGroupsOnly(t *testing.T) {
 	}
 }
 
-// Служебная часть cleanup: старые окна счётчиков (48ч) и протухшие сессии
-// (грейс 7 дней) — из ledger-заметок Task 6/10.
+// Служебная часть cleanup: старые окна счётчиков (ретенция из конфига) и
+// протухшие сессии (грейс 7 дней) — из ledger-заметок Task 6/10.
 func TestCleanupPurgesCountersAndSessions(t *testing.T) {
 	f := newFixture()
 	f.maint.counters = 5
@@ -646,7 +650,9 @@ func TestCleanupPurgesCountersAndSessions(t *testing.T) {
 	if !f.maint.purgeCounter || !f.maint.purgeSession {
 		t.Fatal("purges were not called")
 	}
-	if want := f.clock.now.Add(-counterRetention); !f.maint.counterCut.Equal(want) {
+	// Cut-off берётся из Конфига, а не из константы: оператор, повышающий
+	// окно лимита, обязан суметь повысить и ретенцию.
+	if want := f.clock.now.Add(-f.svc.cfg.CounterRetention); !f.maint.counterCut.Equal(want) {
 		t.Errorf("counter cut = %v, want %v", f.maint.counterCut, want)
 	}
 	if want := f.clock.now.Add(-sessionGrace); !f.maint.sessionCut.Equal(want) {
@@ -659,6 +665,38 @@ func TestCleanupPurgesCountersAndSessions(t *testing.T) {
 		t.Fatal("no cleanup.run audit entry")
 	} else if e.Meta["counters_purged"] != 5 {
 		t.Errorf("audit meta counters_purged = %v, want 5", e.Meta["counters_purged"])
+	}
+}
+
+// Ретенция по умолчанию обязана быть СТРОГО больше самого длинного окна
+// rate-limit-счётчика (недельный group_create_week, 168ч): окно floor-ится на
+// своё начало, поэтому живая строка недельного счётчика бывает почти 168ч от
+// роду. Регрессия: 48ч удаляло её и LIMIT_GROUP_CREATE_WEEK молча не срабатывал.
+func TestDefaultCounterRetentionExceedsWeekWindow(t *testing.T) {
+	const weekWindow = 168 * time.Hour
+	if defaultCounterRetention <= weekWindow {
+		t.Fatalf("defaultCounterRetention = %v, must exceed the weekly window %v",
+			defaultCounterRetention, weekWindow)
+	}
+	if defaultCounterRetention != 8*24*time.Hour {
+		t.Errorf("defaultCounterRetention = %v, want 192h", defaultCounterRetention)
+	}
+
+	// Нулевое значение у вызывающего без конфига подменяется дефолтом, а не 0:
+	// retention=0 удалял бы все окна немедленно.
+	f := newFixture()
+	f.svc = NewService(Deps{
+		Groups: f.groups, Deadlines: f.deadline, Reminders: f.reminder,
+		Memberships: f.members, Bindings: f.bindings, Users: f.users,
+		Sessions: f.sessions, Maintenance: f.maint, Audit: f.audit,
+		Clock: f.clock, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config: Config{PendingTTL: 14 * 24 * time.Hour}, // CounterRetention не задан
+	})
+	if _, err := f.svc.CleanupExpiredPending(context.Background()); err != nil {
+		t.Fatalf("CleanupExpiredPending: %v", err)
+	}
+	if want := f.clock.now.Add(-defaultCounterRetention); !f.maint.counterCut.Equal(want) {
+		t.Errorf("counter cut = %v, want the default %v", f.maint.counterCut, want)
 	}
 }
 
@@ -944,6 +982,64 @@ func TestStartCleanupLoopSurvivesErrors(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if cleaner.count() < 2 {
 		t.Errorf("calls = %d, want the loop to survive an error", cleaner.count())
+	}
+}
+
+// panicCleaner паникует на первом прогоне и считает последующие.
+type panicCleaner struct {
+	mu     sync.Mutex
+	calls  int
+	panics int
+	done   chan struct{}
+}
+
+func (c *panicCleaner) CleanupExpiredPending(ctx context.Context) (CleanupReport, error) {
+	c.mu.Lock()
+	c.calls++
+	first := c.calls == 1
+	if first {
+		c.panics++
+	}
+	c.mu.Unlock()
+	if first {
+		panic("repo exploded")
+	}
+	select {
+	case c.done <- struct{}{}:
+	default:
+	}
+	return CleanupReport{}, nil
+}
+
+// Паника в прогоне перехватывается: петля логирует её и продолжает работу —
+// служебная джоба не должна ронять процесс serve (бота и API).
+func TestStartCleanupLoopRecoversFromPanic(t *testing.T) {
+	cleaner := &panicCleaner{done: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var buf strings.Builder
+	returned := make(chan struct{})
+	go func() {
+		StartCleanupLoop(ctx, cleaner, 5*time.Millisecond,
+			slog.New(slog.NewTextHandler(&buf, nil)))
+		close(returned)
+	}()
+
+	select {
+	case <-cleaner.done:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("cleanup loop did not continue after a panic")
+	}
+	if !strings.Contains(buf.String(), "panicked") {
+		t.Errorf("panic was not logged: %s", buf.String())
+	}
+	cancel()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cleanup loop did not return after ctx cancel")
 	}
 }
 

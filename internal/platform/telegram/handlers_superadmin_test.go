@@ -132,7 +132,8 @@ func TestSuperadminBannedCallerRejected(t *testing.T) {
 // Неизвестный в БД вызывающий (GetByTelegramID → ErrNotFound) — тоже отказ,
 // без паники и без обращения к сервису.
 func TestSuperadminUnknownCallerIsRejected(t *testing.T) {
-	hs, sa := newSuperadminHarness(nil) // me == nil → ErrNotFound
+	hs, sa := newSuperadminHarness(nil)
+	hs.users.meErr = domain.ErrNotFound
 	hs.h.Handle(context.Background(), update(500, models.ChatTypePrivate, 777, "ivan", "/stats"))
 
 	if got := hs.sender.last(t); got.text != i18n.T("bot.error.generic") {

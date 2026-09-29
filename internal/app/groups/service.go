@@ -166,6 +166,13 @@ func (s *Service) Create(ctx context.Context, actor *domain.User, slugRaw, title
 
 // checkCreateLimit инкрементирует счётчик окна и отклоняет превышение.
 // Начало окна floor-ится на слое приложения (репо принимает его как есть).
+//
+// ВНИМАНИЕ (связь с cleanup): окно floor-ится на своё начало, поэтому у
+// недельного счётчика (168ч) window_start бывает почти 168 часов от роду.
+// Уборка счётчиков (moderation.CleanupExpiredPending) обязана иметь ретенцию
+// строго больше 168ч (COUNTER_RETENTION, дефолт 192ч, проверяется в
+// config.Load): иначе cleanup удалял бы ЖИВУЮ строку недельного лимита и
+// LIMIT_GROUP_CREATE_WEEK молча перестал бы срабатывать.
 func (s *Service) checkCreateLimit(ctx context.Context, userID int64, action string, window time.Duration, limit int, now time.Time) error {
 	windowStart := now.Truncate(window)
 	count, err := s.counters.IncAndCheck(ctx, userID, action, windowStart, limit)

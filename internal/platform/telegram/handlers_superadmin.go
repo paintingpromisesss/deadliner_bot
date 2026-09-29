@@ -25,10 +25,10 @@ import (
 // Права: UpsertByTelegram из touchUser возвращает ЧАСТИЧНОГО пользователя
 // (is_superadmin/is_banned в RETURNING не читаются), поэтому перед любой
 // служебной командой обязательна гидратация GetByTelegramID. Обычные
-// сообщения такой проверки не делают намеренно: бан блокирует пути записи
-// (создание группы, claim, привязка чата) — они идут через API, где актор
-// читается из БД целиком, плюс middleware.Auth отвергает забаненного
-// (403) и auth.Login не выдаёт ему сессию (спека §3.3).
+// сообщения такой проверки не делают намеренно: бан закрывает пути записи, а
+// они в основном идут через API (создание группы, claim — middleware.Auth
+// 403 и отказ auth.Login); исключение — команды привязки чата, живущие только
+// в боте: их гидратирует Handlers.isBanned (спека §3.3).
 func (h *Handlers) handleSuperadmin(ctx context.Context, msg *models.Message, actor *domain.User, cmd, arg string) {
 	if !isPrivate(msg.Chat.Type) {
 		return

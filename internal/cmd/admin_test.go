@@ -367,6 +367,51 @@ func TestAdminCleanup(t *testing.T) {
 	}
 }
 
+// Демонстрация сквозного wiring'а: CLI-cleanup обязан брать ретенцию из
+// конфига (COUNTER_RETENTION), а не из захардкоженной константы. С прежними
+// 48ч живая строка недельного лимита удалялась бы — здесь она выживает,
+// а 200-часовая вычищается.
+func TestAdminCleanupKeepsLiveWeeklyCounter(t *testing.T) {
+	newTestDB(t)
+	uid := insertUser(t, 555)
+	now := time.Now().UTC()
+	// Возраст 150ч: живая строка недельного окна (LIMIT_GROUP_CREATE_WEEK,
+	// Truncate(168h) — возраст до 168ч) и заведомо старше прежней ретенции 48ч.
+	liveWeek := now.Add(-150 * time.Hour).Truncate(time.Microsecond)
+	stale := now.Add(-200 * time.Hour).Truncate(time.Microsecond)
+	for _, w := range []time.Time{liveWeek, stale} {
+		if _, err := testPool.Exec(t.Context(),
+			`INSERT INTO user_action_counters (user_id, action, window_start, count)
+			 VALUES ($1, 'group_create_week', $2, 4)`, uid, w); err != nil {
+			t.Fatalf("insert counter %v: %v", w, err)
+		}
+	}
+
+	code, out := runAdmin(t, "cleanup")
+	if code != 0 {
+		t.Fatalf("cleanup exit = %d, want 0; output: %s", code, out)
+	}
+	// Обе строки в одном окне/действии — считаем по точному window_start.
+	var live, gone int64
+	if err := testPool.QueryRow(t.Context(),
+		`SELECT count(*) FROM user_action_counters WHERE window_start = $1`, liveWeek).Scan(&live); err != nil {
+		t.Fatalf("count live week row: %v", err)
+	}
+	if err := testPool.QueryRow(t.Context(),
+		`SELECT count(*) FROM user_action_counters WHERE window_start = $1`, stale).Scan(&gone); err != nil {
+		t.Fatalf("count stale row: %v", err)
+	}
+	if live != 1 {
+		t.Errorf("live week counter row (150h old) = %d, want 1 (COUNTER_RETENTION must exceed 168h)", live)
+	}
+	if gone != 0 {
+		t.Errorf("stale counter row (200h old) = %d, want 0 (purged)", gone)
+	}
+	if !strings.Contains(out, "Счётчиков вычищено: 1") {
+		t.Errorf("cleanup output missing the purge report: %q", out)
+	}
+}
+
 // nowInsertedGroup — pending-группа без TTL (claim_expires_at NULL): cleanup её
 // не трогает (отбор идёт по claim_expires_at).
 func nowInsertedGroup(t *testing.T, uid int64) int64 {

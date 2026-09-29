@@ -55,6 +55,14 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Cleanup.Interval != time.Hour {
 		t.Errorf("Cleanup.Interval = %v, want %v", cfg.Cleanup.Interval, time.Hour)
 	}
+	// Ретенция счётчиков обязана быть больше недельного окна лимита (168ч):
+	// иначе cleanup удалит живую строку LIMIT_GROUP_CREATE_WEEK.
+	if cfg.Limits.CounterRetention != 192*time.Hour {
+		t.Errorf("Limits.CounterRetention = %v, want 192h", cfg.Limits.CounterRetention)
+	}
+	if cfg.Limits.CounterRetention <= 168*time.Hour {
+		t.Errorf("Limits.CounterRetention = %v, must exceed the 168h week window", cfg.Limits.CounterRetention)
+	}
 	if cfg.Bot.RateGlobal != 25 {
 		t.Errorf("Bot.RateGlobal = %d, want 25", cfg.Bot.RateGlobal)
 	}
@@ -109,6 +117,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("SCHED_LOCK_TTL", "5m")
 	t.Setenv("SCHED_MAX_ATTEMPTS", "3")
 	t.Setenv("CLEANUP_INTERVAL", "15m")
+	t.Setenv("COUNTER_RETENTION", "240h")
 	t.Setenv("TG_RATE_GLOBAL", "20")
 	t.Setenv("TG_RATE_PER_CHAT", "15")
 	t.Setenv("GROUP_PENDING_TTL_DAYS", "30")
@@ -171,6 +180,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.Cleanup.Interval != 15*time.Minute {
 		t.Errorf("Cleanup.Interval = %v, want 15m", cfg.Cleanup.Interval)
+	}
+	if cfg.Limits.CounterRetention != 240*time.Hour {
+		t.Errorf("Limits.CounterRetention = %v, want 240h", cfg.Limits.CounterRetention)
 	}
 	if cfg.Limits.GroupPendingTTL != 30*24*time.Hour {
 		t.Errorf("Limits.GroupPendingTTL = %v", cfg.Limits.GroupPendingTTL)
@@ -250,5 +262,38 @@ func TestLoadInvalidInt(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "DB_POOL_MAX") {
 		t.Errorf("error %q does not mention DB_POOL_MAX", err)
+	}
+}
+
+// Регрессия C-1 (конфиг): retention ≤ недельного окна — ошибка загрузки, а не
+// молчаливая потеря живого недельного счётчика rate-limit.
+func TestLoadCounterRetentionMustExceedWeekWindow(t *testing.T) {
+	setRequired(t)
+	t.Setenv("COUNTER_RETENTION", "24h")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() with COUNTER_RETENTION=24h returned nil error, want failure")
+	}
+	if !strings.Contains(err.Error(), "COUNTER_RETENTION") {
+		t.Errorf("error %q does not mention COUNTER_RETENTION", err)
+	}
+
+	// Ровно 168ч — тоже отказ: окно floor-ится, возраст живой строки может
+	// быть равен длине окна.
+	for _, v := range []string{"168h", "1h", "0s"} {
+		t.Setenv("COUNTER_RETENTION", v)
+		if _, err := config.Load(); err == nil {
+			t.Errorf("Load() with COUNTER_RETENTION=%s returned nil error, want failure", v)
+		}
+	}
+
+	t.Setenv("COUNTER_RETENTION", "169h")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() with COUNTER_RETENTION=169h: %v", err)
+	}
+	if cfg.Limits.CounterRetention != 169*time.Hour {
+		t.Errorf("CounterRetention = %v, want 169h", cfg.Limits.CounterRetention)
 	}
 }

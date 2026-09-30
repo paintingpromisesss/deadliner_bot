@@ -77,12 +77,6 @@ body {
   min-height: 60vh;
 }
 
-.dl-stub {
-  margin: 0;
-  padding: 24px 16px;
-  color: var(--tgui--hint_color);
-}
-
 .dl-avatar {
   display: inline-flex;
   align-items: center;
@@ -530,4 +524,60 @@ body {
   padding: 6px 0;
   font-size: 14px;
   border-bottom: 1px solid var(--tgui--divider, rgba(128, 128, 128, 0.15));
+}
+/* --- Группы: участники, коды, меню действий ------------------------------- */
+
+/* Строка участника: ячейка + подпись «в группе с …» + раскрытое меню. */
+.dl-member__meta {
+  padding: 0 16px 6px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--tgui--hint_color);
+}
+
+.dl-member__menu {
+  display: flex;
+  flex-direction: column;
+  padding: 0 16px 8px;
+}
+
+/* Пункт меню действий: крупный тач-таргет (≥44px), как требуют HIG/Material. */
+.dl-menu-item {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  padding: 12px 0;
+  min-height: 44px;
+  cursor: pointer;
+  color: var(--tgui--link_color, var(--tgui--text_color));
+  border-bottom: 1px solid var(--tgui--divider, rgba(128, 128, 128, 0.15));
+}
+
+.dl-menu-item:last-child {
+  border-bottom: 0;
+}
+
+/* Код (инвайт/claim): моноширинный и разряженный — его читают и переписывают. */
+.dl-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 20px;
+  letter-spacing: 2px;
+  font-weight: 600;
+}
+
+.dl-search-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 0;
+}
+
+/* Вторая строка подсказки: слабее основной. */
+.dl-hint__sub {
+  font-size: 12px;
+  line-height: 16px;
+  opacity: 0.85;
+  padding-top: 2px;
 }

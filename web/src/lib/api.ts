@@ -30,6 +30,12 @@ export interface Session {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  /**
+   * Задержка из заголовка Retry-After (мс), если сервер её прислал: 429 на
+   * создании группы и на claim-флоу несёт её, и интерфейс обязан показать
+   * «через сколько», а не просто «слишком часто».
+   */
+  retryAfterMs: number | null = null;
 
   constructor(status: number, code: string, message: string) {
     super(message);
@@ -37,6 +43,20 @@ export class ApiError extends Error {
     this.status = status;
     this.code = code;
   }
+}
+
+/**
+ * Дополняет ошибку ответа задержкой из Retry-After (спека §3.3: лимиты
+ * отдают 429 с этим заголовком). Значение в секундах, как требует RFC.
+ */
+export function withRetryAfter(err: ApiError, res: Response): ApiError {
+  if (err.status !== 429) return err;
+  const raw = res.headers.get('Retry-After');
+  if (!raw) return err;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds < 0) return err;
+  err.retryAfterMs = Math.round(seconds * 1000);
+  return err;
 }
 
 /** Хуки авторизации, которые устанавливает стор (stores/auth.ts). */
@@ -107,7 +127,7 @@ async function readError(res: Response): Promise<ApiError> {
   } catch {
     // Тело не JSON — оставляем сообщение по статусу.
   }
-  return new ApiError(res.status, code, message);
+  return withRetryAfter(new ApiError(res.status, code, message), res);
 }
 
 /** Дедупликация параллельных повторных логинов: один запрос на пачку 401. */

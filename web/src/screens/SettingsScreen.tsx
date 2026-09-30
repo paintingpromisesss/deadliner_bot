@@ -1,5 +1,13 @@
-// Полноценный экран настроек (единственный «настоящий» экран Task 13):
-// профиль, часовой пояс, флаг ЛС-уведомлений, выход.
+// Экран настроек (спека §9, экран 6): профиль, часовой пояс, общий дефолт
+// ЛС-дублей, переопределения по группам, выход.
+//
+// Две секции уведомлений — это две разные сущности backend: `users.dm_notify_default`
+// (общий дефолт, меняется через PATCH /me) и `membership.dm_notify`
+// (переопределение, меняется через PATCH /notifications/settings с group_id).
+// Оба пути ведут к одной системе, поэтому в подписи группы показывается
+// ЭФФЕКТИВНОЕ значение (его считает сервер: override ? своё : дефолт), а не
+// сырое поле membership — иначе выключенный в строке переключатель мог бы
+// означать «выключено» при фактически включённых дублях.
 import { useEffect, useState } from 'react';
 import {
   Button,
@@ -14,7 +22,10 @@ import {
 } from '@telegram-apps/telegram-ui';
 import { Screen } from '../components/Screen';
 import { useAuthStore } from '../stores/auth';
+import { useNotificationSettings, usePatchNotificationSettings } from '../lib/queries';
+import { strings, tpl } from '../lib/strings';
 import { hapticNotification } from '../lib/tma';
+import type { NotificationGroup } from '../lib/groups';
 
 /** Часовые пояса, предлагаемые в селекте (спека: tz пользователя, MSK дефолт). */
 const TIMEZONES = [
@@ -47,10 +58,14 @@ export function SettingsScreen() {
   const patchMe = useAuthStore((s) => s.patchMe);
   const logout = useAuthStore((s) => s.logout);
 
+  const settings = useNotificationSettings();
+  const patchSettings = usePatchNotificationSettings();
+
   const [tz, setTZ] = useState(user?.tz ?? '');
   const [dm, setDm] = useState(user?.dm_notify_default ?? true);
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [groupError, setGroupError] = useState<string | null>(null);
 
   useEffect(() => {
     if (user) {
@@ -61,7 +76,7 @@ export function SettingsScreen() {
 
   if (!user) {
     return (
-      <Screen title="Настройки">
+      <Screen title={strings.settings.loading}>
         <Spinner size="m" />
       </Screen>
     );
@@ -77,22 +92,42 @@ export function SettingsScreen() {
     try {
       await patchMe({ tz, dm_notify_default: dm });
       hapticNotification('success');
-      setNote('Сохранено');
+      setNote(strings.settings.saved);
     } catch (e) {
       hapticNotification('error');
-      setNote(e instanceof Error ? e.message : 'Не удалось сохранить');
+      setNote(e instanceof Error ? e.message : strings.settings.saveFailed);
     } finally {
       setSaving(false);
     }
   }
 
+  /** Переключение дублей группы: PATCH с group_id и текущим значением. */
+  function toggleGroup(item: NotificationGroup, next: boolean) {
+    setGroupError(null);
+    void patchSettings
+      .mutateAsync({ group_id: item.group_id, dm_notify: next })
+      .catch((e: unknown) => {
+        setGroupError(e instanceof Error ? e.message : strings.common.actionFailed);
+      });
+  }
+
+  /** «Наследовать»: dm_notify: null снимает переопределение (backend §5.2). */
+  function inheritGroup(item: NotificationGroup) {
+    setGroupError(null);
+    void patchSettings.mutateAsync({ group_id: item.group_id, dm_notify: null }).catch((e: unknown) => {
+      setGroupError(e instanceof Error ? e.message : strings.common.actionFailed);
+    });
+  }
+
+  const groupSettings = settings.data?.groups ?? [];
+
   return (
-    <Screen title="Настройки">
+    <Screen title={strings.settings.title}>
       <List>
-        <Section header="Профиль">
+        <Section header={strings.settings.profileHeader}>
           <Cell
             before={<span className="dl-avatar">{(user.first_name || '?').slice(0, 1).toUpperCase()}</span>}
-            subtitle={user.username ? `@${user.username}` : 'без username'}
+            subtitle={user.username ? `@${user.username}` : strings.settings.noUsername}
             after={user.is_superadmin ? <Caption level="1">superadmin</Caption> : undefined}
             multiline
           >
@@ -100,9 +135,13 @@ export function SettingsScreen() {
           </Cell>
         </Section>
 
-        <Section header="Часовой пояс" footer="В нём показываются даты дедлайнов и напоминаний.">
+        <Section header={strings.settings.tzHeader} footer={strings.settings.tzFooter}>
           <Cell multiline>
-            <Select value={tz} onChange={(e) => setTZ(e.target.value)}>
+            <Select
+              value={tz}
+              onChange={(e) => setTZ(e.target.value)}
+              aria-label={strings.settings.tzHeader}
+            >
               {!TIMEZONES.includes(tz) && tz ? <option value={tz}>{tz}</option> : null}
               {TIMEZONES.map((zone) => (
                 <option key={zone} value={zone}>
@@ -116,33 +155,106 @@ export function SettingsScreen() {
               Component="button"
               type="button"
               className="dl-cell-button"
-              subtitle={`Часовой пояс устройства: ${suggested}`}
+              subtitle={tpl(strings.settings.tzDeviceHint, suggested)}
               onClick={() => setTZ(suggested)}
             >
-              Использовать пояс устройства
+              {strings.settings.tzUseDevice}
             </Cell>
           ) : null}
         </Section>
 
-        <Section header="Уведомления">
+        <Section header={strings.settings.notificationsHeader}>
           <Cell
             Component="label"
             multiline
-            subtitle="Копировать напоминания о групповых дедлайнах в личные сообщения. Для отдельных групп можно переопределить позже."
+            subtitle={strings.settings.dmDefaultHint}
             after={<Switch checked={dm} onChange={(e) => setDm(e.target.checked)} />}
           >
-            Дубли в личку по умолчанию
+            {strings.settings.dmDefault}
           </Cell>
+        </Section>
+
+        <Section
+          header={strings.settings.groupsHeader}
+          footer={strings.settings.groupsFooter}
+          data-testid="group-notifications"
+        >
+          {settings.isLoading ? (
+            <div className="dl-centered">
+              <Spinner size="s" />
+            </div>
+          ) : settings.isError ? (
+            <>
+              <div className="dl-error" role="alert">
+                {settings.error instanceof Error ? settings.error.message : strings.common.loadError}
+              </div>
+              <Cell
+                Component="button"
+                type="button"
+                className="dl-cell-button"
+                data-testid="group-notifications-retry"
+                onClick={() => void settings.refetch()}
+              >
+                {strings.common.retry}
+              </Cell>
+            </>
+          ) : groupSettings.length === 0 ? (
+            <div className="dl-hint" data-testid="group-notifications-empty">
+              {strings.settings.groupsEmpty}
+            </div>
+          ) : (
+            groupSettings.map((item) => (
+              // Переключатель и «Наследовать» — соседние ячейки, а не вложенные
+              // друг в друга: <button> внутри <label> невалиден и клик по нему
+              // переключал бы сам Switch (двойное действие по одному тапу).
+              <div key={item.group_id} data-testid={`group-notify-${item.group_id}`}>
+                <Cell
+                  Component="label"
+                  multiline
+                  subtitle={`${item.slug} · ${
+                    item.override ? strings.settings.groupOverride : strings.settings.groupInherited
+                  }`}
+                  after={
+                    <Switch
+                      checked={item.dm_notify}
+                      disabled={patchSettings.isPending}
+                      data-testid={`group-notify-switch-${item.group_id}`}
+                      onChange={(e) => toggleGroup(item, e.target.checked)}
+                    />
+                  }
+                >
+                  {item.title || item.slug}
+                </Cell>
+                {item.override ? (
+                  <Cell
+                    Component="button"
+                    type="button"
+                    className="dl-cell-button"
+                    data-testid={`group-inherit-${item.group_id}`}
+                    disabled={patchSettings.isPending}
+                    onClick={() => inheritGroup(item)}
+                  >
+                    {strings.settings.groupInherit}
+                  </Cell>
+                ) : null}
+              </div>
+            ))
+          )}
+          {groupError ? (
+            <div className="dl-error" role="alert" data-testid="group-notify-error">
+              {groupError}
+            </div>
+          ) : null}
         </Section>
 
         <Section>
           <div className="dl-row">
             <Button size="l" stretched loading={saving} disabled={!dirty} onClick={save}>
-              Сохранить
+              {strings.settings.save}
             </Button>
           </div>
           <Cell multiline>
-            <Input header="Telegram ID" value={String(user.telegram_id)} readOnly />
+            <Input header={strings.settings.telegramID} value={String(user.telegram_id)} readOnly />
           </Cell>
         </Section>
 
@@ -155,7 +267,7 @@ export function SettingsScreen() {
               void logout();
             }}
           >
-            Выйти
+            {strings.settings.logout}
           </Cell>
         </Section>
       </List>

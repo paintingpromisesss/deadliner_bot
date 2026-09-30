@@ -15,6 +15,27 @@ import {
   type DeadlinePatch,
   type GroupSummary,
 } from './deadlines';
+import {
+  confirmClaim,
+  createGroup,
+  createInvite,
+  deleteGroup,
+  fetchGroupDetail,
+  fetchGroups,
+  fetchMembers,
+  fetchNotificationSettings,
+  kickMember,
+  leaveGroup,
+  patchNotificationSettings,
+  redeemInvite,
+  revokeClaim,
+  revokeInvite,
+  setMemberRole,
+  startClaim,
+  type InviteCreated,
+  type InviteInput,
+  type NotificationSettings,
+} from './groups';
 import { hapticNotification } from './tma';
 
 /** Корневой ключ дедлайнов: инвалидация по префиксу покрывает все окна/фильтры. */
@@ -133,4 +154,218 @@ export function useCompleteDeadline() {
 /** Утилита для тестов/компонентов: плоский список из ответа (страховка от null). */
 export function asDeadlines(data: Deadline[] | undefined): Deadline[] {
   return data ?? [];
+}
+
+// --- Группы, участники, инвайты, claim и настройки уведомлений ---------------
+//
+// Ключи сгруппированы под GROUPS_KEY: любая мутация состава группы
+// инвалидирует префикс и обновляет заодно список для селектора типов дедлайна
+// и подписи групп (useMyGroups).
+
+/** Детали одной группы с привязкой и счётчиком участников. */
+export function useGroupDetail(id: number | null) {
+  return useQuery({
+    queryKey: [GROUPS_KEY, 'detail', id],
+    queryFn: () => fetchGroupDetail(id as number),
+    enabled: id !== null,
+    staleTime: 10_000,
+  });
+}
+
+/** Участники группы: список нужен только админ-панели. */
+export function useGroupMembers(id: number | null, enabled = true) {
+  return useQuery({
+    queryKey: [GROUPS_KEY, 'members', id],
+    queryFn: () => fetchMembers(id as number),
+    enabled: id !== null && enabled,
+    staleTime: 10_000,
+  });
+}
+
+/**
+ * Поиск/подсказка слага. Пустой запрос отключён: без q сервер отдаёт «мои
+ * группы», и подсказки показывали бы уже вступленные группы как «вступить».
+ */
+export function useGroupSearch(q: string) {
+  return useQuery<GroupSummary[]>({
+    queryKey: [GROUPS_KEY, 'search', q],
+    queryFn: () => fetchGroups(q),
+    enabled: q.length > 0,
+    staleTime: 30_000,
+  });
+}
+
+/** Настройки ЛС-дублей: общий дефолт + переопределения по группам. */
+export function useNotificationSettings() {
+  return useQuery<NotificationSettings>({
+    queryKey: [GROUPS_KEY, 'notifications'],
+    queryFn: fetchNotificationSettings,
+    staleTime: 60_000,
+  });
+}
+
+/** Инвалидация всего группового префикса (состав, роли, детали, настройки). */
+function useInvalidateGroups() {
+  const client = useQueryClient();
+  return () => client.invalidateQueries({ queryKey: [GROUPS_KEY] });
+}
+
+/** Создание группы: POST /groups → 201 {group}. */
+export function useCreateGroup() {
+  const invalidate = useInvalidateGroups();
+  return useMutation({
+    mutationFn: (input: { slug: string; title: string }) => createGroup(input),
+    onSuccess: () => {
+      hapticNotification('success');
+      void invalidate();
+    },
+    onError: () => hapticNotification('error'),
+  });
+}
+
+/** Вступление по инвайт-коду: POST /invites/redeem → 200 {group}. */
+export function useRedeemInvite() {
+  const invalidate = useInvalidateGroups();
+  return useMutation({
+    mutationFn: (code: string) => redeemInvite(code),
+    onSuccess: () => {
+      hapticNotification('success');
+      void invalidate();
+    },
+    onError: () => hapticNotification('error'),
+  });
+}
+
+/** Выход из группы: DELETE /groups/{id}/me. */
+export function useLeaveGroup() {
+  const invalidate = useInvalidateGroups();
+  return useMutation({
+    mutationFn: (groupID: number) => leaveGroup(groupID),
+    onSuccess: () => {
+      hapticNotification('success');
+      void invalidate();
+    },
+    onError: () => hapticNotification('error'),
+  });
+}
+
+/** Удаление группы (soft delete): DELETE /groups/{id}, только admin. */
+export function useDeleteGroup() {
+  const invalidate = useInvalidateGroups();
+  return useMutation({
+    mutationFn: (groupID: number) => deleteGroup(groupID),
+    onSuccess: () => {
+      hapticNotification('success');
+      void invalidate();
+    },
+    onError: () => hapticNotification('error'),
+  });
+}
+
+/** Роль участника: promote/demote (PATCH /groups/{id}/members/{user_id}). */
+export function useSetMemberRole() {
+  const invalidate = useInvalidateGroups();
+  return useMutation({
+    mutationFn: (vars: { groupID: number; userID: number; role: 'admin' | 'member' }) =>
+      setMemberRole(vars.groupID, vars.userID, vars.role),
+    onSuccess: () => {
+      hapticNotification('success');
+      void invalidate();
+    },
+    onError: () => hapticNotification('error'),
+  });
+}
+
+/** Исключение участника: DELETE /groups/{id}/members/{user_id}. */
+export function useKickMember() {
+  const invalidate = useInvalidateGroups();
+  return useMutation({
+    mutationFn: (vars: { groupID: number; userID: number }) =>
+      kickMember(vars.groupID, vars.userID),
+    onSuccess: () => {
+      hapticNotification('success');
+      void invalidate();
+    },
+    onError: () => hapticNotification('error'),
+  });
+}
+
+/** Создание инвайта: код возвращается один раз — кэшировать его нельзя. */
+export function useCreateInvite() {
+  return useMutation<InviteCreated, Error, { groupID: number; input: InviteInput }>({
+    mutationFn: (vars) => createInvite(vars.groupID, vars.input),
+    onSuccess: () => {
+      hapticNotification('success');
+    },
+    onError: () => hapticNotification('error'),
+  });
+}
+
+/** Отзыв инвайта по plaintext-коду. */
+export function useRevokeInvite() {
+  const invalidate = useInvalidateGroups();
+  return useMutation({
+    mutationFn: (vars: { groupID: number; code: string }) => revokeInvite(vars.groupID, vars.code),
+    onSuccess: () => {
+      hapticNotification('success');
+      void invalidate();
+    },
+    onError: () => hapticNotification('error'),
+  });
+}
+
+/** Старт claim-флоу: бот постит код в привязанный чат. */
+export function useStartClaim() {
+  return useMutation({
+    mutationFn: (groupID: number) => startClaim(groupID),
+    // Успех отмечает отдельный шаг (подтверждение): haptic на «код отправлен»
+    // дублировал бы отклик подтверждения — здесь только ошибка.
+    onError: () => hapticNotification('error'),
+  });
+}
+
+/** Подтверждение claim-кода: роль admin и (для pending) статус active. */
+export function useConfirmClaim() {
+  const invalidate = useInvalidateGroups();
+  return useMutation({
+    mutationFn: (vars: { groupID: number; code: string }) => confirmClaim(vars.groupID, vars.code),
+    onSuccess: () => {
+      hapticNotification('success');
+      void invalidate();
+    },
+    onError: () => hapticNotification('error'),
+  });
+}
+
+/** Отзыв активного claim-кода (admin). */
+export function useRevokeClaim() {
+  const invalidate = useInvalidateGroups();
+  return useMutation({
+    mutationFn: (groupID: number) => revokeClaim(groupID),
+    onSuccess: () => {
+      hapticNotification('success');
+      void invalidate();
+    },
+    onError: () => hapticNotification('error'),
+  });
+}
+
+/**
+ * Переключение ЛС-дублей: без group_id — общий дефолт, с group_id —
+ * переопределение (dm_notify: null снимает его и возвращает наследование).
+ * Ответ — актуальные настройки целиком, ими и обновляем кэш.
+ */
+export function usePatchNotificationSettings() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { group_id?: number; dm_notify: boolean | null }) =>
+      patchNotificationSettings(body),
+    onSuccess: (settings) => {
+      hapticNotification('success');
+      client.setQueryData([GROUPS_KEY, 'notifications'], settings);
+      // Общий дефолт живёт ещё и в профиле (/me): держим стор в согласии.
+      void client.invalidateQueries({ queryKey: [GROUPS_KEY] });
+    },
+    onError: () => hapticNotification('error'),
+  });
 }

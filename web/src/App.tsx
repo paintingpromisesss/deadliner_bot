@@ -5,11 +5,12 @@ import { AppRoot, List, Placeholder, Section, Spinner } from '@telegram-apps/tel
 
 import { getPlatform, hasInitData } from './lib/tma';
 import { useAuthStore } from './stores/auth';
-import { routeName, useRoute } from './router';
+import { routeGroupID, routeName, useRoute } from './router';
 import { TabBar } from './components/TabBar';
 import { CalendarScreen } from './screens/calendar/CalendarScreen';
 import { DeadlinesScreen } from './screens/deadlines/DeadlinesScreen';
-import { GroupsScreen } from './screens/placeholders';
+import { GroupsScreen } from './screens/groups/GroupsScreen';
+import { GroupDetailScreen } from './screens/groups/GroupDetailScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 
 const queryClient = new QueryClient({
@@ -22,14 +23,17 @@ const queryClient = new QueryClient({
   },
 });
 
-/** Экраны Task 13–15: settings, дедлайны и календарь; заглушка — группы (Task 15). */
+/** Экраны Task 13–15: settings, дедлайны, календарь, группы и группа детально. */
 function Routes() {
   const route = useRoute();
   switch (routeName(route)) {
     case '/calendar':
       return <CalendarScreen />;
-    case '/groups':
-      return <GroupsScreen />;
+    case '/groups': {
+      // «#/groups/123» — детали; «#/groups» и мусор в id — список.
+      const groupID = routeGroupID(route);
+      return groupID === null ? <GroupsScreen /> : <GroupDetailScreen groupID={groupID} />;
+    }
     case '/settings':
       return <SettingsScreen />;
     default:

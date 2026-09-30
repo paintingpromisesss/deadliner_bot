@@ -62,6 +62,22 @@ export function routeName(route: Route): RouteName {
   }
 }
 
+/**
+ * Числовой id группы из маршрута «#/groups/123» → 123; иначе null.
+ *
+ * Мусор («#/groups/abc», «#/groups/0») даёт null, а не исключение: хеш приходит
+ * из адресной строки и редактируется руками — падать на разборе нельзя, экран
+ * покажет список групп.
+ */
+export function routeGroupID(route: Route): number | null {
+  if (route.path[0] !== 'groups') return null;
+  const raw = route.path[1];
+  if (raw === undefined) return null;
+  if (!/^[0-9]+$/.test(raw)) return null;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 /** Навигация без перезагрузки: меняет location.hash (событие подхватит роутер). */
 export function navigate(path: string): void {
   const clean = path.startsWith('/') ? path : `/${path}`;

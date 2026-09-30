@@ -278,6 +278,112 @@ func TestWebhookHandlerSecret(t *testing.T) {
 	waitFor(t, func() bool { return users.count() == 1 }, "update with the secret must be processed")
 }
 
+// RegisterWebhook/UnregisterWebhook: webhook-режим публикует адрес и секрет,
+// polling-режим не трогает вебхук вовсе (иначе Telegram слал бы апдейты в
+// оба приёмника).
+func TestRegisterAndUnregisterWebhook(t *testing.T) {
+	i18n.MustLoad(i18n.Locales)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("webhook mode registers and unregisters", func(t *testing.T) {
+		stub := &stubTelegram{}
+		b, err := NewBot(BotConfig{
+			Token: "42:TEST", APIBase: stub.start(t), Mode: ModeWebhook,
+			WebhookSecret: "s3cret",
+		}, Deps{Users: &stubUsers{}}, log)
+		if err != nil {
+			t.Fatalf("NewBot: %v", err)
+		}
+		ctx := context.Background()
+		if err := b.RegisterWebhook(ctx, "https://deadliner.example/webhook"); err != nil {
+			t.Fatalf("RegisterWebhook: %v", err)
+		}
+		if !stub.called("setWebhook") {
+			t.Error("setWebhook was not called")
+		}
+		if err := b.UnregisterWebhook(ctx); err != nil {
+			t.Fatalf("UnregisterWebhook: %v", err)
+		}
+		if !stub.called("deleteWebhook") {
+			t.Error("deleteWebhook was not called")
+		}
+	})
+
+	t.Run("polling mode is a no-op", func(t *testing.T) {
+		stub := &stubTelegram{}
+		b, err := NewBot(BotConfig{
+			Token: "42:TEST", APIBase: stub.start(t), Mode: ModePolling,
+		}, Deps{Users: &stubUsers{}}, log)
+		if err != nil {
+			t.Fatalf("NewBot: %v", err)
+		}
+		ctx := context.Background()
+		if err := b.RegisterWebhook(ctx, "https://deadliner.example/webhook"); err != nil {
+			t.Fatalf("RegisterWebhook(polling): %v", err)
+		}
+		if err := b.UnregisterWebhook(ctx); err != nil {
+			t.Fatalf("UnregisterWebhook(polling): %v", err)
+		}
+		if stub.called("setWebhook") || stub.called("deleteWebhook") {
+			t.Errorf("polling mode must not touch the webhook; methods: %v", stub.methods)
+		}
+	})
+
+	t.Run("empty url is refused", func(t *testing.T) {
+		stub := &stubTelegram{}
+		b, err := NewBot(BotConfig{
+			Token: "42:TEST", APIBase: stub.start(t), Mode: ModeWebhook,
+			WebhookSecret: "s3cret",
+		}, Deps{Users: &stubUsers{}}, log)
+		if err != nil {
+			t.Fatalf("NewBot: %v", err)
+		}
+		if err := b.RegisterWebhook(context.Background(), ""); err == nil {
+			t.Fatal("RegisterWebhook(\"\") = nil, want error naming WEBHOOK_URL")
+		}
+	})
+}
+
+// Двухшаговая сборка (serve): клиент и транспорт доступны ДО сервисов, а
+// диспетчер — после них через SetDeps. Проверяем, что оба пути дают рабочие
+// хендлеры с выведенным из токена id бота.
+func TestNewBotAcceptsExistingClient(t *testing.T) {
+	i18n.MustLoad(i18n.Locales)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	client, err := NewClient(BotConfig{Token: "555:TEST"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if client.Sender() == nil || client.API() == nil {
+		t.Fatal("NewClient returned an incomplete client")
+	}
+
+	b, err := NewBot(BotConfig{Token: "555:TEST", Mode: ModePolling},
+		Deps{Users: &stubUsers{}, API: client.API(), Sender: client.Sender()}, log)
+	if err != nil {
+		t.Fatalf("NewBot with existing client: %v", err)
+	}
+	if b.API() != client.API() {
+		t.Error("NewBot created a different API client instead of reusing the provided one")
+	}
+	if got := b.handl.botUserID; got != 555 {
+		t.Errorf("bot user id = %d, want 555 (parsed from the token)", got)
+	}
+
+	// SetDeps пересобирает диспетчер (порядок сборки serve).
+	b.SetDeps(Deps{Users: &stubUsers{}, BotUserID: 9})
+	if got := b.handler().botUserID; got != 9 {
+		t.Errorf("bot user id after SetDeps = %d, want 9", got)
+	}
+}
+
+// handleUpdate не паникует, если диспетчер ещё не собран (Bot до SetDeps).
+func TestHandleWithoutHandlers(t *testing.T) {
+	b := &Bot{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	b.Handle(context.Background(), nil) // nil-апдейт и nil-диспетчер — no-op
+}
+
 // waitFor ждёт выполнения условия (апдейты обрабатываются асинхронно).
 func waitFor(t *testing.T, cond func() bool, msg string) {
 	t.Helper()

@@ -31,6 +31,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DB.PoolMax != 10 {
 		t.Errorf("DB.PoolMax = %d, want 10", cfg.DB.PoolMax)
 	}
+	if cfg.App.HTTPAddr != ":8080" {
+		t.Errorf("App.HTTPAddr = %q, want %q", cfg.App.HTTPAddr, ":8080")
+	}
 	if cfg.Bot.PollingMode != "long_polling" {
 		t.Errorf("Bot.PollingMode = %q, want %q", cfg.Bot.PollingMode, "long_polling")
 	}
@@ -104,6 +107,7 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadOverrides(t *testing.T) {
 	setRequired(t)
 	t.Setenv("BOT_API_BASE", "http://localhost:8081")
+	t.Setenv("HTTP_ADDR", "127.0.0.1:9090")
 	t.Setenv("WEBHOOK_URL", "https://example.com/webhook")
 	t.Setenv("WEBHOOK_SECRET", "s3cret")
 	t.Setenv("WEBHOOK_PORT", "8443")
@@ -156,6 +160,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.App.PublicURL != "https://app.example.com" {
 		t.Errorf("App.PublicURL = %q", cfg.App.PublicURL)
+	}
+	if cfg.App.HTTPAddr != "127.0.0.1:9090" {
+		t.Errorf("App.HTTPAddr = %q, want 127.0.0.1:9090", cfg.App.HTTPAddr)
 	}
 	if cfg.DB.PoolMax != 25 {
 		t.Errorf("DB.PoolMax = %d", cfg.DB.PoolMax)

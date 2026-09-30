@@ -42,7 +42,11 @@ func main() {
 	case "serve":
 		// Каталог строк интерфейса должен быть загружен до сборки роутера (Task 6).
 		i18n.MustLoad(i18n.Locales)
-		log.Info("serve: not implemented")
+		if err := cmd.Serve(ctx, cfg, log); err != nil {
+			log.Error("serve failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		return
 	case "migrate":
 		if err := cmd.Migrate(ctx, cfg, log); err != nil {
 			log.Error("migrate failed", slog.String("error", err.Error()))

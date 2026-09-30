@@ -103,14 +103,16 @@ describe('auth store: bootstrap', () => {
     expect(calls[1].body).toEqual({ initData: 'query_id=1&hash=abc' });
   });
 
-  it('без токена и без initData (обычный браузер) → status=error с понятным текстом', async () => {
+  it('без токена и без initData (обычный браузер) → status=anonymous с понятным текстом', async () => {
     getInitDataMock.mockReturnValue(undefined);
     stubFetch(() => jsonResponse(200, user));
 
     await useAuthStore.getState().bootstrap();
 
     const state = useAuthStore.getState();
-    expect(state.status).toBe('error');
+    // 'anonymous', а не 'error': запуск в обычном браузере — не сбой входа,
+    // кнопка «Повторить» здесь ничего не исправит.
+    expect(state.status).toBe('anonymous');
     expect(state.error).toContain('Telegram');
     expect(calls).toHaveLength(0);
   });

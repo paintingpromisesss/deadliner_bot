@@ -4,7 +4,9 @@
 // не требовал полного цикла входа. Bootstrap:
 //   сохранённый токен → GET /me → authed;
 //   иначе → POST /auth/telegram с initData → authed;
-//   нет ни того, ни другого (обычный браузер без Telegram) → error.
+//   нет ни того, ни другого (обычный браузер без Telegram) → anonymous:
+//   отсутствие окружения — не сбой входа, а нейтральное состояние без
+//   кнопки «Повторить». 'error' остаётся для реальных отказов авторизации.
 import { create } from 'zustand';
 import { ApiError, apiFetch, api, authenticate, configureAuth, type Session, type User } from '../lib/api';
 import { getInitData } from '../lib/tma';
@@ -89,8 +91,11 @@ async function runBootstrap(set: SetState, get: () => AuthState): Promise<void> 
 
   const initData = getInitData();
   if (!initData) {
+    // Обычный браузер (не Telegram) — не сбой входа, а отсутствие окружения:
+    // нейтральное состояние 'anonymous' без кнопки «Повторить», которая всё
+    // равно ничего не исправит. Реальные отказы авторизации остаются 'error'.
     set({
-      status: 'error',
+      status: 'anonymous',
       error: 'Откройте приложение из Telegram: без initData вход невозможен.',
     });
     return;

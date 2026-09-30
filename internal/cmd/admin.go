@@ -12,14 +12,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sauron/deadliner/internal/app/moderation"
 	"github.com/sauron/deadliner/internal/config"
 	"github.com/sauron/deadliner/internal/domain"
 	"github.com/sauron/deadliner/internal/i18n"
 	"github.com/sauron/deadliner/internal/platform/db"
-	"github.com/sauron/deadliner/internal/platform/repo"
 )
 
 // Коды выхода CLI (спека §2: подрежим admin): 0 — успех, 1 — ошибка операции,
@@ -100,7 +97,7 @@ func run(ctx context.Context, args []string, log *slog.Logger, out, errOut io.Wr
 	}
 	defer pool.Close()
 
-	svc := newModerationService(pool, cfg, log)
+	svc := newModerationService(newRepos(pool), cfg, domain.SystemClock{}, log)
 	return dispatch(ctx, svc, cmd, arg, out, errOut)
 }
 
@@ -253,25 +250,3 @@ func fail(w io.Writer, cmd string, err error) int {
 
 // formatInt — число для текста каталога.
 func formatInt(n int64) string { return strconv.FormatInt(n, 10) }
-
-// newModerationService собирает сервис модерации на реальных репозиториях.
-// Миграции здесь не применяются: CLI не должен менять схему (см. Admin).
-func newModerationService(pool *pgxpool.Pool, cfg *config.Config, log *slog.Logger) *moderation.Service {
-	return moderation.NewService(moderation.Deps{
-		Groups:      repo.NewGroups(pool),
-		Deadlines:   repo.NewDeadlines(pool),
-		Reminders:   repo.NewReminders(pool),
-		Memberships: repo.NewMemberships(pool),
-		Bindings:    repo.NewBindings(pool),
-		Users:       repo.NewUsers(pool),
-		Sessions:    repo.NewSessions(pool),
-		Maintenance: repo.NewMaintenance(pool),
-		Audit:       repo.NewAudit(pool),
-		Clock:       domain.SystemClock{},
-		Log:         log,
-		Config: moderation.Config{
-			PendingTTL:       cfg.Limits.GroupPendingTTL,
-			CounterRetention: cfg.Limits.CounterRetention,
-		},
-	})
-}

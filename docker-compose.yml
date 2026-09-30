@@ -12,13 +12,33 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   app:
     build: .
+    # .env содержит BOT_TOKEN, DATABASE_URL (хост `postgres`!) и WEBHOOK_SECRET —
+    # без него процесс не стартует (fail-closed, спека §6.1).
+    env_file: .env
+    environment:
+      # Перекрываем DATABASE_URL значением внутри сети compose: в .env он
+      # указывает на localhost (для `go run ./cmd/deadliner serve`), а в
+      # контейнере БД живёт по имени сервиса.
+      DATABASE_URL: postgres://${POSTGRES_USER:-deadliner}:${POSTGRES_PASSWORD:-deadliner}@postgres:5432/${POSTGRES_DB:-deadliner}?sslmode=disable
     depends_on:
       postgres:
         condition: service_healthy
-    env_file: .env
+    ports:
+      # HTTP API + статика TMA + POST /webhook (webhook-режим) на одном порту.
+      - "${HTTP_PORT:-8080}:8080"
+    healthcheck:
+      # В образе есть wget (busybox) — curl тянуть не нужно. healthz отдаёт
+      # "ok" от самого приложения, то есть проверяет и роутер, и живой процесс.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
 
 volumes:
   pgdata:

@@ -18,6 +18,10 @@ type Config struct {
 }
 
 type App struct {
+	// HTTPAddr — HTTP_ADDR: адрес прослушивания HTTP-сервера serve (API, TMA,
+	// webhook и /healthz живут на одном порту). Дефолт ":8080" — он же порт
+	// контейнера в docker-compose и проброс наружу.
+	HTTPAddr       string
 	PublicURL      string
 	SessionTTLDays int
 	AuthDateMaxAge time.Duration
@@ -45,9 +49,9 @@ type Bot struct {
 // PollingModeWebhook — значение POLLING_MODE, включающее webhook-режим.
 const PollingModeWebhook = "webhook"
 
-// usesWebhook — режим приёма апдейтов: POLLING_MODE=webhook или заданный
+// UsesWebhook — режим приёма апдейтов: POLLING_MODE=webhook или заданный
 // WEBHOOK_URL. Используется валидацией секрета (fail-closed) и serve.
-func (b Bot) usesWebhook() bool {
+func (b Bot) UsesWebhook() bool {
 	return b.PollingMode == PollingModeWebhook || b.WebhookURL != ""
 }
 
@@ -136,6 +140,7 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		App: App{
+			HTTPAddr:       l.string("HTTP_ADDR", ":8080"),
 			PublicURL:      os.Getenv("APP_PUBLIC_URL"),
 			SessionTTLDays: l.int("SESSION_TTL_DAYS", 30),
 			AuthDateMaxAge: l.hours("AUTH_DATE_MAX_AGE_HOURS", 24),
@@ -184,11 +189,16 @@ func Load() (*Config, error) {
 	if cfg.DB.URL == "" {
 		l.errs = append(l.errs, errors.New("missing required env var DATABASE_URL"))
 	}
+	if cfg.Bot.PollingMode != "long_polling" && !cfg.Bot.UsesWebhook() {
+		l.errs = append(l.errs, fmt.Errorf(
+			"POLLING_MODE=%q is not a known mode (use %q or %q)",
+			cfg.Bot.PollingMode, "long_polling", PollingModeWebhook))
+	}
 	// Fail-closed: webhook-режим без секрета принимает ЛЮБОЙ POST /webhook
 	// (библиотека сверяет заголовок только при непустом секрете) — то есть
 	// подделанные апдейты, включая /bind_group в чужом чате. Режим webhook
 	// определяется POLLING_MODE=webhook либо непустым WEBHOOK_URL.
-	if cfg.Bot.usesWebhook() && cfg.Bot.WebhookSecret == "" {
+	if cfg.Bot.UsesWebhook() && cfg.Bot.WebhookSecret == "" {
 		l.errs = append(l.errs, errors.New(
 			"missing required env var WEBHOOK_SECRET: webhook mode without a secret token accepts forged updates"))
 	}

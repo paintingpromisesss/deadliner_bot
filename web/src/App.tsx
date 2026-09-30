@@ -59,17 +59,25 @@ function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
-  // Осознанный выход: нейтральный экран без «ошибки» и без автоматического
-  // повторного входа (иначе logout немедленно логинился бы обратно по initData).
+  // Осознанный выход или отсутствие окружения Telegram: нейтральный экран без
+  // «ошибки» и без автоматического повторного входа (иначе logout немедленно
+  // логинился бы обратно по initData).
   if (status === 'anonymous') {
+    // В обычном браузере initData нет вовсе: кнопка «Войти снова» здесь ничего
+    // не исправит, и текст про отозванную сессию был бы неправдой.
+    const inTelegram = hasInitData();
     return (
       <List>
         <Section>
           <Placeholder
-            header="Вы вышли из аккаунта"
-            description="Сессия отозвана. Войдите снова, чтобы вернуться к дедлайнам."
+            header={inTelegram ? 'Вы вышли из аккаунта' : 'Откройте приложение из Telegram'}
+            description={
+              inTelegram
+                ? 'Сессия отозвана. Войдите снова, чтобы вернуться к дедлайнам.'
+                : 'Вход выполняется автоматически по данным Telegram — из браузера он невозможен.'
+            }
             action={
-              hasInitData() ? (
+              inTelegram ? (
                 <button type="button" className="dl-retry" onClick={() => void bootstrap()}>
                   Войти снова
                 </button>

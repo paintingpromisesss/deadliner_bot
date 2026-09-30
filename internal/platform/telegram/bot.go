@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	tgbot "github.com/go-telegram/bot"
@@ -67,6 +68,54 @@ type Deps struct {
 	// BotUserID — telegram id бота для проверки админства. Ноль означает
 	// «выведи из токена» (NewBot делает это офлайн через tgbot.Bot.ID).
 	BotUserID int64
+	// API — уже созданный клиент (NewClient). Нужен serve: транспорт должен
+	// существовать ДО сервисов (нотификатор уходит в claim-флоу), а хендлеры
+	// зависят от сервисов — поэтому клиент и диспетчер собираются в два шага.
+	// nil — NewBot создаёт клиент сам.
+	API *tgbot.Bot
+}
+
+// Client — созданный клиент Bot API и его транспорт, ещё без диспетчера
+// апдейтов. Двухшаговая сборка нужна serve: транспорт требуется сервисам
+// (нотификатор), а диспетчер — сервисам в своих зависимостях.
+type Client struct {
+	api    *tgbot.Bot
+	sender *BotSender
+}
+
+// NewClient создаёт клиент Bot API и транспорт, не запрашивая сеть
+// (WithSkipGetMe). Регистрация диспетчера — отдельно (NewBot с Deps.API).
+func NewClient(cfg BotConfig) (*Client, error) {
+	api, err := newAPI(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{api: api, sender: &BotSender{api: api}}, nil
+}
+
+// API — нижележащий клиент (для NewBot с Deps.API).
+func (c *Client) API() *tgbot.Bot { return c.api }
+
+// Sender — транспорт (Notifier и хендлеры используют его же).
+func (c *Client) Sender() *BotSender { return c.sender }
+
+// newAPI собирает tgbot.Bot по конфигу (общий шаг NewBot и NewClient).
+func newAPI(cfg BotConfig) (*tgbot.Bot, error) {
+	opts := []tgbot.Option{tgbot.WithSkipGetMe()}
+	if cfg.APIBase != "" {
+		opts = append(opts, tgbot.WithServerURL(cfg.APIBase))
+	}
+	if cfg.WebhookSecret != "" {
+		opts = append(opts, tgbot.WithWebhookSecretToken(cfg.WebhookSecret))
+	}
+	if cfg.PollTimeout > 0 {
+		opts = append(opts, tgbot.WithHTTPClient(cfg.PollTimeout, &http.Client{Timeout: cfg.PollTimeout}))
+	}
+	api, err := tgbot.New(cfg.Token, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("telegram: new bot: %w", err)
+	}
+	return api, nil
 }
 
 // Bot — обёртка над клиентом go-telegram/bot: транспорт, хендлеры и режимы
@@ -77,12 +126,62 @@ type Bot struct {
 	cfg    BotConfig
 	log    *slog.Logger
 	handl  *Handlers
+
+	// mu защищает пересборку диспетчера: SetDeps зовётся один раз на старте
+	// (serve), до запуска приёма апдейтов, но подписка на апдейты идёт через
+	// указатель в замыкании — пересборка обязана быть безопасной.
+	mu sync.RWMutex
+}
+
+// SetDeps пересобирает диспетчер апдейтов на новых зависимостях.
+//
+// Нужен из-за порядка сборки в serve: транспорт (BotSender) обязан
+// существовать ДО сервисов — нотификатор уходит в claim-флоу, — а сервисы
+// зависят от него. Поэтому клиент и диспетчер собираются двумя шагами:
+// NewClient → сервисы → NewBot(Deps.API, ... ) либо NewBot → SetDeps.
+// Вызывается один раз до старта приёма апдейтов.
+func (b *Bot) SetDeps(deps Deps) {
+	if deps.Sender == nil {
+		deps.Sender = b.sender
+	}
+	if deps.AdminChecker == nil {
+		deps.AdminChecker = b.sender
+	}
+	if deps.BotUserID == 0 {
+		deps.BotUserID = b.api.ID()
+	}
+	b.mu.Lock()
+	b.handl = b.newHandlers(deps)
+	b.mu.Unlock()
+}
+
+// handler возвращает текущий диспетчер (nil-safe: до SetDeps — nil).
+func (b *Bot) handler() *Handlers {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.handl
+}
+
+// newHandlers собирает диспетчер на зависимостях (общий шаг NewBot/SetDeps).
+func (b *Bot) newHandlers(deps Deps) *Handlers {
+	return NewHandlers(HandlersDeps{
+		Users:        deps.Users,
+		Binder:       deps.Binder,
+		Superadmin:   deps.Superadmin,
+		Sender:       deps.Sender,
+		AdminChecker: deps.AdminChecker,
+		BotUserID:    deps.BotUserID,
+		AppPublicURL: b.cfg.AppPublicURL,
+	}, b.log)
 }
 
 // NewBot создаёт бота, транспорт и регистрирует диспетчер апдейтов. Сеть не
 // запрашивается (WithSkipGetMe): id бота для проверок админства берётся из
 // самого токена (tgbot.Bot.ID разбирает префикс "<id>:<secret>"), а явный
 // Deps.BotUserID переопределяет его при необходимости.
+//
+// Deps.API позволяет передать клиент, созданный ранее через NewClient (serve:
+// транспорт должен существовать до сервисов); иначе клиент создаётся здесь.
 func NewBot(cfg BotConfig, deps Deps, log *slog.Logger) (*Bot, error) {
 	if strings.TrimSpace(cfg.Token) == "" {
 		return nil, errors.New("telegram: empty bot token")
@@ -100,49 +199,25 @@ func NewBot(cfg BotConfig, deps Deps, log *slog.Logger) (*Bot, error) {
 		return nil, errors.New("telegram: webhook mode requires WebhookSecret (empty secret accepts forged updates)")
 	}
 
-	opts := []tgbot.Option{tgbot.WithSkipGetMe()}
-	if cfg.APIBase != "" {
-		opts = append(opts, tgbot.WithServerURL(cfg.APIBase))
-	}
-	if cfg.WebhookSecret != "" {
-		opts = append(opts, tgbot.WithWebhookSecretToken(cfg.WebhookSecret))
-	}
-	if cfg.PollTimeout > 0 {
-		opts = append(opts, tgbot.WithHTTPClient(cfg.PollTimeout, &http.Client{Timeout: cfg.PollTimeout}))
-	}
-	api, err := tgbot.New(cfg.Token, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("telegram: new bot: %w", err)
-	}
-	// id бота берётся из самого токена (tgbot.Bot.ID, офлайн-разбор префикса
-	// "<id>:<secret>") — getMe не нужен, NewBot остаётся сетево-нейтральным.
-	if deps.BotUserID == 0 {
-		deps.BotUserID = api.ID()
+	api := deps.API
+	if api == nil {
+		var err error
+		if api, err = newAPI(cfg); err != nil {
+			return nil, err
+		}
 	}
 
-	sender := &BotSender{api: api}
-	if deps.Sender == nil {
-		deps.Sender = sender
-	}
-	if deps.AdminChecker == nil {
-		deps.AdminChecker = sender
-	}
-
-	b := &Bot{api: api, sender: sender, cfg: cfg, log: log}
-	b.handl = NewHandlers(HandlersDeps{
-		Users:        deps.Users,
-		Binder:       deps.Binder,
-		Superadmin:   deps.Superadmin,
-		Sender:       deps.Sender,
-		AdminChecker: deps.AdminChecker,
-		BotUserID:    deps.BotUserID,
-		AppPublicURL: cfg.AppPublicURL,
-	}, log)
+	b := &Bot{api: api, sender: &BotSender{api: api}, cfg: cfg, log: log}
+	b.SetDeps(deps)
 
 	// Диспетчер ловит все апдейты: маршрутизация команд выполняется вручную
 	// (точный разбор «/bind_group <slug>»), а не паттернами библиотеки.
 	api.RegisterHandlerMatchFunc(func(*models.Update) bool { return true },
-		func(ctx context.Context, _ *tgbot.Bot, upd *models.Update) { b.handl.Handle(ctx, upd) })
+		func(ctx context.Context, _ *tgbot.Bot, upd *models.Update) {
+			if h := b.handler(); h != nil {
+				h.Handle(ctx, upd)
+			}
+		})
 	return b, nil
 }
 
@@ -176,12 +251,62 @@ func (b *Bot) StartWebhook(ctx context.Context) {
 
 // Handle — точка входа для одного апдейта (используется и тестами, и
 // webhook-режимом при ручном разборе тела запроса).
-func (b *Bot) Handle(ctx context.Context, upd *models.Update) { b.handl.Handle(ctx, upd) }
+func (b *Bot) Handle(ctx context.Context, upd *models.Update) {
+	if h := b.handler(); h != nil {
+		h.Handle(ctx, upd)
+	}
+}
+
+// RegisterWebhook публикует адрес приёма апдейтов в Telegram (setWebhook,
+// спека §10) вместе с secret_token: Telegram присылает его в заголовке
+// X-Telegram-Bot-Api-Secret-Token, который проверяет WebhookHandler. В
+// polling-режиме не делает ничего (вебхук был бы вторым конкурирующим
+// приёмником апдейтов).
+func (b *Bot) RegisterWebhook(ctx context.Context, url string) error {
+	if b.cfg.Mode != ModeWebhook {
+		return nil
+	}
+	if strings.TrimSpace(url) == "" {
+		return errors.New("telegram: setWebhook without WEBHOOK_URL")
+	}
+	ok, err := b.api.SetWebhook(ctx, &tgbot.SetWebhookParams{
+		URL:         url,
+		SecretToken: b.cfg.WebhookSecret,
+	})
+	if err != nil {
+		return fmt.Errorf("telegram: setWebhook: %w", fmt.Errorf("%v", TelegramError(err, 0)))
+	}
+	if !ok {
+		return errors.New("telegram: setWebhook returned false")
+	}
+	b.log.Info("telegram: webhook registered", slog.String("url", url))
+	return nil
+}
+
+// UnregisterWebhook снимает вебхук (graceful shutdown, спека §10). В
+// polling-режиме — no-op. Вызов best-effort: ошибку возвращает вызывающий,
+// который решает, считать ли её фатальной (при остановке — нет).
+func (b *Bot) UnregisterWebhook(ctx context.Context) error {
+	if b.cfg.Mode != ModeWebhook {
+		return nil
+	}
+	// drop_pending_updates=false: недоставленные апдейты должны быть забраны
+	// следующим запуском (или новым инстансом), а не потеряны.
+	if _, err := b.api.DeleteWebhook(ctx, &tgbot.DeleteWebhookParams{DropPendingUpdates: false}); err != nil {
+		return fmt.Errorf("telegram: deleteWebhook: %v", TelegramError(err, 0))
+	}
+	b.log.Info("telegram: webhook unregistered")
+	return nil
+}
 
 // setupUI — setMyCommands + setChatMenuButton (спека §6.1). Сбой не критичен:
 // логируется, запуск продолжается (без команд бот работоспособен).
 func (b *Bot) setupUI(ctx context.Context) {
-	cmds := b.handl.commands()
+	h := b.handler()
+	if h == nil {
+		return
+	}
+	cmds := h.commands()
 	if err := b.sender.SetCommands(ctx, cmds); err != nil {
 		b.log.Warn("telegram: setMyCommands failed", slog.String("error", err.Error()))
 	}

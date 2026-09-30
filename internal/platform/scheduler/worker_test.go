@@ -665,6 +665,25 @@ func TestWorkerShutdownFinalizesInFlightSend(t *testing.T) {
 	}
 }
 
+// Регрессия: дефолт FinalizeTimeout обязан покрывать внутреннюю выдержку
+// нотификатора (maxInternalRetryAfter = 60s). Меньшее значение означало бы,
+// что graceful shutdown обрывает легитимное ожидание 429 и отправленное
+// сообщение остаётся с локом — после рестарта чат получает дубль.
+func TestWorkerFinalizeTimeoutDefaultCovers429Penalty(t *testing.T) {
+	w := New(Deps{}, Config{})
+	if w.cfg.FinalizeTimeout != 75*time.Second {
+		t.Errorf("FinalizeTimeout default = %v, want 75s", w.cfg.FinalizeTimeout)
+	}
+	if w.cfg.FinalizeTimeout <= 60*time.Second {
+		t.Errorf("FinalizeTimeout = %v, must exceed the notifier's 60s retry_after wait",
+			w.cfg.FinalizeTimeout)
+	}
+	// Явное значение уважается (serve передаёт 75s, тесты могут задать своё).
+	if explicit := New(Deps{}, Config{FinalizeTimeout: time.Second}); explicit.cfg.FinalizeTimeout != time.Second {
+		t.Errorf("explicit FinalizeTimeout was overridden: %v", explicit.cfg.FinalizeTimeout)
+	}
+}
+
 // 429 с retry_after=7 → MarkFailed с fire_at=now+7s, attempts+1.
 func TestWorkerRateLimited429(t *testing.T) {
 	env := newEnv(t)

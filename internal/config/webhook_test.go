@@ -61,7 +61,7 @@ func TestLoadPollingWithoutSecretOK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() = %v, want success", err)
 	}
-	if cfg.Bot.usesWebhook() {
+	if cfg.Bot.UsesWebhook() {
 		t.Errorf("usesWebhook() = true for POLLING_MODE=%q", cfg.Bot.PollingMode)
 	}
 }
@@ -78,9 +78,33 @@ func TestUsesWebhook(t *testing.T) {
 		{"", "", false},
 	}
 	for _, c := range cases {
-		got := Bot{PollingMode: c.mode, WebhookURL: c.url}.usesWebhook()
+		got := Bot{PollingMode: c.mode, WebhookURL: c.url}.UsesWebhook()
 		if got != c.want {
-			t.Errorf("usesWebhook(mode=%q,url=%q) = %v, want %v", c.mode, c.url, got, c.want)
+			t.Errorf("UsesWebhook(mode=%q,url=%q) = %v, want %v", c.mode, c.url, got, c.want)
 		}
+	}
+}
+
+// Опечатка в POLLING_MODE (например "polling" вместо "long_polling") при
+// непустом WEBHOOK_URL не ошибка: webhook определяется по URL. Но без URL
+// такой режим неотличим от опечатки — процесс молча не принимал бы апдейты,
+// поэтому Load обязан отказать.
+func TestLoadUnknownPollingModeFails(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("POLLING_MODE", "polling")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load(POLLING_MODE=polling) = nil, want an error naming POLLING_MODE")
+	}
+	if !strings.Contains(err.Error(), "POLLING_MODE") {
+		t.Errorf("error = %v, want it to name POLLING_MODE", err)
+	}
+
+	// С WEBHOOK_URL тот же режим валиден: приём апдейтов однозначен.
+	t.Setenv("WEBHOOK_URL", "https://example/webhook")
+	t.Setenv("WEBHOOK_SECRET", "s3cret")
+	if _, err := Load(); err != nil {
+		t.Errorf("Load(POLLING_MODE=polling + WEBHOOK_URL) = %v, want success", err)
 	}
 }

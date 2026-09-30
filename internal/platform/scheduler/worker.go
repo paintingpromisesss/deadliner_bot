@@ -29,7 +29,11 @@ type Config struct {
 	DMNotifyBatch int
 	// FinalizeTimeout — бюджет на доведение уже начатой работы после отмены
 	// ctx (см. process): фиксация sent/failed не должна теряться, иначе
-	// перезапуск переотправит напоминание. По умолчанию 30s.
+	// перезапуск переотправит напоминание. По умолчанию 75s: нотификатор
+	// держит выдержку 429 retry_after внутри себя до 60с и повторяет отправку,
+	// поэтому бюджет обязан покрывать 60с выдержки плюс запас на саму
+	// отправку и UPDATE — иначе graceful shutdown обрывал бы легитимное
+	// ожидание и сообщение оставалось бы с локом (дубль после рестарта).
 	FinalizeTimeout time.Duration
 }
 
@@ -85,7 +89,11 @@ func New(deps Deps, cfg Config) *Worker {
 		cfg.LockTTL = 2 * time.Minute
 	}
 	if cfg.FinalizeTimeout <= 0 {
-		cfg.FinalizeTimeout = 30 * time.Second
+		// 75s, а не 30s: нотификатор выдерживает 429 retry_after до 60с
+		// внутри себя (maxInternalRetryAfter) и повторяет отправку — бюджет
+		// финализации обязан покрывать эту выдержку, иначе graceful shutdown
+		// отберёт у напоминания шанс зафиксировать уже отправленное сообщение.
+		cfg.FinalizeTimeout = 75 * time.Second
 	}
 	log := deps.Log
 	if log == nil {

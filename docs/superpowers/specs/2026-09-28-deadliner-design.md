@@ -390,9 +390,12 @@ Job группового напоминания = 1 отправка в чат +
 BOT_TOKEN, BOT_API_BASE(опц., локальный сервер), WEBHOOK_URL|POLLING_MODE=long_polling,
 WEBHOOK_SECRET, WEBHOOK_PORT
 DATABASE_URL, DB_POOL_MAX=10
+HTTP_ADDR=:8080           # адрес HTTP-сервера serve: REST API + TMA + /webhook + /healthz
 APP_PUBLIC_URL            # базовый URL TMA (https обязателен для Telegram)
 SESSION_TTL_DAYS=30, AUTH_DATE_MAX_AGE_HOURS=24
 SCHED_POLL_INTERVAL=10s, SCHED_BATCH=50, SCHED_LOCK_TTL=2m, SCHED_MAX_ATTEMPTS=5
+                           # FinalizeTimeout воркера — 75s (фиксирован в коде): нотификатор
+                           # выдерживает 429 retry_after до 60s внутри себя
 CLEANUP_INTERVAL=1h        # период cleanup-джобы: pending-TTL, счётчики, сессии
 COUNTER_RETENTION=192h     # retention окон rate-limit-счётчиков; строго > 168h (недельное окно)
 TG_RATE_GLOBAL=25, TG_RATE_PER_CHAT=18

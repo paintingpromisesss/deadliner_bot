@@ -22,6 +22,12 @@ interface Call {
 
 let calls: Call[] = [];
 let settingsPayload: unknown;
+/**
+ * Ответ на следующий GET /notifications/settings. Позволяет смоделировать
+ * сервер, у которого эффективное значение «наследующей» группы изменилось
+ * вслед за общим дефолтом (COALESCE(membership, users.dm_notify_default)).
+ */
+let settingsSequence: unknown[] = [];
 
 function json(status: number, body: unknown): Response {
   return new Response(status === 204 ? null : JSON.stringify(body), {
@@ -50,7 +56,8 @@ function stubFetch() {
       calls.push({ url, method, body });
 
       if (url === '/api/v1/notifications/settings' && method === 'GET') {
-        return json(200, settingsPayload);
+        const next = settingsSequence.length > 0 ? settingsSequence.shift() : undefined;
+        return json(200, next ?? settingsPayload);
       }
       if (url === '/api/v1/notifications/settings' && method === 'PATCH') {
         // Сервер возвращает настройки целиком; здесь достаточно эха запроса.
@@ -79,6 +86,7 @@ function renderScreen() {
 
 beforeEach(() => {
   calls = [];
+  settingsSequence = [];
   settingsPayload = {
     dm_notify_default: true,
     groups: [
@@ -209,6 +217,50 @@ describe('SettingsScreen: переопределения по группам', (
     renderScreen();
 
     expect(await screen.findByTestId('group-notifications-empty')).toBeTruthy();
+  });
+
+  it('смена общего дефолта перезапрашивает настройки: наследующие группы не врут', async () => {
+    // Строка «как по умолчанию» показывает ЭФФЕКТИВНОЕ значение, а оно для
+    // наследующей группы берётся из общего дефолта. Если после PATCH /me не
+    // перезапросить настройки, переключатель остался бы в старом состоянии,
+    // противореча только что сохранённому дефолту.
+    const groupRows = (dmDefault: boolean) => ({
+      dm_notify_default: dmDefault,
+      groups: [
+        { group_id: 43, slug: 'ИКБО-33-21', title: 'ИКБО-33-21', dm_notify: dmDefault, override: false },
+      ],
+    });
+    // Первый ответ — исходное состояние, второй (после сохранения) — уже
+    // пересчитанное сервером эффективное значение.
+    settingsSequence = [groupRows(true), groupRows(false)];
+
+    renderScreen();
+
+    // Исходное состояние: дефолт включён, наследующая группа включена.
+    await screen.findByTestId('group-notify-43');
+    expect((screen.getByTestId('group-notify-switch-43') as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByTestId('group-notify-43').textContent).toContain('как по умолчанию');
+
+    // Выключаем общий дефолт и сохраняем.
+    const dmSwitch = screen.getByRole('checkbox', { name: /Дубли в личку/ }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.click(dmSwitch);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      const get = calls.filter(
+        (c) => c.url === '/api/v1/notifications/settings' && c.method === 'GET',
+      );
+      // Второй GET — доказательство инвалидации после PATCH /me.
+      expect(get.length).toBeGreaterThanOrEqual(2);
+    });
+    await waitFor(() =>
+      expect((screen.getByTestId('group-notify-switch-43') as HTMLInputElement).checked).toBe(false),
+    );
   });
 
   it('ошибка загрузки настроек показывается видимой строкой с повтором', async () => {

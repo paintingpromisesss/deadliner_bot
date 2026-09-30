@@ -46,6 +46,9 @@ export function GroupsScreen() {
   const debounced = useDebounced(query.trim());
   const search = useGroupSearch(debounced);
   const suggestions = useMemo(() => filterSuggestions(search.data), [search.data]);
+  // Совпадения были, но после отсева моих групп ничего не осталось: это не
+  // «ничего не найдено» — искомое лежит прямо выше, в списке групп.
+  const allMine = (search.data?.length ?? 0) > 0 && suggestions.length === 0;
 
   function openGroup(id: number) {
     hapticImpact('light');
@@ -73,6 +76,7 @@ export function GroupsScreen() {
           items={suggestions}
           loading={search.isFetching && debounced.length > 0}
           searched={debounced.length > 0 && !search.isFetching}
+          allMine={allMine}
         />
 
         {groups.isLoading ? (

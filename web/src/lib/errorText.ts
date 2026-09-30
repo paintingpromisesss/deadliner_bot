@@ -38,22 +38,61 @@ export function rateLimitMessage(retryAfterMs: number | null): string {
 }
 
 /**
- * Текст ошибки API для форм групп и инвайтов:
- *  409 conflict → «номер занят» (создание) либо текст конверта;
+ * Текст ошибки API для формы СОЗДАНИЯ группы и админских операций над ней:
  *  400 slug_invalid → ошибка слага;
+ *  409 conflict → «номер занят» (создание группы — единственное место, где
+ *     этот статус означает занятый слаг);
  *  429 → лимит с Retry-After;
- *  404 → неизвестный/отозванный/истёкший код;
  *  иначе — сообщение сервера, при его отсутствии — общий фолбэк.
+ *
+ * Для остальных путей 409 означает другое (см. redeemErrorMessage /
+ * mutationErrorMessage): общий маппер здесь намеренно НЕ используется, иначе
+ * отказ по лимиту использований читался бы как «номер занят».
  */
-export function groupApiErrorMessage(err: unknown): string {
+export function groupCreateErrorMessage(err: unknown): string {
   const code = errorCode(err);
   const status = errorStatus(err);
   if (status === 429) return rateLimitMessage(errorRetryAfterMs(err));
   if (code === 'slug_invalid') return strings.groups.errSlugCharset;
   if (code === 'conflict' || status === 409) return strings.groups.errSlugTaken;
-  if (status === 404) return strings.groups.errCodeUnknown;
   if (err instanceof Error && err.message) return err.message;
   return strings.common.actionFailed;
+}
+
+/**
+ * Текст ошибки вступления по инвайт-коду. Здесь 409 — не «слаг занят», а
+ * исчерпанный лимит использований: RedeemInvite атомарно тратит использование
+ * (IncrementUsed → ErrConflict), и пользователю нужен новый код, а не совет
+ * поискать группу по номеру.
+ *
+ * 404 (отозван/истёк/не существует — сервер намеренно не различает) и 400
+ * (битый/пустой код) ведут к одной и той же мысли — «код не тот».
+ */
+export function redeemErrorMessage(err: unknown): string {
+  const code = errorCode(err);
+  const status = errorStatus(err);
+  if (status === 429) return rateLimitMessage(errorRetryAfterMs(err));
+  if (code === 'conflict' || status === 409) return strings.groups.errInviteExhausted;
+  if (status === 404 || status === 400 || code === 'validation' || code === 'not_found') {
+    return strings.groups.errCodeUnknown;
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return strings.common.actionFailed;
+}
+
+/**
+ * Текст ошибки мутаций группы и инвайтов (отзыв кода, отзыв claim, выход,
+ * удаление): реальные 409 здесь — «последний админ» и прочие конфликты
+ * состояния, а не занятый слаг. Текст конверта API точнее любой подстановки,
+ * поэтому приоритет у него; 429 по-прежнему несёт Retry-After.
+ */
+export function mutationErrorMessage(err: unknown): string {
+  const code = errorCode(err);
+  const status = errorStatus(err);
+  if (status === 429) return rateLimitMessage(errorRetryAfterMs(err));
+  if (code === 'last_admin') return strings.groups.errLastAdmin;
+  if (err instanceof Error && err.message) return err.message;
+  return strings.groups.errGroupGeneric;
 }
 
 /** Текст ошибки claim-флоу по коду/статусу ответа (спека §3.1). */

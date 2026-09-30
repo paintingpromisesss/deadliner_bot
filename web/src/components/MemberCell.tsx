@@ -52,7 +52,7 @@ export function MemberCell({
   const showMenu = canManage && !isMe;
 
   return (
-    <div className="dl-member" data-testid={`member-${member.user_id}`}>
+    <div data-testid={`member-${member.user_id}`}>
       <Cell
         Component={showMenu ? 'button' : 'div'}
         // Cell с onClick обязан быть фокусируемым: иначе меню действий

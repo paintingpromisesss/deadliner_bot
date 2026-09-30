@@ -104,7 +104,7 @@ function stubFetch() {
       }
       if (url === '/api/v1/groups/42/claim/confirm') {
         const [status, payload] = handlers.claimConfirm ?? [200, { role: 'admin', group, status: 'active' }];
-        return json(status, status >= 400 ? payload : payload);
+        return json(status, payload);
       }
       if (url === '/api/v1/groups/42/claim/revoke') return json(204, null);
       return json(200, []);
@@ -222,6 +222,75 @@ describe('GroupDetailScreen: гейт по роли', () => {
     // Ячейка участника — не кнопка: меню открывать нечем.
     expect(within(cell).queryByTestId('member-menu-2')).toBeNull();
     expect(within(cell).queryByRole('button')).toBeNull();
+  });
+
+  it('участник не видит мигающей пустой секции состава', async () => {
+    // Список участников грузится отдельным запросом: до его ответа секция
+    // обязана показывать загрузку, а не «в группе никого нет».
+    handlers.role = 'member';
+    let releaseMembers: (() => void) | null = null;
+    const membersGate = new Promise<void>((resolve) => {
+      releaseMembers = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, method: init?.method ?? 'GET', body: undefined });
+        if (url === '/api/v1/groups/42') {
+          return json(200, {
+            group,
+            role: 'member',
+            binding: { chat_id: -100, chat_title: 'ИУ7 401Б' },
+            members_count: 2,
+          });
+        }
+        if (url === '/api/v1/groups/42/members') {
+          await membersGate;
+          return json(200, members);
+        }
+        return json(200, []);
+      }),
+    );
+    renderScreen();
+
+    const section = await screen.findByTestId('members-section');
+    // Пока запрос в полёте — загрузка, а не пустой состав.
+    expect(section.querySelector('[role="status"]')).toBeTruthy();
+
+    await act(async () => {
+      releaseMembers?.();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByTestId('member-2')).toBeTruthy());
+  });
+
+  it('ошибка загрузки состава видна участнику, а не выглядит пустой группой', async () => {
+    handlers.role = 'member';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, method: init?.method ?? 'GET', body: undefined });
+        if (url === '/api/v1/groups/42') {
+          return json(200, {
+            group,
+            role: 'member',
+            binding: null,
+            members_count: 2,
+          });
+        }
+        if (url === '/api/v1/groups/42/members') {
+          return json(500, { error: { code: 'internal', message: 'Внутренняя ошибка' } });
+        }
+        return json(200, []);
+      }),
+    );
+    renderScreen();
+
+    const alert = await screen.findByTestId('members-error');
+    expect(alert.getAttribute('role')).toBe('alert');
+    expect(alert.textContent).toBe('Внутренняя ошибка');
   });
 
   it('админ видит админ-панель целиком', async () => {

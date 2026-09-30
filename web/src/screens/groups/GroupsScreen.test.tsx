@@ -53,6 +53,7 @@ interface Handlers {
   createStatus?: number;
   createBody?: unknown;
   redeemStatus?: number;
+  redeemCode?: string;
 }
 
 let handlers: Handlers = {};
@@ -87,7 +88,8 @@ function stubFetch() {
       if (url === '/api/v1/invites/redeem') {
         const status = handlers.redeemStatus ?? 200;
         if (status >= 400) {
-          return json(status, { error: { code: 'not_found', message: 'Код не найден' } });
+          const code = handlers.redeemCode ?? (status === 409 ? 'conflict' : 'not_found');
+          return json(status, { error: { code, message: 'Сообщение сервера' } });
         }
         return json(200, { group: summary(11, 'ИКБО-33-21', '').group });
       }
@@ -253,6 +255,24 @@ describe('GroupsScreen: поиск с дебаунсом', () => {
     expect(screen.queryByTestId('suggestion-42')).toBeNull();
   });
 
+  it('совпадения только среди моих групп — подсказка «уже в ваших», а не «не найдено»', async () => {
+    // Искомое существует и видно пользователю прямо выше: сказать «ничего не
+    // найдено» значило бы противоречить собственному списку на экране.
+    handlers.mine = [summary(42, 'М8О-401Б-23', 'admin')];
+    handlers.search = [summary(42, 'М8О-401Б-23', 'admin')];
+    renderScreen();
+
+    await screen.findByTestId('group-42');
+    const field = screen.getByTestId('field-search') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(field, { target: { value: 'М8О' } });
+    });
+
+    expect(await screen.findByTestId('search-all-mine')).toBeTruthy();
+    expect(screen.queryByTestId('search-empty')).toBeNull();
+    expect(screen.queryByTestId('suggestion-42')).toBeNull();
+  });
+
   it('без введённого текста поиск не запрашивается', async () => {
     handlers.mine = [summary(42, 'М8О-401Б-23', 'admin')];
     renderScreen();
@@ -339,6 +359,28 @@ describe('GroupsScreen: создание группы', () => {
     expect(alert.textContent).toContain('уже занят');
   });
 
+  it('409 при создании группы по-прежнему означает занятый номер', async () => {
+    // Контроль к предыдущему тесту: разведённые мапперы не должны были
+    // «починить» redeem ценой поломки создания группы.
+    handlers.mine = [];
+    handlers.createStatus = 409;
+    renderScreen();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId('open-create'));
+    });
+    await act(async () => {
+      fireEvent.change(await screen.findByTestId('field-slug'), { target: { value: 'М8О-401Б-23' } });
+      fireEvent.change(screen.getByTestId('field-group-title'), { target: { value: 'Группа' } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('submit-create-group'));
+      await Promise.resolve();
+    });
+
+    expect((await screen.findByTestId('create-error')).textContent).toContain('уже занят');
+  });
+
   it('429 показывает задержку из Retry-After', async () => {
     handlers.mine = [];
     handlers.createStatus = 429;
@@ -403,6 +445,55 @@ describe('GroupsScreen: инвайт-код', () => {
     // Код нормализуется в верхний регистр: сервер ждёт plaintext без пробелов.
     expect(post.body).toEqual({ code: 'ABCD2345' });
     expect(await screen.findByTestId('groups-notice')).toBeTruthy();
+  });
+
+  it('409 (инвайт исчерпан) показывает текст про инвайт, а не про занятый слаг', async () => {
+    // POST /invites/redeem отдаёт 409 при исчерпанном max_uses (IncrementUsed →
+    // ErrConflict). Копирайт создания группы («номер уже занят») здесь был бы
+    // грубой ошибкой: пользователь пошёл бы искать группу по номеру.
+    handlers.mine = [];
+    handlers.redeemStatus = 409;
+    renderScreen();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId('open-redeem'));
+    });
+    await act(async () => {
+      fireEvent.change(await screen.findByTestId('field-invite-code'), {
+        target: { value: 'ABCD2345' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('submit-redeem'));
+      await Promise.resolve();
+    });
+
+    const alert = await screen.findByTestId('redeem-error');
+    expect(alert.textContent).toBe('Инвайт-код исчерпан или отозван.');
+    expect(alert.textContent).not.toContain('занят');
+  });
+
+  it('404 (код неизвестен/отозван/истёк) даёт текст про код', async () => {
+    handlers.mine = [];
+    handlers.redeemStatus = 404;
+    renderScreen();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId('open-redeem'));
+    });
+    await act(async () => {
+      fireEvent.change(await screen.findByTestId('field-invite-code'), {
+        target: { value: 'ZZZZZZZZ' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('submit-redeem'));
+      await Promise.resolve();
+    });
+
+    expect((await screen.findByTestId('redeem-error')).textContent).toBe(
+      'Код не найден, отозван или истёк',
+    );
   });
 
   it('неизвестный код показывается строкой ошибки', async () => {

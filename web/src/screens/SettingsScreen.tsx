@@ -9,6 +9,7 @@
 // сырое поле membership — иначе выключенный в строке переключатель мог бы
 // означать «выключено» при фактически включённых дублях.
 import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Button,
   Caption,
@@ -22,7 +23,7 @@ import {
 } from '@telegram-apps/telegram-ui';
 import { Screen } from '../components/Screen';
 import { useAuthStore } from '../stores/auth';
-import { useNotificationSettings, usePatchNotificationSettings } from '../lib/queries';
+import { NOTIFICATIONS_QUERY_KEY, useNotificationSettings, usePatchNotificationSettings } from '../lib/queries';
 import { strings, tpl } from '../lib/strings';
 import { hapticNotification } from '../lib/tma';
 import type { NotificationGroup } from '../lib/groups';
@@ -57,6 +58,7 @@ export function SettingsScreen() {
   const user = useAuthStore((s) => s.user);
   const patchMe = useAuthStore((s) => s.patchMe);
   const logout = useAuthStore((s) => s.logout);
+  const queryClient = useQueryClient();
 
   const settings = useNotificationSettings();
   const patchSettings = usePatchNotificationSettings();
@@ -91,6 +93,11 @@ export function SettingsScreen() {
     setNote(null);
     try {
       await patchMe({ tz, dm_notify_default: dm });
+      // Общий дефолт — источник эффективного значения для групп, которые его
+      // наследуют (спека §5.2: COALESCE(membership, users.dm_notify_default)).
+      // Без инвалидации строки групп показывали бы прежнее значение до
+      // перезахода на экран, то есть переключатель врал бы о состоянии.
+      await queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_QUERY_KEY });
       hapticNotification('success');
       setNote(strings.settings.saved);
     } catch (e) {
@@ -131,7 +138,7 @@ export function SettingsScreen() {
             after={user.is_superadmin ? <Caption level="1">superadmin</Caption> : undefined}
             multiline
           >
-            {user.first_name || 'Пользователь'}
+            {user.first_name || strings.settings.defaultName}
           </Cell>
         </Section>
 

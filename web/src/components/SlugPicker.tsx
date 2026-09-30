@@ -22,10 +22,16 @@ interface SlugPickerProps {
   loading: boolean;
   /** Запрос отправлен и вернул пусто (не «ещё не искали»). */
   searched: boolean;
+  /**
+   * Совпадения были, но все — уже мои группы. Отличается от «ничего не
+   * найдено»: пользователь искал свою же группу, и подсказка обязана сказать,
+   * где она, а не что её нет.
+   */
+  allMine: boolean;
 }
 
-/** Подсказки поиска: только непустой результат либо явное «ничего не найдено». */
-export function SlugPicker({ items, loading, searched }: SlugPickerProps) {
+/** Подсказки поиска: только непустой результат либо явная подсказка. */
+export function SlugPicker({ items, loading, searched, allMine }: SlugPickerProps) {
   if (loading) {
     return (
       <div className="dl-search-state" data-testid="search-loading">
@@ -36,6 +42,14 @@ export function SlugPicker({ items, loading, searched }: SlugPickerProps) {
 
   if (items.length === 0) {
     if (!searched) return null;
+    if (allMine) {
+      return (
+        <div className="dl-hint" data-testid="search-all-mine">
+          <div>{strings.groups.searchAllMine}</div>
+          <div className="dl-hint__sub">{strings.groups.searchAllMineHint}</div>
+        </div>
+      );
+    }
     return (
       <div className="dl-hint" data-testid="search-empty">
         <div>{strings.groups.searchEmpty}</div>

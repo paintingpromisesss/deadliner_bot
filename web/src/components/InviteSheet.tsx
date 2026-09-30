@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react';
 import { Button, Cell, Input, Modal, Select } from '@telegram-apps/telegram-ui';
 import { SheetHeader } from './SheetHeader';
 import { useCreateInvite } from '../lib/queries';
-import { groupApiErrorMessage } from '../lib/errorText';
+import { mutationErrorMessage } from '../lib/errorText';
 import { strings, tpl } from '../lib/strings';
 import { formatDue } from '../lib/format';
 import type { InviteCreated } from '../lib/groups';
@@ -33,8 +33,10 @@ function ttlLabel(hours: number): string {
     case 2160:
       return strings.groups.inviteTTL90;
     default:
-      // 0 = дефолт сервера (7 дней, спека §3.2).
-      return strings.groups.inviteTTL7;
+      // 0 = «отдай решение серверу»: TTL берётся из конфига (7 дней, §3.2).
+      // Подпись отличается от «7 дней», иначе выбор 0 и 168 выглядел бы
+      // одинаково, хотя это разные запросы.
+      return strings.groups.inviteTTLDefault;
   }
 }
 
@@ -86,7 +88,7 @@ export function InviteSheet({ open, onOpenChange, groupID, tz, onCreated }: Invi
       setCreated(invite);
       onCreated?.(invite, role);
     } catch (e) {
-      setError(groupApiErrorMessage(e));
+      setError(mutationErrorMessage(e));
     }
   }
 

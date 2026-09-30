@@ -9,8 +9,8 @@ import { useEffect, useState } from 'react';
 import { Button, Cell, Input, Modal } from '@telegram-apps/telegram-ui';
 import { SheetHeader } from './SheetHeader';
 import { useRedeemInvite } from '../lib/queries';
-import { groupApiErrorMessage } from '../lib/errorText';
-import { strings, tpl } from '../lib/strings';
+import { redeemErrorMessage } from '../lib/errorText';
+import { strings } from '../lib/strings';
 
 interface RedeemSheetProps {
   open: boolean;
@@ -44,7 +44,7 @@ export function RedeemSheet({ open, onOpenChange, onRedeemed }: RedeemSheetProps
       onOpenChange(false);
       onRedeemed?.(group.id, group.slug);
     } catch (e) {
-      setError(groupApiErrorMessage(e));
+      setError(redeemErrorMessage(e));
     }
   }
 
@@ -86,9 +86,4 @@ export function RedeemSheet({ open, onOpenChange, onRedeemed }: RedeemSheetProps
       </div>
     </Modal>
   );
-}
-
-/** Подпись успешного вступления (для snackbar/строки состояния на экране). */
-export function redeemSuccessText(slug: string): string {
-  return tpl(strings.groups.redeemSuccess, slug);
 }

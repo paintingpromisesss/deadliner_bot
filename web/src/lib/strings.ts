@@ -47,7 +47,12 @@ export const strings = {
     searchPlaceholder: 'Например: М8О-401Б-23',
     searchEmpty: 'Ничего не найдено',
     searchEmptyHint: 'Проверьте номер: поиск идёт по началу слага.',
-    searchJoin: 'Вступить',
+    /**
+     * Совпадения есть, но все — уже мои группы: список моих групп и так выше,
+     * поэтому вместо «ничего не найдено» честно говорим, где они.
+     */
+    searchAllMine: 'Эти группы уже в ваших',
+    searchAllMineHint: 'Они перечислены в списке ваших групп выше.',
     /** Заголовок выпадающего списка подсказок. */
     searchSuggestions: 'Найденные группы',
     /**
@@ -90,6 +95,10 @@ export const strings = {
     errRateLimit: 'Слишком часто. Попробуйте позже.',
     errRateLimitRetry: 'Слишком часто. Повторить через %s.',
     errCodeUnknown: 'Код не найден, отозван или истёк',
+    /** 409 при redeem — исчерпанный лимит использований (IncrementUsed → ErrConflict). */
+    errInviteExhausted: 'Инвайт-код исчерпан или отозван.',
+    /** Прочие отказы групп, не сводимые к конкретной причине. */
+    errGroupGeneric: 'Не удалось выполнить действие с группой.',
 
     /** Экран группы. */
     detailTitle: 'Группа',
@@ -131,6 +140,8 @@ export const strings = {
     inviteMaxUsesUnlimited: 'Без ограничений',
     inviteMaxUsesLimit: 'Не более %s',
     inviteTTL: 'Срок жизни',
+    /** 0 в запросе = TTL по умолчанию из конфига сервера (7 дней, спека §3.2). */
+    inviteTTLDefault: 'По умолчанию (7 дней)',
     inviteTTL7: '7 дней',
     inviteTTL1: '1 день',
     inviteTTL30: '30 дней',
@@ -192,6 +203,8 @@ export const strings = {
   settings: {
     title: 'Настройки',
     profileHeader: 'Профиль',
+    /** Имя не пришло от Telegram — нейтральная подпись вместо пустой строки. */
+    defaultName: 'Пользователь',
     noUsername: 'без username',
     tzHeader: 'Часовой пояс',
     tzFooter: 'В нём показываются даты дедлайнов и напоминаний.',

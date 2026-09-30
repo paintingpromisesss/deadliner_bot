@@ -43,6 +43,14 @@ export const DEADLINES_KEY = 'deadlines';
 export const GROUPS_KEY = 'groups';
 
 /**
+ * Ключ настроек уведомлений. Отдельная константа, потому что эффективное
+ * значение группы зависит от ОБЩЕГО дефолта (spec §5.2: COALESCE(membership,
+ * users.dm_notify_default)): смена дефолта обязана инвалидировать эти же
+ * данные, иначе строки групп показывали бы устаревшее значение.
+ */
+export const NOTIFICATIONS_QUERY_KEY = [GROUPS_KEY, 'notifications'] as const;
+
+/**
  * Ключ списка. Диапазон from/to — часть ключа: календарь и главный экран грузят
  * разные окна и не должны перетирать кэш друг друга.
  */
@@ -172,7 +180,9 @@ export function useGroupDetail(id: number | null) {
   });
 }
 
-/** Участники группы: список нужен только админ-панели. */
+/** Участники группы: список читают и админ-панель, и обычный участник
+ * (состав виден всем членам группы — backend разрешает ListMembers любому
+ * участнику, спека §5.2 обещает админский доступ). */
 export function useGroupMembers(id: number | null, enabled = true) {
   return useQuery({
     queryKey: [GROUPS_KEY, 'members', id],
@@ -198,7 +208,7 @@ export function useGroupSearch(q: string) {
 /** Настройки ЛС-дублей: общий дефолт + переопределения по группам. */
 export function useNotificationSettings() {
   return useQuery<NotificationSettings>({
-    queryKey: [GROUPS_KEY, 'notifications'],
+    queryKey: NOTIFICATIONS_QUERY_KEY,
     queryFn: fetchNotificationSettings,
     staleTime: 60_000,
   });
@@ -362,7 +372,7 @@ export function usePatchNotificationSettings() {
       patchNotificationSettings(body),
     onSuccess: (settings) => {
       hapticNotification('success');
-      client.setQueryData([GROUPS_KEY, 'notifications'], settings);
+      client.setQueryData(NOTIFICATIONS_QUERY_KEY, settings);
       // Общий дефолт живёт ещё и в профиле (/me): держим стор в согласии.
       void client.invalidateQueries({ queryKey: [GROUPS_KEY] });
     },

@@ -33,8 +33,6 @@ export interface ClaimModel {
   error: string | null;
   /** Задержка из Retry-After (мс) — для подписи «повторить через N». */
   retryAfterMs: number | null;
-  /** Счётчик неудачных подтверждений: нужен, чтобы отличить «ещё раз» от серии. */
-  attempts: number;
 }
 
 /** Стартовое состояние: до первого запроса шит в idle, но покажет подсказку
@@ -45,7 +43,6 @@ export function initialClaimState(hasBinding: boolean): ClaimModel {
     session: null,
     error: null,
     retryAfterMs: null,
-    attempts: 0,
   };
 }
 
@@ -63,7 +60,6 @@ export function onStarted(model: ClaimModel, session: ClaimSession): ClaimModel 
     session,
     error: null,
     retryAfterMs: null,
-    attempts: 0,
   };
 }
 
@@ -93,7 +89,7 @@ export function onStartFailed(
 ): ClaimModel {
   const code = errorCode(err);
   const retryAfterMs = errorRetryAfterMs(err);
-  const base = { ...model, session: null, retryAfterMs, attempts: model.attempts };
+  const base = { ...model, session: null, retryAfterMs };
 
   if (code === 'no_chat_binding') {
     return { ...base, state: 'no_binding', error: messages.noBinding };
@@ -124,25 +120,17 @@ export function onConfirmFailed(
   const code = errorCode(err);
   const status = errorStatus(err);
   const retryAfterMs = errorRetryAfterMs(err);
-  const attempts = model.attempts + 1;
 
   if (code === 'claim_bad_code' || (status === 403 && code !== 'no_chat_binding')) {
-    return { ...model, state: 'code_sent', error: messages.badCode, retryAfterMs, attempts };
+    return { ...model, state: 'code_sent', error: messages.badCode, retryAfterMs };
   }
   if (code === 'claim_code_not_found' || status === 404) {
-    return {
-      ...model,
-      state: 'idle',
-      session: null,
-      error: messages.expired,
-      retryAfterMs,
-      attempts,
-    };
+    return { ...model, state: 'idle', session: null, error: messages.expired, retryAfterMs };
   }
   if (status === 429) {
-    return { ...model, state: 'code_sent', error: messages.rateLimited(retryAfterMs), retryAfterMs, attempts };
+    return { ...model, state: 'code_sent', error: messages.rateLimited(retryAfterMs), retryAfterMs };
   }
-  return { ...model, state: 'code_sent', error: messages.generic(err), retryAfterMs, attempts };
+  return { ...model, state: 'code_sent', error: messages.generic(err), retryAfterMs };
 }
 
 /** Активный код отозван (admin): возвращаемся к idle с пометкой об успехе. */
@@ -178,9 +166,4 @@ export function claimRemainingMs(expiresAt: string, now: Date | number): number 
   if (Number.isNaN(ms)) return 0;
   const nowMs = now instanceof Date ? now.getTime() : now;
   return ms - nowMs;
-}
-
-/** Срок жизни кода-инвайта: «до 05.10.2026 12:00» либо «истёк». */
-export function inviteExpired(expiresAt: string, now: Date | number): boolean {
-  return claimRemainingMs(expiresAt, now) <= 0;
 }

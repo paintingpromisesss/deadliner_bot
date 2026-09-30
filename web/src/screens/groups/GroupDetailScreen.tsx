@@ -31,7 +31,7 @@ import {
   useRevokeInvite,
   useSetMemberRole,
 } from '../../lib/queries';
-import { memberActionErrorMessage, groupApiErrorMessage } from '../../lib/errorText';
+import { memberActionErrorMessage, mutationErrorMessage } from '../../lib/errorText';
 import { formatDue } from '../../lib/format';
 import { strings, tpl } from '../../lib/strings';
 import { hapticImpact, hapticNotification } from '../../lib/tma';
@@ -371,21 +371,34 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
             </Section>
           </>
         ) : inGroup ? (
+          // Состав виден и участнику (ListMembers пускает любого члена группы):
+          // показываем загрузку и ошибку, иначе секция на миг выглядела бы
+          // пустой, а сбой запроса — как «в группе никого нет».
           <Section header={strings.groups.membersHeader} data-testid="members-section">
-            {memberList.map((member) => (
-              <MemberCell
-                key={member.user_id}
-                member={member}
-                isMe={member.user_id === me}
-                canManage={false}
-                menuOpen={false}
-                onMenuToggle={() => {}}
-                onPromote={() => {}}
-                onDemote={() => {}}
-                onKick={() => {}}
-                tz={tz}
-              />
-            ))}
+            {members.isLoading ? (
+              <div className="dl-centered">
+                <Spinner size="s" />
+              </div>
+            ) : members.isError ? (
+              <div className="dl-error" role="alert" data-testid="members-error">
+                {members.error instanceof Error ? members.error.message : strings.common.loadError}
+              </div>
+            ) : (
+              memberList.map((member) => (
+                <MemberCell
+                  key={member.user_id}
+                  member={member}
+                  isMe={member.user_id === me}
+                  canManage={false}
+                  menuOpen={false}
+                  onMenuToggle={() => {}}
+                  onPromote={() => {}}
+                  onDemote={() => {}}
+                  onKick={() => {}}
+                  tz={tz}
+                />
+              ))
+            )}
           </Section>
         ) : null}
 
@@ -437,7 +450,7 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
           void run(async () => {
             await leave.mutateAsync(groupID);
             navigate('/groups');
-          }, groupApiErrorMessage);
+          }, mutationErrorMessage);
         }}
         onCancel={() => setConfirmLeave(false)}
       />
@@ -453,7 +466,7 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
           void run(async () => {
             await removeGroup.mutateAsync(groupID);
             navigate('/groups');
-          }, groupApiErrorMessage);
+          }, mutationErrorMessage);
         }}
         onCancel={() => setConfirmDelete(false)}
       />
@@ -472,7 +485,7 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
           void run(async () => {
             await revokeInvite.mutateAsync({ groupID, code: target.code });
             setSessionInvites((prev) => prev.filter((x) => x.invite.code !== target.code));
-          }, groupApiErrorMessage);
+          }, mutationErrorMessage);
         }}
         onCancel={() => {
           setConfirmRevoke(false);
@@ -501,7 +514,7 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
         open={confirmClaimRevoke}
         onConfirm={() => {
           setConfirmClaimRevoke(false);
-          void run(() => revokeClaim.mutateAsync(groupID), groupApiErrorMessage);
+          void run(() => revokeClaim.mutateAsync(groupID), mutationErrorMessage);
         }}
         onCancel={() => setConfirmClaimRevoke(false)}
       />

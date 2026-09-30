@@ -177,11 +177,12 @@ describe('claim: ошибки подтверждения', () => {
     expect(model.session).not.toBeNull();
   });
 
-  it('счётчик неудачных попыток растёт (видно серию опечаток)', () => {
+  it('серия неверных кодов всё так же оставляет ввод активным', () => {
     let model = sent();
     model = onConfirmFailed(model, apiError(403, 'claim_bad_code'), messages);
     model = onConfirmFailed(model, apiError(403, 'claim_bad_code'), messages);
-    expect(model.attempts).toBe(2);
+    expect(model.state).toBe('code_sent');
+    expect(model.session).not.toBeNull();
   });
 
   it('404 claim_code_not_found возвращает в idle с текстом об истечении', () => {

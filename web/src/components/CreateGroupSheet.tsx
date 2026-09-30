@@ -10,7 +10,7 @@ import { Button, Cell, Input, Modal } from '@telegram-apps/telegram-ui';
 import { SheetHeader } from './SheetHeader';
 import { useCreateGroup } from '../lib/queries';
 import { checkSlug } from '../lib/slug';
-import { groupApiErrorMessage, groupTitleErrorMessage, slugErrorMessage } from '../lib/errorText';
+import { groupCreateErrorMessage, groupTitleErrorMessage, slugErrorMessage } from '../lib/errorText';
 import { strings } from '../lib/strings';
 import { hapticImpact } from '../lib/tma';
 
@@ -55,7 +55,7 @@ export function CreateGroupSheet({ open, onOpenChange, onCreated }: CreateGroupS
       onOpenChange(false);
       onCreated?.(group.id);
     } catch (e) {
-      setApiError(groupApiErrorMessage(e));
+      setApiError(groupCreateErrorMessage(e));
     }
   }
 

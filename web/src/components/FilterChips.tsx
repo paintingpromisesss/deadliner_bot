@@ -59,7 +59,12 @@ interface PresetChipsProps {
   disabled?: boolean;
 }
 
-/** Чипы-пресеты напоминаний (7д/3д/24ч), переключаемые (спека §9, экран 4). */
+/** Чипы-пресеты напоминаний (7д/3д/24ч), переключаемые (спека §9, экран 4).
+ *
+ * Рисуются тем же Chip, что и фильтры: отличие только в неподсвеченном режиме
+ * (outline) и в haptic-отклике на нажатие — форма и список пользуются одним
+ * примитивом, а не двумя похожими разметками.
+ */
 export function PresetChips({
   options,
   selected,
@@ -80,6 +85,7 @@ export function PresetChips({
             className="dl-chip"
             aria-pressed={on}
             data-selected={on ? 'true' : 'false'}
+            data-testid={`preset-${option.minutes}`}
             disabled={disabled}
             onClick={() => {
               hapticImpact('light');

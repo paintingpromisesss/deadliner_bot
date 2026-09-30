@@ -139,8 +139,3 @@ export function groupByDay(
   }
   return out;
 }
-
-/** Сколько дедлайнов в каждом сегменте (для подписи секции). */
-export function segmentCount(segmented: SegmentedDeadlines, segment: Segment): number {
-  return segmented[segment].length;
-}

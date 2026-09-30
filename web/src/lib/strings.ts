@@ -17,6 +17,8 @@ export const strings = {
     retry: 'Повторить',
     cancel: 'Отмена',
     close: 'Закрыть',
+    /** Прочерк вместо значения, которое не удалось разобрать (битый due_at). */
+    unknown: '—',
   },
 
   deadlines: {
@@ -47,6 +49,11 @@ export const strings = {
     emptyFilteredHint: 'В этом фильтре дедлайнов нет — попробуйте «Все».',
     addButton: 'Новый дедлайн',
     complete: 'Отметить выполненным',
+    /**
+     * Фолбэк текста ошибки действия из списка (когда сервер не прислал
+     * сообщение): конкретику даёт конверт ошибки API.
+     */
+    actionFailed: 'Не удалось выполнить действие',
   },
 
   calendar: {
@@ -84,6 +91,10 @@ export const strings = {
     reminderOffsetUnit: 'Единица',
     reminderUnitHours: 'часов',
     reminderUnitDays: 'дней',
+    /** Подпись напоминания-отступа: «за 7 дней», «за 3 часа», «за 30 минут». */
+    reminderOffsetDays: 'за %s дн.',
+    reminderOffsetHours: 'за %s ч.',
+    reminderOffsetMinutes: 'за %s мин.',
     reminderRemove: 'Удалить напоминание',
     reminderExisting: 'Напоминания',
     reminderExistingEmpty: 'Напоминаний нет',
@@ -111,5 +122,10 @@ export const strings = {
     errReminderOffset: 'Минимальный отступ — 5 минут',
     errReminderLimit: 'Не более 10 напоминаний на дедлайн',
     errRemindersRequired: 'Включите хотя бы одно напоминание для группового дедлайна',
+    /**
+     * Общий блок-заголовок над ошибками конкретных кастомных напоминаний:
+     * сами тексты — в errors.custom (errReminderOffset/errReminderExactPast).
+     */
+    errCustomReminder: 'Исправьте или удалите некорректное напоминание',
   },
 } as const;

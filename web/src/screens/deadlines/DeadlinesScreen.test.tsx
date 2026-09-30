@@ -71,16 +71,27 @@ const groupsPayload = [
   },
 ];
 
-function stubFetch(deadlines: unknown[], options: { fail?: boolean } = {}) {
+/** Тот же состав, но роль участника: групповые дедлайны ему доступны только на чтение. */
+const memberGroupsPayload = [{ ...groupsPayload[0], role: 'member' }];
+
+function stubFetch(
+  deadlines: unknown[],
+  options: { fail?: boolean; groups?: unknown[]; failMutation?: boolean } = {},
+) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      calls.push({ url, method: init?.method ?? 'GET' });
+      const method = init?.method ?? 'GET';
+      calls.push({ url, method });
       if (options.fail) {
         return json(500, { error: { code: 'internal', message: 'Внутренняя ошибка' } });
       }
-      if (url.startsWith('/api/v1/groups')) return json(200, groupsPayload);
+      // Мутации падают отдельно от чтения: проверяем видимость ошибки действия.
+      if (options.failMutation && method !== 'GET') {
+        return json(403, { error: { code: 'forbidden', message: 'Недостаточно прав' } });
+      }
+      if (url.startsWith('/api/v1/groups')) return json(200, options.groups ?? groupsPayload);
       if (url.startsWith('/api/v1/me/deadlines')) return json(200, deadlines);
       return json(200, { deadline: deadlines[0], reminders: [] });
     }),
@@ -341,5 +352,81 @@ describe('DeadlinesScreen: действия из списка', () => {
     // Срок подставляется в tz пользователя: 02.10.2026 12:00 MSK.
     expect((screen.getByTestId('field-date') as HTMLInputElement).value).toBe('2026-10-02');
     expect((screen.getByTestId('field-time') as HTMLInputElement).value).toBe('12:00');
+  });
+});
+
+// Backend требуют admin для complete/delete группового дедлайна (requireWrite):
+// участнику кнопки не показываются вовсе, а если мутация всё же упала — об этом
+// сообщается видимой ошибкой, а не молчанием.
+describe('DeadlinesScreen: права на действия', () => {
+  it('участник группы не видит кнопок на групповом дедлайне', async () => {
+    stubFetch(
+      [
+        deadline(1, 3 * DAY, { title: 'Личная' }),
+        deadline(2, 4 * DAY, { title: 'Групповая', group_id: 42, owner_user_id: null }),
+      ],
+      { groups: memberGroupsPayload },
+    );
+    renderScreen();
+
+    await screen.findByTestId('cell-2');
+    // Личный доступен владельцу, групповой — нет.
+    expect(screen.getByTestId('complete-1')).toBeTruthy();
+    expect(screen.getByTestId('delete-1')).toBeTruthy();
+    expect(screen.queryByTestId('complete-2')).toBeNull();
+    expect(screen.queryByTestId('delete-2')).toBeNull();
+    // Строка при этом не пропала — она лишь без действий.
+    expect(within(screen.getByTestId('cell-2')).getByText('Групповая')).toBeTruthy();
+  });
+
+  it('админ группы видит кнопки на групповом дедлайне', async () => {
+    stubFetch([deadline(2, 4 * DAY, { title: 'Групповая', group_id: 42, owner_user_id: null })]);
+    renderScreen();
+
+    await screen.findByTestId('cell-2');
+    expect(screen.getByTestId('complete-2')).toBeTruthy();
+    expect(screen.getByTestId('delete-2')).toBeTruthy();
+  });
+
+  it('роль появляется после загрузки групп (до этого действий нет — не мигаем 403)', async () => {
+    // Группы грузятся отдельным запросом: пока роль неизвестна, кнопки не
+    // показываем. Это осознанно консервативно: показать и затем убрать хуже.
+    stubFetch([deadline(2, 4 * DAY, { group_id: 42, owner_user_id: null })], {
+      groups: memberGroupsPayload,
+    });
+    renderScreen();
+
+    await screen.findByTestId('cell-2');
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/v1/groups')).toBe(true));
+    expect(screen.queryByTestId('complete-2')).toBeNull();
+  });
+
+  it('ошибка мутации из списка показывается видимой строкой, а не проглатывается', async () => {
+    stubFetch([deadline(7, 3 * DAY)], { failMutation: true });
+    renderScreen();
+
+    await screen.findByTestId('complete-7');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('complete-7'));
+    });
+
+    const alert = await screen.findByTestId('action-error');
+    expect(alert.getAttribute('role')).toBe('alert');
+    expect(alert.textContent).toBe('Недостаточно прав');
+  });
+
+  it('ошибка удаления из подтверждения тоже видна', async () => {
+    stubFetch([deadline(8, 3 * DAY)], { failMutation: true });
+    renderScreen();
+
+    await screen.findByTestId('delete-8');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('delete-8'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('confirm-delete-8'));
+    });
+
+    expect((await screen.findByTestId('action-error')).textContent).toBe('Недостаточно прав');
   });
 });

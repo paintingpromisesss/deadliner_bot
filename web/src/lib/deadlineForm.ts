@@ -63,7 +63,10 @@ export interface ValidationResult {
   dueAt: Date | null;
   /** Напоминания для тела запроса. */
   reminders: ReminderInput[];
-  /** Ошибок нет вообще, включая кастомные (удобно для disabled у submit). */
+  /**
+   * Есть ли ошибки в кастомных напоминаниях (частный случай !valid: нужен,
+   * когда вызывающему важно отдельно показать сводку по этому блоку).
+   */
   reminderErrors: boolean;
 }
 
@@ -211,7 +214,10 @@ export function validateForm(
   const reminderErrors = Object.keys(errors.custom).length > 0;
 
   return {
-    valid: !errors.title && !errors.description && !errors.due && !errors.reminders,
+    // Некорректное кастомное напоминание блокирует отправку: иначе оно молча
+    // выпадает из reminders[], и пользователь получает не тот набор, что видит
+    // на экране (для группового дедлайна это ещё и расхождение с пресетами).
+    valid: !errors.title && !errors.description && !errors.due && !errors.reminders && !reminderErrors,
     errors,
     dueAt,
     reminders,

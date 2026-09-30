@@ -49,7 +49,10 @@ import {
 } from '../lib/queries';
 import { isMainButtonAvailable, showMainButton } from '../lib/tma';
 import { strings, tpl } from '../lib/strings';
+import { isGroupDeadline } from '../lib/deadlineGroups';
+import { useAuthStore } from '../stores/auth';
 import { ConfirmDialog } from './ConfirmDialog';
+import { PresetChips } from './FilterChips';
 
 interface DeadlineSheetProps {
   open: boolean;
@@ -80,9 +83,16 @@ function reminderLabel(reminder: Reminder, tz: string): string {
 }
 
 function offsetLabel(minutes: number): string {
-  if (minutes % 1440 === 0) return `за ${minutes / 1440} дн.`;
-  if (minutes % 60 === 0) return `за ${minutes / 60} ч.`;
-  return `за ${minutes} мин.`;
+  if (minutes % 1440 === 0) return tpl(strings.sheet.reminderOffsetDays, minutes / 1440);
+  if (minutes % 60 === 0) return tpl(strings.sheet.reminderOffsetHours, minutes / 60);
+  return tpl(strings.sheet.reminderOffsetMinutes, minutes);
+}
+
+/** Подпись пресета-чипа: только известные спеки-наборы (7д/3д/24ч). */
+function presetLabel(minutes: number): string {
+  if (minutes === 10080) return strings.sheet.reminderPreset7;
+  if (minutes === 4320) return strings.sheet.reminderPreset3;
+  return strings.sheet.reminderPreset24;
 }
 
 export function DeadlineSheet({
@@ -97,6 +107,15 @@ export function DeadlineSheet({
   const isEdit = deadline !== null;
   const groups = useMyGroups();
   const writable = useMemo(() => adminGroups(groups.data), [groups.data]);
+  const isSuperadmin = useAuthStore((s) => s.user?.is_superadmin ?? false);
+  // «Выполнить»/«удалить» — запись: backend проверяет её requireWrite (админ
+  // группы или супер-админ), поэтому участнику группы кнопки не показываем —
+  // иначе единственным откликом был бы 403.
+  const canAct =
+    !deadline ||
+    !isGroupDeadline(deadline) ||
+    isSuperadmin ||
+    writable.some((g) => g.group.id === deadline.group_id);
 
   const create = useCreateDeadline();
   const update = useUpdateDeadline();
@@ -129,10 +148,16 @@ export function DeadlineSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editingID, tz, initialDate]);
 
-  // Групповой дедлайн: пресеты группы включаются при выборе группы (спека §9).
+  // Групповой дедлайн: пресеты группы включаются при выборе группы (спека §9),
+  // а возврат к личному типу их чистит: иначе набор группы остался бы в форме и
+  // ушёл бы в тело POST как напоминания личного дедлайна.
   const selectedGroup = writable.find((g) => g.group.id === form.groupId);
   useEffect(() => {
-    if (isEdit || form.groupId === null) return;
+    if (isEdit) return;
+    if (form.groupId === null) {
+      setForm((prev) => (prev.presets.length === 0 ? prev : { ...prev, presets: [] }));
+      return;
+    }
     setForm((prev) => ({ ...prev, presets: presetsForGroup(selectedGroup?.group.default_presets) }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.groupId, isEdit]);
@@ -221,6 +246,10 @@ export function DeadlineSheet({
         ? { id, kind: 'custom_offset', amount: 2, unit: 'hours' }
         : { id, kind: 'custom_at', date: form.date, time: '10:00' };
     setForm((prev) => ({ ...prev, custom: [...prev.custom, item] }));
+    // Новое напоминание могло получиться некорректным с ходу (точное время в
+    // прошлом) — это действие пользователя, поэтому ошибку показываем сразу,
+    // а не после первой потери фокуса.
+    setTouched(true);
   }
 
   function updateCustom(id: string, next: Partial<CustomReminder>) {
@@ -357,33 +386,18 @@ export function DeadlineSheet({
         ) : (
           <>
             <Sectionish header={strings.sheet.remindersHeader}>
-              <div className="dl-chips" role="group" aria-label={strings.sheet.remindersHeader}>
-                {PRESET_MINUTES.map((minutes) => {
-                  const on = form.presets.includes(minutes);
-                  const label =
-                    minutes === 10080
-                      ? strings.sheet.reminderPreset7
-                      : minutes === 4320
-                        ? strings.sheet.reminderPreset3
-                        : strings.sheet.reminderPreset24;
-                  return (
-                    <button
-                      key={minutes}
-                      type="button"
-                      className="dl-chip dl-chip--button"
-                      aria-pressed={on}
-                      data-selected={on ? 'true' : 'false'}
-                      data-testid={`preset-${minutes}`}
-                      onClick={() => {
-                        setTouched(true);
-                        patchForm({ presets: togglePreset(form.presets, minutes) });
-                      }}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
+              <PresetChips
+                label={strings.sheet.remindersHeader}
+                options={PRESET_MINUTES.map((minutes) => ({
+                  minutes,
+                  label: presetLabel(minutes),
+                }))}
+                selected={form.presets}
+                onToggle={(minutes) => {
+                  setTouched(true);
+                  patchForm({ presets: togglePreset(form.presets, minutes) });
+                }}
+              />
             </Sectionish>
 
             {form.custom.map((item) => (
@@ -466,6 +480,15 @@ export function DeadlineSheet({
                 {validation.errors.reminders}
               </div>
             ) : null}
+
+            {/* Сводка по кастомным напоминаниям: сами тексты стоят у своих
+                элементов, но если их несколько, submit просто «не работает» —
+                сводка объясняет, что именно мешает отправке. */}
+            {showErrors && validation.reminderErrors ? (
+              <div className="dl-error" role="alert" data-testid="error-custom-reminders">
+                {strings.sheet.errCustomReminder}
+              </div>
+            ) : null}
           </>
         )}
 
@@ -497,7 +520,7 @@ export function DeadlineSheet({
           <div className="dl-hint">{strings.sheet.submitViaMainButton}</div>
         )}
 
-        {isEdit && deadline ? (
+        {isEdit && deadline && canAct ? (
           <>
             <Divider />
             <div className="dl-row">

@@ -10,6 +10,7 @@
 //
 // Все функции «относительного» времени принимают now параметром — иначе их
 // нельзя проверить детерминированно (границы суток, просрочка).
+import { strings } from './strings';
 
 /** Формы русских числительных: 1 день / 2 дня / 5 дней. */
 export interface PluralForms {
@@ -38,8 +39,9 @@ export function pluralizeRu(n: number, forms: PluralForms): string {
   return forms.many;
 }
 
-/** «2 дня» — число с согласованной формой. */
-export function pluralizeRuNum(n: number, forms: PluralForms): string {
+/** «2 дня» — число с согласованной формой. Внутренняя: наружу отдаётся
+ * humanDuration, который сам подбирает формы под разряд. */
+function pluralizeRuNum(n: number, forms: PluralForms): string {
   return `${n} ${pluralizeRu(n, forms)}`;
 }
 
@@ -81,9 +83,16 @@ export interface Countdown {
   duration: string;
 }
 
-/** Разбор отсчёта: до срока — 'left', после — 'overdue', в пределах минуты — 'now'. */
+/**
+ * Разбор отсчёта: до срока — 'left', после — 'overdue', в пределах минуты —
+ * 'now'. Неразобранный срок не считается просрочкой: NaN-арифметика дала бы
+ * враньё («просрочен на NaN дней») — возвращаем 'now' («срок истёк»), а сам
+ * срок в строке списка печатается прочерком (formatDueOrDash).
+ */
 export function countdownTo(due: Date | string | number, now: Date | number): Countdown {
-  const diff = toMs(due) - toMs(now);
+  const dueMs = toMs(due);
+  if (Number.isNaN(dueMs)) return { direction: 'now', duration: 'менее минуты' };
+  const diff = dueMs - toMs(now);
   if (Math.abs(diff) < MS_MINUTE) return { direction: 'now', duration: 'менее минуты' };
   return {
     direction: diff > 0 ? 'left' : 'overdue',
@@ -92,22 +101,11 @@ export function countdownTo(due: Date | string | number, now: Date | number): Co
 }
 
 /**
- * Готовая подпись отсчёта: «осталось 2 дня 3 часа» / «просрочен на 1 час» /
- * «срок истёк». Формулировки — с ключами каталога (strings.ts), здесь только
- * сборка.
+ * Подписи отсчёта живут ТОЛЬКО в каталоге строк (strings.ts:
+ * countdownLeft/countdownOverdue/countdownDue) — здесь возвращается лишь его
+ * длительность, а склейку делает вызывающий через tpl. Вторая реализация тех
+ * же формулировок в коде означала бы два источника правды для одного текста.
  */
-export function countdownLabel(due: Date | string | number, now: Date | number): string {
-  const { direction, duration } = countdownTo(due, now);
-  switch (direction) {
-    case 'left':
-      return `осталось ${duration}`;
-    case 'overdue':
-      return `просрочен на ${duration}`;
-    default:
-      return 'срок истёк';
-  }
-}
-
 function toMs(value: Date | string | number): number {
   if (value instanceof Date) return value.getTime();
   if (typeof value === 'number') return value;
@@ -207,6 +205,20 @@ export function formatDue(value: Date | string | number, tz: string): string {
   return `${formatDate(value, tz)} ${formatTime(value, tz)}`;
 }
 
+/**
+ * true, если значение вообще разбирается в мгновение. Битый due_at из DTO
+ * (null/мусор) даёт NaN, и арифметика вокруг него печатает «NaN.NaN.NaN» и
+ * «просрочен на NaN дней» — вызывающий обязан проверить это заранее.
+ */
+export function isValidInstant(value: Date | string | number): boolean {
+  return !Number.isNaN(toMs(value));
+}
+
+/** Срок или прочерк: страховка для строк списка с неразобранным due_at. */
+export function formatDueOrDash(value: Date | string | number, tz: string): string {
+  return isValidInstant(value) ? formatDue(value, tz) : strings.common.unknown;
+}
+
 /** Смещение зоны в минутах для данного мгновения (учитывает переходы DST). */
 export function tzOffsetMinutes(value: Date | string | number, tz: string): number {
   const instant = toMs(value);
@@ -226,11 +238,6 @@ export function tzAbbr(value: Date | string | number, tz: string): string {
   const hours = Math.floor(abs / 60);
   const minutes = abs % 60;
   return `UTC${sign}${hours}${minutes ? `:${pad2(minutes)}` : ''}`;
-}
-
-/** «29.09.2026 23:59 (UTC+3)». */
-export function formatDueWithTz(value: Date | string | number, tz: string): string {
-  return `${formatDue(value, tz)} (${tzAbbr(value, tz)})`;
 }
 
 /** «29 сентября» — заголовок выбранного дня в календаре. */
@@ -253,7 +260,8 @@ export function formatMonthTitle(year: number, month: number, tz: string): strin
   return `${name} ${y}`;
 }
 
-/** «29 сент.» — компактная подпись в списках дня. */
+/** «29 сент.» — компактная подпись в списках дня. Не используется экранами
+ * (там formatDue/formatDayMonth); оставлена для полноты форматного слоя. */
 export function formatDayShort(value: Date | string | number, tz: string): string {
   return formatter(tz, { day: 'numeric', month: 'short' }).format(new Date(toMs(value)));
 }
@@ -281,19 +289,28 @@ export function localDayNumber(value: Date | string | number, tz: string): numbe
 // порядок Пн..Вс не должен зависеть от настроек среды ICU.
 export const WEEKDAY_LABELS: readonly string[] = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
 
-/** Дни недели месяца в порядке Пн..Вс — индекс 0..6. */
+/** Дни недели месяца в порядке Пн..Вс — индекс 0..6.
+ * Только тесты: у экранов день недели приходит из buildMonth (calendar.ts). */
 export function weekdayIndexMondayFirst(value: Date | string | number, tz: string): number {
   const w = wallClock(value, tz);
   const dow = new Date(Date.UTC(w.year, w.month - 1, w.day)).getUTCDay(); // 0=Вс
   return (dow + 6) % 7;
 }
 
-/** true, если мгновение уже прошло (строго раньше now). */
+/**
+ * true, если мгновение уже прошло (строго раньше now).
+ * Только тесты: экраны сравнивают направления через countdownTo — эта форма
+ * нужна там, где важен голый предикат без длительности.
+ */
 export function isOverdue(due: Date | string | number, now: Date | number): boolean {
   return toMs(due) < toMs(now);
 }
 
-/** true, если срок попадает в текущие календарные сутки пользователя. */
+/**
+ * true, если срок попадает в текущие календарные сутки пользователя.
+ * Только тесты: сегментация экрана идёт через localDayNumber в
+ * deadlineGroups.segmentize.
+ */
 export function isToday(due: Date | string | number, tz: string, now: Date | number): boolean {
   return localDayNumber(due, tz) === localDayNumber(now, tz);
 }
@@ -301,7 +318,7 @@ export function isToday(due: Date | string | number, tz: string, now: Date | num
 /**
  * true, если срок — «в пределах 7 дней»: завтра..+6 суток включительно.
  * Сегодняшние дедлайны принадлежат сегменту «Сегодня», а не «7 дней», поэтому
- * окно начинается со следующих суток.
+ * окно начинается со следующих суток. Только тесты — см. isToday.
  */
 export function isThisWeek(due: Date | string | number, tz: string, now: Date | number): boolean {
   const diff = localDayNumber(due, tz) - localDayNumber(now, tz);

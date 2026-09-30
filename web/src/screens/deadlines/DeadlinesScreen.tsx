@@ -18,15 +18,16 @@ import {
   SEGMENTS,
   SCOPE_FILTERS,
   filterByScope,
+  isGroupDeadline,
   nearestDeadline,
   onlyActive,
   segmentize,
   type ScopeFilter,
   type Segment,
 } from '../../lib/deadlineGroups';
-import { asDeadlines, groupSlugMap, useAllDeadlines, useCompleteDeadline, useDeleteDeadline, useMyGroups } from '../../lib/queries';
+import { asDeadlines, adminGroups, groupSlugMap, useAllDeadlines, useCompleteDeadline, useDeleteDeadline, useMyGroups } from '../../lib/queries';
 import type { Deadline } from '../../lib/deadlines';
-import { hapticImpact } from '../../lib/tma';
+import { hapticImpact, hapticNotification } from '../../lib/tma';
 import { strings, tpl } from '../../lib/strings';
 
 const SCOPE_LABELS: Record<ScopeFilter, string> = {
@@ -50,6 +51,9 @@ export function DeadlinesScreen() {
   // Удаление из списка подтверждается: это необратимое действие (soft delete),
   // случайный тап по строке в списке не должен стирать дедлайн.
   const [pendingDelete, setPendingDelete] = useState<Deadline | null>(null);
+  // Ошибка мутации из списка (выполнить/удалить): без неё 403 от backend
+  // выглядел бы как «ничего не произошло» — ни строки, ни отклика.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const now = useMinuteTick();
   const query = useAllDeadlines();
@@ -57,6 +61,35 @@ export function DeadlinesScreen() {
   const slugs = useMemo(() => groupSlugMap(groups.data), [groups.data]);
   const complete = useCompleteDeadline();
   const remove = useDeleteDeadline();
+
+  const isSuperadmin = useAuthStore((s) => s.user?.is_superadmin ?? false);
+
+  // Групповые дедлайны правит только админ группы или супер-админ (backend
+  // requireWrite), так что участнику кнопки не показываем вовсе: иначе
+  // единственным откликом был бы 403. Личные дедлайны доступны владельцу.
+  const writableGroupIDs = useMemo(
+    () => new Set(adminGroups(groups.data).map((g) => g.group.id)),
+    [groups.data],
+  );
+  // Роль грузится вместе с группами (useMyGroups). До ответа действий на
+  // групповых дедлайнах не показываем: мигнуть кнопкой и убрать её хуже, чем
+  // показать её с задержкой — пользователь либо уже админ, либо никогда им не
+  // был в этой группе.
+  const canWrite = (deadline: Deadline) =>
+    !isGroupDeadline(deadline) ||
+    isSuperadmin ||
+    writableGroupIDs.has(deadline.group_id as number);
+
+  /** Мутация из списка: ошибку показываем строкой над списком, не глотаем. */
+  async function runAction(fn: () => Promise<unknown>) {
+    setActionError(null);
+    try {
+      await fn();
+    } catch (e) {
+      hapticNotification('error');
+      setActionError(e instanceof Error ? e.message : strings.deadlines.actionFailed);
+    }
+  }
 
   const all = asDeadlines(query.data);
   // Фильтр/сегменты/hero считаются по активным: выполненные и архивные в
@@ -135,6 +168,11 @@ export function DeadlinesScreen() {
                 />
               ) : (
                 <List>
+                  {actionError ? (
+                    <div className="dl-error" role="alert" data-testid="action-error">
+                      {actionError}
+                    </div>
+                  ) : null}
                   {SEGMENTS.map((segment) => {
                     const items = segmented[segment];
                     if (items.length === 0) return null;
@@ -153,28 +191,30 @@ export function DeadlinesScreen() {
                             now={now}
                             onSelect={openEdit}
                             actions={
-                              <>
-                                <button
-                                  type="button"
-                                  className="dl-action"
-                                  title={strings.deadlines.complete}
-                                  aria-label={strings.deadlines.complete}
-                                  data-testid={`complete-${deadline.id}`}
-                                  onClick={() => void complete.mutateAsync(deadline.id)}
-                                >
-                                  ✓
-                                </button>
-                                <button
-                                  type="button"
-                                  className="dl-action dl-danger"
-                                  title={strings.sheet.actionDelete}
-                                  aria-label={strings.sheet.actionDelete}
-                                  data-testid={`delete-${deadline.id}`}
-                                  onClick={() => setPendingDelete(deadline)}
-                                >
-                                  ✕
-                                </button>
-                              </>
+                              canWrite(deadline) ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="dl-action"
+                                    title={strings.deadlines.complete}
+                                    aria-label={strings.deadlines.complete}
+                                    data-testid={`complete-${deadline.id}`}
+                                    onClick={() => void runAction(() => complete.mutateAsync(deadline.id))}
+                                  >
+                                    ✓
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="dl-action dl-danger"
+                                    title={strings.sheet.actionDelete}
+                                    aria-label={strings.sheet.actionDelete}
+                                    data-testid={`delete-${deadline.id}`}
+                                    onClick={() => setPendingDelete(deadline)}
+                                  >
+                                    ✕
+                                  </button>
+                                </>
+                              ) : undefined
                             }
                           />
                         ))}
@@ -225,7 +265,7 @@ export function DeadlinesScreen() {
             onConfirm={() => {
               const target = pendingDelete;
               setPendingDelete(null);
-              if (target) void remove.mutateAsync(target.id);
+              if (target) void runAction(() => remove.mutateAsync(target.id));
             }}
             onCancel={() => setPendingDelete(null)}
           />

@@ -9,7 +9,6 @@ import {
   createDeadline,
   deleteDeadline,
   fetchDeadlines,
-  fetchGroupDeadlines,
   updateDeadline,
 } from './deadlines';
 
@@ -96,12 +95,6 @@ describe('эндпоинты дедлайнов', () => {
     expect(list[0].id).toBe(5);
     expect(calls[0].url).toBe('/api/v1/me/deadlines?status=active&scope=all');
     expect(calls[0].auth).toBe('Bearer tok');
-  });
-
-  it('fetchGroupDeadlines: GET /groups/{id}/deadlines', async () => {
-    stubFetch(() => json(200, []));
-    await fetchGroupDeadlines(42, { from: '2026-09-01T00:00:00Z' });
-    expect(calls[0].url).toBe('/api/v1/groups/42/deadlines?from=2026-09-01T00%3A00%3A00Z');
   });
 
   it('createDeadline: POST /deadlines с телом в snake_case', async () => {

@@ -15,6 +15,7 @@ import { addMonths, buildMonth, dayKey, dayNumber, monthBounds, type MonthDay } 
 import {
   formatDayMonth,
   formatMonthTitle,
+  fromWallClock,
   localToday,
   toDateInputValue,
   WEEKDAY_LABELS,
@@ -64,14 +65,17 @@ export function CalendarScreen() {
   }
 
   const selectedDayDeadlines = selected === null ? [] : (byDay.get(selected) ?? []);
-  // Полдень UTC выбранной календарной даты: подпись дня и предзаполнение формы
-  // не могут «уехать» на соседние сутки (сдвиг зоны кратен часам).
+  // Мгновение выбранного дня — в tz пользователя (noon UTC тут не годится:
+  // для UTC+12/+13 он приходится на следующее число, и подпись дня с
+  // предзаполнением формы уезжали на сутки вперёд от подсвеченной ячейки).
+  // Полдень настенного времени берём как «нейтральную» точку суток — так же,
+  // как это делает форма при разборе date/time.
   const selectedDate = useMemo(() => {
     if (selected === null) return null;
     const day = grid.weeks.flat().find((d) => dayNumber(d.year, d.month, d.day) === selected);
     if (!day) return null;
-    return new Date(Date.UTC(day.year, day.month - 1, day.day, 12));
-  }, [selected, grid]);
+    return fromWallClock(dayKey(day), '12:00', tz);
+  }, [selected, grid, tz]);
 
   function openCreate() {
     setEditing(null);

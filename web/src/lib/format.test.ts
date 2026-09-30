@@ -8,13 +8,12 @@ import {
   DAY_FORMS,
   HOUR_FORMS,
   MINUTE_FORMS,
-  countdownLabel,
   countdownTo,
   formatDate,
   formatDayMonth,
   formatDayShort,
   formatDue,
-  formatDueWithTz,
+  formatDueOrDash,
   formatMonthTitle,
   formatTime,
   fromWallClock,
@@ -22,6 +21,7 @@ import {
   isOverdue,
   isThisWeek,
   isToday,
+  isValidInstant,
   localDayKey,
   localDayNumber,
   pluralizeRu,
@@ -111,26 +111,41 @@ describe('humanDuration', () => {
   });
 });
 
-describe('countdownTo / countdownLabel', () => {
+describe('countdownTo', () => {
   const now = new Date('2026-09-29T12:00:00Z');
 
   it('до срока — left', () => {
     const c = countdownTo('2026-10-01T15:00:00Z', now);
     expect(c.direction).toBe('left');
     expect(c.duration).toBe('2 дня 3 часа');
-    expect(countdownLabel('2026-10-01T15:00:00Z', now)).toBe('осталось 2 дня 3 часа');
   });
 
   it('после срока — overdue', () => {
     const c = countdownTo('2026-09-29T11:00:00Z', now);
     expect(c.direction).toBe('overdue');
     expect(c.duration).toBe('1 час');
-    expect(countdownLabel('2026-09-29T11:00:00Z', now)).toBe('просрочен на 1 час');
   });
 
   it('в пределах минуты — срок истёк (без «просрочен на менее минуты»)', () => {
     expect(countdownTo('2026-09-29T12:00:30Z', now).direction).toBe('now');
-    expect(countdownLabel('2026-09-29T12:00:30Z', now)).toBe('срок истёк');
+  });
+
+  it('битый срок не считается просрочкой (иначе было бы «просрочен на NaN дней»)', () => {
+    expect(countdownTo('мусор', now).direction).toBe('now');
+    expect(countdownTo('', now).direction).toBe('now');
+  });
+});
+
+describe('formatDueOrDash: страховка от неразобранного срока', () => {
+  it('валидный срок форматируется как formatDue', () => {
+    expect(formatDueOrDash('2026-09-29T20:59:00Z', MSK)).toBe('29.09.2026 23:59');
+    expect(isValidInstant('2026-09-29T20:59:00Z')).toBe(true);
+  });
+
+  it('мусор даёт прочерк, а не «NaN.NaN.NaN NaN:NaN»', () => {
+    expect(formatDueOrDash('мусор', MSK)).toBe('—');
+    expect(formatDueOrDash('', MSK)).toBe('—');
+    expect(isValidInstant('мусор')).toBe(false);
   });
 });
 
@@ -174,8 +189,9 @@ describe('смещение и подпись зоны', () => {
     expect(tzAbbr(instant, 'Asia/Kolkata')).toBe('UTC+5:30');
   });
 
-  it('formatDueWithTz добавляет подпись зоны', () => {
-    expect(formatDueWithTz('2026-09-29T20:59:00Z', MSK)).toBe('29.09.2026 23:59 (UTC+3)');
+  it('formatDate/formatTime дают тот же срок, что formatDue', () => {
+    const value = '2026-09-29T20:59:00Z';
+    expect(`${formatDate(value, MSK)} ${formatTime(value, MSK)}`).toBe(formatDue(value, MSK));
   });
 });
 

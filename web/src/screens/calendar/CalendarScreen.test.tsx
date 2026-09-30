@@ -86,6 +86,12 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date(NOW_ISO));
   configureAuth({ getToken: () => 'tok', getInitData: () => null, canReauth: () => true });
+  setAuthUser(MSK);
+  stubFetch();
+});
+
+/** Пользователь с указанным tz: от него зависят и границы месяца, и сетка дня. */
+function setAuthUser(tz: string) {
   useAuthStore.setState({
     status: 'authed',
     token: 'tok',
@@ -94,13 +100,12 @@ beforeEach(() => {
       telegram_id: 42,
       username: 'durov',
       first_name: 'Pavel',
-      tz: MSK,
+      tz,
       dm_notify_default: true,
       is_superadmin: false,
     },
   });
-  stubFetch();
-});
+}
 
 afterEach(() => {
   cleanup();
@@ -306,5 +311,61 @@ describe('CalendarScreen: выбор дня', () => {
 
     await screen.findByTestId('deadline-sheet');
     expect((screen.getByTestId('field-date') as HTMLInputElement).value).toBe('2026-09-15');
+  });
+});
+
+// Полдень UTC как «якорь» выбранного дня ломается в зонах UTC+12/+13: он
+// приходится на следующее число, и подпись дня с предзаполнением формы уезжали
+// на сутки вперёд от подсвеченной ячейки. Матрица зон пиннит это поведение.
+describe.each([
+  ['Europe/Moscow', '+3', '15 сентября'],
+  ['Asia/Kamchatka', '+12', '15 сентября'],
+  ['Pacific/Auckland', '+13', '15 сентября'],
+  ['Asia/Yakutsk', '+9', '15 сентября'],
+  ['Pacific/Honolulu', '-10', '15 сентября'],
+])('CalendarScreen: выбранный день в tz %s (%s)', (tz, _offset, dayTitle) => {
+  it('подсветка дня, заголовок списка и предзаполнение формы совпадают', async () => {
+    setAuthUser(tz);
+    deadlinesPayload = [];
+    renderScreen();
+
+    await screen.findByTestId('cal-title');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('day-2026-09-15'));
+    });
+
+    // Подсвечена ровно та ячейка, по которой тапнули...
+    expect(screen.getByTestId('day-2026-09-15').getAttribute('data-selected')).toBe('true');
+    // ...заголовок дня её подтверждает...
+    expect(screen.getByText(dayTitle)).toBeTruthy();
+    expect(screen.queryByText('16 сентября')).toBeNull();
+
+    // ...и форма предзаполнена той же календарной датой.
+    const add = await screen.findByTestId('day-add');
+    await act(async () => {
+      fireEvent.click(add);
+    });
+    await screen.findByTestId('deadline-sheet');
+    expect((screen.getByTestId('field-date') as HTMLInputElement).value).toBe('2026-09-15');
+  });
+
+  it('границы месяца запрашиваются в этой же зоне', async () => {
+    setAuthUser(tz);
+    renderScreen();
+    await waitFor(() => expect(lastListUrl()).not.toBe(''));
+
+    // Начало месяца в настенном времени tz: 00:00 первого числа.
+    const from = new Date(decodeURIComponent(lastListUrl()).match(/from=([^&]+)/)![1]).toISOString();
+    const local = new Intl.DateTimeFormat('ru-RU', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+      timeZone: tz,
+    }).format(new Date(from));
+    expect(local.slice(0, 10)).toBe('01.09.2026');
+    expect(local.slice(12)).toBe('00:00');
   });
 });

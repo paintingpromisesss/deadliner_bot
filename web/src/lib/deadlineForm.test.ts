@@ -228,14 +228,15 @@ describe('validateForm: напоминания', () => {
   });
 
   it('отступ меньше 5 минут — ошибка', () => {
+    // Пресет с отступом <5 минут до backend не доходит вовсе: форма не даёт
+    // его «включить» — он просто не попадает в reminders[]. Для личного
+    // дедлайна это не блокирует отправку (набор напоминаний необязателен).
     const form = emptyForm({
       title: 'X',
       presets: [1],
       ...due,
     });
     const res = validateForm(form, MSK, NOW);
-    // Такой пресет не попадает в reminders вовсе, значит их 0; для личного
-    // дедлайна это допустимо, но невалидный отступ отсеивается молча.
     expect(res.reminders).toEqual([]);
 
     const custom = emptyForm({
@@ -245,6 +246,28 @@ describe('validateForm: напоминания', () => {
     });
     // 1 час = 60 минут ≥ 5 → валидно.
     expect(validateForm(custom, MSK, NOW).valid).toBe(true);
+  });
+
+  it('некорректное кастомное напоминание блокирует отправку (не выпадает молча)', () => {
+    // Раньше такой элемент молча выпадал из reminders[], и форма отправлялась
+    // с набором, отличным от показанного на экране. Теперь это ошибка.
+    const valid = emptyForm({
+      title: 'X',
+      custom: [{ id: 'c1', kind: 'custom_offset', amount: 1, unit: 'days' }],
+      ...due,
+    });
+    // 0 часов = 0 минут < 5 → ошибка у элемента, отправка заблокирована.
+    const zero = emptyForm({
+      title: 'X',
+      custom: [{ id: 'c1', kind: 'custom_offset', amount: 0, unit: 'hours' }],
+      ...due,
+    });
+    const res = validateForm(zero, MSK, NOW);
+    expect(res.errors.custom.c1).toBe(strings.sheet.errReminderOffset);
+    expect(res.reminderErrors).toBe(true);
+    expect(res.valid).toBe(false);
+    // Корректный набор с кастомным отступом по-прежнему валиден.
+    expect(validateForm(valid, MSK, NOW).valid).toBe(true);
   });
 
   it('больше 10 напоминаний — ошибка', () => {

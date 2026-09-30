@@ -98,16 +98,6 @@ export function fetchDeadlines(params: ListParams = {}): Promise<Deadline[]> {
   return apiFetch<Deadline[]>(`/me/deadlines${buildListQuery(params)}`, { signal: params.signal });
 }
 
-/** GET /groups/{id}/deadlines?from&to&status → [deadline]. */
-export function fetchGroupDeadlines(
-  groupID: number,
-  params: ListParams = {},
-): Promise<Deadline[]> {
-  return apiFetch<Deadline[]>(`/groups/${groupID}/deadlines${buildListQuery(params)}`, {
-    signal: params.signal,
-  });
-}
-
 /** GET /deadlines/{id} → {deadline, reminders}. */
 export function fetchDeadline(id: number): Promise<DeadlineView> {
   return apiFetch<DeadlineView>(`/deadlines/${id}`);

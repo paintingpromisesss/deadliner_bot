@@ -8,10 +8,24 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Card, Cell } from '@telegram-apps/telegram-ui';
-import { countdownTo, formatDue } from '../lib/format';
+import { countdownTo, formatDueOrDash, isValidInstant } from '../lib/format';
 import { isGroupDeadline } from '../lib/deadlineGroups';
 import type { Deadline } from '../lib/deadlines';
 import { strings, tpl } from '../lib/strings';
+
+/**
+ * Подпись обратного отсчёта. Неразобранный срок (битый DTO) — это «срок истёк»,
+ * а не «просрочен на NaN дней»: враньё в интерфейсе хуже отсутствия числа.
+ * Формулировки — из каталога строк, здесь только выбор ключа.
+ */
+function countdownText(due: Date | string | number, now: Date): string {
+  if (!isValidInstant(due)) return strings.deadlines.countdownDue;
+  const countdown = countdownTo(due, now);
+  if (countdown.direction === 'now') return strings.deadlines.countdownDue;
+  return countdown.direction === 'left'
+    ? tpl(strings.deadlines.countdownLeft, countdown.duration)
+    : tpl(strings.deadlines.countdownOverdue, countdown.duration);
+}
 
 /** Мгновение «сейчас» с обновлением раз в минуту (для обратного отсчёта). */
 export function useMinuteTick(): Date {
@@ -43,8 +57,7 @@ interface DeadlineHeroProps {
  * в Wallet). Просроченный дедлайн — destructive-цвет.
  */
 export function DeadlineHero({ deadline, tz, groupSlug, now, onOpen }: DeadlineHeroProps) {
-  const countdown = countdownTo(deadline.due_at, now);
-  const overdue = countdown.direction === 'overdue';
+  const overdue = isValidInstant(deadline.due_at) && countdownTo(deadline.due_at, now).direction === 'overdue';
 
   return (
     <div className="dl-hero">
@@ -60,17 +73,13 @@ export function DeadlineHero({ deadline, tz, groupSlug, now, onOpen }: DeadlineH
           className={overdue ? 'dl-hero__due dl-hero__due--overdue' : 'dl-hero__due'}
           data-testid="hero-due"
         >
-          {formatDue(deadline.due_at, tz)}
+          {formatDueOrDash(deadline.due_at, tz)}
         </div>
         <div
           className={overdue ? 'dl-countdown dl-countdown--overdue' : 'dl-countdown'}
           data-testid="hero-countdown"
         >
-          {countdown.direction === 'now'
-            ? strings.deadlines.countdownDue
-            : countdown.direction === 'left'
-              ? tpl(strings.deadlines.countdownLeft, countdown.duration)
-              : tpl(strings.deadlines.countdownOverdue, countdown.duration)}
+          {countdownText(deadline.due_at, now)}
         </div>
       </Card>
       {onOpen ? (
@@ -102,8 +111,9 @@ export function DeadlineCell({
   onSelect,
   actions,
 }: DeadlineCellProps) {
-  const overdue = countdownTo(deadline.due_at, now).direction === 'overdue';
-  const subtitle = `${scopeLabel(deadline, groupSlug)} · ${formatDue(deadline.due_at, tz)}`;
+  const overdue =
+    isValidInstant(deadline.due_at) && countdownTo(deadline.due_at, now).direction === 'overdue';
+  const subtitle = `${scopeLabel(deadline, groupSlug)} · ${formatDueOrDash(deadline.due_at, tz)}`;
 
   return (
     <div

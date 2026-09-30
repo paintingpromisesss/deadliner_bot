@@ -5,12 +5,13 @@
 // Сеть мокается на уровне fetch (как в auth.test.ts) — проверяем реальный путь
 // apiFetch → TanStack Query → компонент.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppRoot } from '@telegram-apps/telegram-ui';
 
 import { DeadlineSheet } from './DeadlineSheet';
 import { configureAuth } from '../lib/api';
+import { useAuthStore } from '../stores/auth';
 import type { Deadline } from '../lib/deadlines';
 
 const MSK = 'Europe/Moscow';
@@ -105,6 +106,19 @@ function field(testId: string): HTMLInputElement {
 beforeEach(() => {
   calls = [];
   configureAuth({ getToken: () => 'token', getInitData: () => 'init', canReauth: () => true });
+  useAuthStore.setState({
+    status: 'authed',
+    token: 'token',
+    user: {
+      id: 1,
+      telegram_id: 42,
+      username: 'durov',
+      first_name: 'Pavel',
+      tz: MSK,
+      dm_notify_default: true,
+      is_superadmin: false,
+    },
+  });
   stubFetch((call) => {
     if (call.url.startsWith('/api/v1/groups')) return jsonResponse(200, groupsPayload);
     return undefined;
@@ -130,7 +144,7 @@ describe('DeadlineSheet: валидация и отправка', () => {
     expect(screen.queryByTestId('error-title')).toBeNull();
   });
 
-  it('без заголовка на клик по кнопке всплывает инлайн-ошибка (кнопка disabled — жмём форму)', async () => {
+  it('на blur пустого заголовка всплывает инлайн-ошибка (кнопка disabled — жмём не форму)', async () => {
     renderSheet();
     // Нативный disabled не даёт отправить: состояние ошибки показывается после
     // первого взаимодействия с полем (touched) — проверяем этот путь.
@@ -219,6 +233,25 @@ describe('DeadlineSheet: группы и пресеты', () => {
     fireEvent.click(screen.getByTestId('preset-1440'));
 
     expect(await screen.findByTestId('error-reminders')).toBeTruthy();
+  });
+
+  it('возврат к личному типу очищает пресеты группы', async () => {
+    renderSheet();
+    await screen.findByText(/М8О-401Б-23/);
+
+    fireEvent.change(field('field-group'), { target: { value: '42' } });
+    await waitFor(() => {
+      expect(screen.getByTestId('preset-10080').getAttribute('data-selected')).toBe('true');
+    });
+
+    // Личный: пресеты группы в форме остаться не должны — иначе они ушли бы в
+    // тело POST как напоминания личного дедлайна.
+    fireEvent.change(field('field-group'), { target: { value: '' } });
+    await waitFor(() => {
+      expect(screen.getByTestId('preset-10080').getAttribute('data-selected')).toBe('false');
+    });
+    expect(screen.getByTestId('preset-1440').getAttribute('data-selected')).toBe('false');
+    expect(screen.queryByTestId('error-reminders')).toBeNull();
   });
 });
 
@@ -324,6 +357,56 @@ describe('DeadlineSheet: режим правки', () => {
     expect(await screen.findByTestId('error-submit')).toBeTruthy();
     expect(screen.getByTestId('error-submit').textContent).toBe('Срок в прошлом');
   });
+
+  it('участник группы не видит «выполнить»/«удалить» у группового дедлайна', async () => {
+    const groupDeadline = { ...deadlineFixture, group_id: 42, owner_user_id: null };
+    stubFetch((call) => {
+      if (call.url.startsWith('/api/v1/groups')) {
+        return jsonResponse(200, [{ ...groupsPayload[0], role: 'member' }]);
+      }
+      if (call.url === '/api/v1/deadlines/5') {
+        return jsonResponse(200, { deadline: groupDeadline, reminders: [] });
+      }
+      return undefined;
+    });
+    renderSheet({ deadline: groupDeadline as Deadline });
+
+    // Поля заполнены, но действий записи в форме нет: backend ответил бы 403
+    // (requireWrite — только админ группы).
+    await waitFor(() => expect(field('field-title').value).toBe('Курсовая'));
+    expect(screen.queryByTestId('sheet-complete')).toBeNull();
+    expect(screen.queryByTestId('sheet-delete')).toBeNull();
+  });
+
+  it('супер-админ видит действия и в чужой группе', async () => {
+    const groupDeadline = { ...deadlineFixture, group_id: 42, owner_user_id: null };
+    stubFetch((call) => {
+      if (call.url.startsWith('/api/v1/groups')) {
+        return jsonResponse(200, [{ ...groupsPayload[0], role: 'member' }]);
+      }
+      if (call.url === '/api/v1/deadlines/5') {
+        return jsonResponse(200, { deadline: groupDeadline, reminders: [] });
+      }
+      return undefined;
+    });
+    useAuthStore.setState({
+      status: 'authed',
+      token: 'token',
+      user: {
+        id: 1,
+        telegram_id: 42,
+        username: 'root',
+        first_name: 'Root',
+        tz: MSK,
+        dm_notify_default: true,
+        is_superadmin: true,
+      },
+    });
+    renderSheet({ deadline: groupDeadline as Deadline });
+
+    expect(await screen.findByTestId('sheet-complete')).toBeTruthy();
+    expect(screen.getByTestId('sheet-delete')).toBeTruthy();
+  });
 });
 
 describe('DeadlineSheet: напоминания в режиме правки', () => {
@@ -380,5 +463,39 @@ describe('DeadlineSheet: напоминания в режиме правки', (
     renderSheet({ deadline: deadlineFixture });
 
     expect(await screen.findByText('Напоминаний нет')).toBeTruthy();
+  });
+});
+
+describe('DeadlineSheet: кастомные напоминания', () => {
+  it('некорректное кастомное напоминание видно в форме и блокирует submit', async () => {
+    const { container } = renderSheet();
+    fireEvent.change(field('field-title'), { target: { value: 'Задача' } });
+    const future = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+    fireEvent.change(field('field-date'), { target: { value: future } });
+
+    // До добавления напоминаний форма валидна (личный дедлайн).
+    const submit = (await screen.findByTestId('sheet-submit')) as HTMLButtonElement;
+    await waitFor(() => expect(submit.disabled).toBe(false));
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('add-reminder'));
+    });
+
+    // Отступ 0 часов даёт 0 минут — меньше минимума (5): раньше такой элемент
+    // молча выпадал из тела запроса, теперь это видимая ошибка, а отправка
+    // заблокирована.
+    const custom = () => container.querySelector('.dl-custom') as HTMLElement;
+    const amount = custom().querySelector('input[type="number"]') as HTMLInputElement;
+    fireEvent.change(amount, { target: { value: '0' } });
+
+    expect(await screen.findByTestId('error-custom-reminders')).toBeTruthy();
+    expect(submit.disabled).toBe(true);
+
+    // Удаляем некорректное напоминание — ошибка уходит, submit снова доступен.
+    await act(async () => {
+      fireEvent.click(within(custom()).getByText('Удалить напоминание'));
+    });
+    await waitFor(() => expect(screen.queryByTestId('error-custom-reminders')).toBeNull());
+    expect(submit.disabled).toBe(false);
   });
 });

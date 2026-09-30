@@ -178,3 +178,356 @@ body {
   text-overflow: ellipsis;
   max-width: 100%;
 }
+
+/* --- Дедлайны: hero-карточка, чипы, cell-действия, FAB --------------------- */
+
+/* Hero-карточка «ближайший дедлайн» (спека §9: как баланс в Wallet). */
+.dl-hero {
+  position: relative;
+  padding: 8px 16px 12px;
+}
+
+.dl-hero__card {
+  padding: 16px;
+}
+
+.dl-hero__label {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--tgui--hint_color);
+}
+
+.dl-hero__title {
+  margin-top: 2px;
+  font-size: 20px;
+  line-height: 26px;
+  font-weight: 600;
+}
+
+.dl-hero__scope {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--tgui--subtitle_text_color, var(--tgui--hint_color));
+}
+
+/* Крупная дата — фокус карточки (аналог баланса). */
+.dl-hero__due {
+  margin-top: 12px;
+  font-size: 32px;
+  line-height: 38px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.dl-hero__due--overdue {
+  color: var(--tgui--destructive_text_color);
+}
+
+.dl-countdown {
+  margin-top: 4px;
+  font-size: 15px;
+  line-height: 20px;
+  color: var(--tgui--link_color);
+}
+
+.dl-countdown--overdue {
+  color: var(--tgui--destructive_text_color);
+}
+
+/* Прозрачная кнопка поверх карточки: делает всю hero-область кликабельной,
+   не мешая выделению текста внутри самой карточки. */
+.dl-hero__overlay {
+  position: absolute;
+  inset: 8px 16px 12px;
+  border: 0;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+  border-radius: 16px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.dl-hero__overlay:focus-visible {
+  outline: 2px solid var(--tgui--link_color);
+  outline-offset: 2px;
+}
+
+/* Чипы-фильтры и пресеты: горизонтальная прокрутка без переноса строк. */
+.dl-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 16px 8px;
+}
+
+.dl-filters {
+  padding-top: 4px;
+}
+
+.dl-chip {
+  cursor: pointer;
+  border: 0;
+  font: inherit;
+}
+
+.dl-chip[data-selected='true'] {
+  outline: 1px solid var(--tgui--link_color);
+}
+
+.dl-chip--button {
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-size: 14px;
+  background: var(--tgui--secondary_bg_color);
+  color: var(--tgui--text_color);
+}
+
+.dl-chip--button[data-selected='true'] {
+  background: var(--tgui--button_color, var(--tgui--link_color));
+  color: var(--tgui--button_text_color, #fff);
+}
+
+/* Строка списка + кнопки действий (выполнить/удалить). */
+.dl-cell-wrap {
+  display: flex;
+  align-items: center;
+}
+
+.dl-cell-wrap > .dl-cell-button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dl-cell--overdue {
+  color: var(--tgui--destructive_text_color);
+}
+
+.dl-cell-actions {
+  display: flex;
+  gap: 4px;
+  padding-right: 12px;
+}
+
+.dl-action {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  padding: 10px 8px;
+  border-radius: 10px;
+  color: var(--tgui--hint_color);
+}
+
+.dl-action:hover {
+  background: var(--tgui--secondary_bg_color);
+}
+
+.dl-action.dl-danger {
+  color: var(--tgui--destructive_text_color);
+}
+
+/* Круглая FAB «+» (спека §9), над таб-баром и с учётом safe-area. */
+.dl-fab {
+  position: fixed;
+  right: 16px;
+  bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+  z-index: 11;
+  width: 56px;
+  height: 56px;
+  border: 0;
+  border-radius: 50%;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--tgui--button_text_color, #fff);
+  background: var(--tgui--button_color, var(--tgui--link_color));
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.24);
+}
+
+/* --- Календарь ------------------------------------------------------------- */
+
+.dl-cal {
+  padding: 0 12px 8px;
+}
+
+.dl-cal__nav {
+  display: grid;
+  grid-template-columns: 40px 1fr 40px;
+  align-items: center;
+  padding: 4px 0 8px;
+}
+
+.dl-cal__nav-button {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 24px;
+  line-height: 1;
+  padding: 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--tgui--link_color);
+}
+
+.dl-cal__nav-title {
+  text-align: center;
+  font-size: 17px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.dl-cal__grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.dl-cal__weekday {
+  text-align: center;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--tgui--hint_color);
+}
+
+.dl-cal__day {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+  border-radius: 10px;
+  color: var(--tgui--text_color);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Дни соседних месяцев — приглушённые, но кликабельные (перелистывают месяц). */
+.dl-cal__day[data-outside='true'] {
+  color: var(--tgui--hint_color);
+  opacity: 0.6;
+}
+
+.dl-cal__day[data-today='true'] {
+  font-weight: 700;
+  color: var(--tgui--link_color);
+}
+
+.dl-cal__day[data-selected='true'] {
+  background: var(--tgui--button_color, var(--tgui--link_color));
+  color: var(--tgui--button_text_color, #fff);
+}
+
+/* Точка-маркер: есть дедлайны на дне. */
+.dl-cal__dot {
+  position: absolute;
+  bottom: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--tgui--link_color);
+}
+
+.dl-cal__day[data-selected='true'] .dl-cal__dot {
+  background: var(--tgui--button_text_color, #fff);
+}
+
+/* --- Bottom sheet формы --------------------------------------------------- */
+
+.dl-sheet {
+  padding: 4px 0 16px;
+}
+
+.dl-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 16px 8px;
+}
+
+.dl-sheet-header__title {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.dl-sheet-header__close {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  padding: 8px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--tgui--hint_color);
+}
+
+.dl-section-block {
+  padding-top: 8px;
+}
+
+.dl-section-header {
+  padding: 8px 16px 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--tgui--hint_color);
+}
+
+/* Пара «дата + время» в одну строку; на узких экранах — друг под другом. */
+.dl-due-row {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+
+.dl-due-row > * {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.dl-custom {
+  border-top: 1px solid var(--tgui--divider_color, rgba(128, 128, 128, 0.2));
+  padding-top: 4px;
+}
+
+.dl-error {
+  padding: 0 16px 8px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--tgui--destructive_text_color);
+}
+
+.dl-hint {
+  padding: 4px 16px 8px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--tgui--hint_color);
+}
+
+.dl-reminders {
+  padding: 4px 0 8px;
+}
+
+.dl-reminders__list {
+  margin: 0;
+  padding: 0 16px;
+  list-style: none;
+}
+
+.dl-reminders__list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 14px;
+  border-bottom: 1px solid var(--tgui--divider_color, rgba(128, 128, 128, 0.15));
+}

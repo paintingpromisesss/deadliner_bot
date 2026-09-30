@@ -10,8 +10,10 @@ import {
   hapticImpact,
   hapticNotification,
   initTMA,
+  isMainButtonAvailable,
   platformFromLaunchParams,
   resetTMAInit,
+  showMainButton,
 } from './tma';
 
 describe('tma.ts вне Telegram', () => {
@@ -42,6 +44,15 @@ describe('tma.ts вне Telegram', () => {
   it('haptics — тихий no-op', () => {
     expect(() => hapticImpact('medium')).not.toThrow();
     expect(() => hapticNotification('error')).not.toThrow();
+  });
+
+  it('MainButton вне Telegram недоступна, showMainButton возвращает безопасный no-op', () => {
+    // Вне Telegram форма обязана показать собственную кнопку submit — значит
+    // признак доступности должен быть false, а очистка — вызываемой.
+    expect(isMainButtonAvailable()).toBe(false);
+    const cleanup = showMainButton({ text: 'Создать', onClick: () => {} });
+    expect(typeof cleanup).toBe('function');
+    expect(() => cleanup()).not.toThrow();
   });
 });
 

@@ -7,7 +7,9 @@ import { getPlatform, hasInitData } from './lib/tma';
 import { useAuthStore } from './stores/auth';
 import { routeName, useRoute } from './router';
 import { TabBar } from './components/TabBar';
-import { CalendarScreen, DeadlinesScreen, GroupsScreen } from './screens/placeholders';
+import { CalendarScreen } from './screens/calendar/CalendarScreen';
+import { DeadlinesScreen } from './screens/deadlines/DeadlinesScreen';
+import { GroupsScreen } from './screens/placeholders';
 import { SettingsScreen } from './screens/SettingsScreen';
 
 const queryClient = new QueryClient({
@@ -20,7 +22,7 @@ const queryClient = new QueryClient({
   },
 });
 
-/** Экраны Task 13: рабочий settings + заглушки под задачи 14–15. */
+/** Экраны Task 13–15: settings, дедлайны и календарь; заглушка — группы (Task 15). */
 function Routes() {
   const route = useRoute();
   switch (routeName(route)) {

@@ -8,6 +8,7 @@ import {
   hapticFeedback,
   initData,
   isTMA,
+  mainButton,
   retrieveLaunchParams,
   themeParams,
   viewport,
@@ -123,5 +124,66 @@ export function hapticNotification(type: NotifyType): void {
     if (hapticFeedback.notificationOccurred.isAvailable()) hapticFeedback.notificationOccurred(type);
   } catch {
     // haptics не поддерживаются — молча игнорируем.
+  }
+}
+
+/**
+ * Telegram MainButton доступна для управления. Вне Telegram (dev-браузер) —
+ * false, и форма обязана показать собственную кнопку submit: без неё создать
+ * дедлайн было бы нечем.
+ */
+export function isMainButtonAvailable(): boolean {
+  if (!isTMA()) return false;
+  try {
+    return mainButton.mount.isAvailable();
+  } catch {
+    return false;
+  }
+}
+
+interface MainButtonOptions {
+  text: string;
+  /** Включена ли кнопка; false → клики не приходят, кнопка «серая». */
+  enabled?: boolean;
+  loading?: boolean;
+  onClick: () => void;
+}
+
+/**
+ * Показать MainButton и подписаться на клик; возвращает функцию очистки
+ * (спрятать кнопку, снять слушатель). Возвращаем cleanup, а не пару
+ * show/hide, чтобы вызывающий не мог забыть снять слушателя — иначе после
+ * закрытия формы клик по невидимой кнопке отправлял бы старый сабмит.
+ */
+export function showMainButton({
+  text,
+  enabled = true,
+  loading = false,
+  onClick,
+}: MainButtonOptions): () => void {
+  if (!isMainButtonAvailable()) return () => {};
+
+  try {
+    if (!mainButton.isMounted()) mainButton.mount();
+    const off = mainButton.onClick(onClick);
+    mainButton.setParams({
+      text,
+      isVisible: true,
+      isEnabled: enabled,
+      isLoaderVisible: loading,
+      // Блик на кнопке — как у системных CTA в клиентах Telegram.
+      hasShineEffect: true,
+    });
+    return () => {
+      off();
+      try {
+        mainButton.setParams({ isVisible: false, isLoaderVisible: false });
+      } catch {
+        // Кнопка могла быть размонтирована (закрытие клиента) — не критично.
+      }
+    };
+  } catch {
+    // SDK в неожиданном состоянии: форма остаётся с собственной кнопкой.
+    return () => {};
   }
 }

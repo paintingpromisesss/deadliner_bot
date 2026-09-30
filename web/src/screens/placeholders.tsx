@@ -1,6 +1,5 @@
-// Экраны-заглушки (Task 13): настоящие списки дедлайнов, календарь и группы —
-// задачи 14–15. Здесь только каркас навигации, чтобы роутер и таб-бар были
-// проверяемы.
+// Экран-заглушка (Task 13): настоящий список групп — задача 15. Здесь только
+// каркас навигации, чтобы роутер и таб-бар были проверяемы.
 import { Screen } from '../components/Screen';
 
 interface StubProps {
@@ -16,20 +15,6 @@ export function StubScreen({ title }: StubProps) {
       </p>
     </Screen>
   );
-}
-
-export function DeadlinesScreen() {
-  return (
-    <Screen title="Дедлайны">
-      <p className="dl-stub" data-testid="stub">
-        В разработке
-      </p>
-    </Screen>
-  );
-}
-
-export function CalendarScreen() {
-  return <StubScreen title="Календарь" />;
 }
 
 export function GroupsScreen() {

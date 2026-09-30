@@ -174,7 +174,10 @@ describe('auth store: login / patchMe / logout', () => {
     expect(window.localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
     expect(useAuthStore.getState().token).toBeNull();
     expect(useAuthStore.getState().user).toBeNull();
-    expect(useAuthStore.getState().status).toBe('error');
+    // 'anonymous', а не 'error': выход — не сбой входа, экран ошибки с
+    // «Повторить» здесь неуместен.
+    expect(useAuthStore.getState().status).toBe('anonymous');
+    expect(useAuthStore.getState().error).toBeNull();
   });
 
   it('logout не отправляет повторный вход при 401', async () => {
@@ -185,5 +188,77 @@ describe('auth store: login / patchMe / logout', () => {
 
     expect(calls.map((c) => c.url)).toEqual(['/api/v1/me/logout']);
     expect(useAuthStore.getState().token).toBeNull();
+    expect(useAuthStore.getState().status).toBe('anonymous');
+  });
+
+  it('после logout bootstrap не входит обратно без явного вызова', async () => {
+    useAuthStore.setState({ token: 't', user, status: 'authed' });
+    getInitDataMock.mockReturnValue('query_id=1&hash=abc');
+    stubFetch(() => new Response(null, { status: 204 }));
+
+    await useAuthStore.getState().logout();
+
+    // Стор не инициирует логин сам: состояние остаётся 'anonymous', пока
+    // пользователь не нажмёт «Войти снова».
+    expect(useAuthStore.getState().status).toBe('anonymous');
+    expect(calls.map((c) => c.url)).toEqual(['/api/v1/me/logout']);
+  });
+
+  it('фоновый 401 после logout не логинит обратно и не перебивает экран выхода', async () => {
+    useAuthStore.setState({ token: 't', user, status: 'authed' });
+    getInitDataMock.mockReturnValue('query_id=1&hash=abc');
+    stubFetch((call) => {
+      if (call.url === '/api/v1/me/logout') return new Response(null, { status: 204 });
+      // Фоновый запрос, прилетевший уже после выхода.
+      return jsonResponse(401, { error: { code: 'unauthorized', message: 'Требуется авторизация' } });
+    });
+
+    await useAuthStore.getState().logout();
+    calls = [];
+
+    await expect(useAuthStore.getState().patchMe({ tz: 'UTC' })).rejects.toMatchObject({
+      status: 401,
+    });
+
+    // Ни повторного /auth/telegram, ни «ошибки входа»: состояние осталось
+    // осознанным выходом.
+    expect(calls.map((c) => c.url)).toEqual(['/api/v1/me']);
+    expect(useAuthStore.getState().status).toBe('anonymous');
+    expect(useAuthStore.getState().token).toBeNull();
+  });
+});
+
+describe('auth store: single-flight бутстрапа (I-3b)', () => {
+  it('два параллельных bootstrap() — один GET /me', async () => {
+    window.localStorage.setItem(TOKEN_STORAGE_KEY, 'stored-token');
+    stubFetch(() => jsonResponse(200, user));
+
+    await Promise.all([useAuthStore.getState().bootstrap(), useAuthStore.getState().bootstrap()]);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('/api/v1/me');
+    expect(useAuthStore.getState().status).toBe('authed');
+  });
+
+  it('два параллельных bootstrap() без токена — один вход по initData', async () => {
+    getInitDataMock.mockReturnValue('query_id=1&hash=abc');
+    stubFetch(() => jsonResponse(200, session));
+
+    await Promise.all([useAuthStore.getState().bootstrap(), useAuthStore.getState().bootstrap()]);
+
+    expect(calls.map((c) => c.url)).toEqual(['/api/v1/auth/telegram']);
+    expect(useAuthStore.getState().status).toBe('authed');
+  });
+
+  it('после завершения bootstrap следующий вызов снова ходит в сеть', async () => {
+    window.localStorage.setItem(TOKEN_STORAGE_KEY, 'stored-token');
+    stubFetch(() => jsonResponse(200, user));
+
+    await useAuthStore.getState().bootstrap();
+    await useAuthStore.getState().bootstrap();
+
+    // Гвард снимается по завершении — повторный вызов (кнопка «Повторить»)
+    // не должен залипать на старом промисе.
+    expect(calls).toHaveLength(2);
   });
 });

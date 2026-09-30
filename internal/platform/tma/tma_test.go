@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -178,8 +179,62 @@ func TestPathTraversalIsRejected(t *testing.T) {
 
 	for _, p := range []string{"/../secret.txt", "/assets/../../secret.txt", "/..%2fsecret.txt"} {
 		rec := get(t, h, p)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404 (traversal не отдаёт файл и не делает fallback)", p, rec.Code)
+		}
 		if strings.Contains(rec.Body.String(), "s3cret") {
 			t.Errorf("GET %s выдал файл вне dist", p)
+		}
+	}
+}
+
+// HEAD обязан возвращать те же заголовки, что GET, но без тела: по нему
+// клиент решает, переиспользовать ли закэшированный хешированный ассет.
+func TestHeadOnAssetHasNoBody(t *testing.T) {
+	h := newTestHandler(testFiles)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodHead, "/assets/index-abc.js", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HEAD /assets/index-abc.js = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Errorf("Cache-Control = %q, want immutable", got)
+	}
+	if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(len("console.log('app')")) {
+		t.Errorf("Content-Length = %q, want длину файла", got)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("HEAD вернул тело %q, want пусто", rec.Body.String())
+	}
+}
+
+// Шрифты/картинки бандла должны получать Content-Type даже в alpine-образе,
+// где нет /etc/mime.types (эти расширения вне встроенной таблицы mime).
+func TestFontAndImageContentTypes(t *testing.T) {
+	h := newTestHandler(map[string]string{
+		"index.html":             testIndex,
+		"assets/font-x.woff2":    "wOF2",
+		"assets/font-y.ttf":      "ttf",
+		"assets/pic-z.webp":      "RIFF",
+		"assets/modal-w.mjs":     "export {}",
+		"assets/unknown-q.weird": "?",
+	})
+
+	want := map[string]string{
+		"/assets/font-x.woff2": "font/woff2",
+		"/assets/font-y.ttf":   "font/ttf",
+		"/assets/pic-z.webp":   "image/webp",
+		"/assets/modal-w.mjs":  "javascript",
+	}
+	for path, wantCT := range want {
+		rec := get(t, h, path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", path, rec.Code)
+		}
+		if got := rec.Header().Get("Content-Type"); !strings.Contains(got, wantCT) {
+			t.Errorf("GET %s Content-Type = %q, want %q", path, got, wantCT)
 		}
 	}
 }
@@ -187,10 +242,32 @@ func TestPathTraversalIsRejected(t *testing.T) {
 func TestNonGETIsMethodNotAllowed(t *testing.T) {
 	h := newTestHandler(testFiles)
 
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("POST / = %d, want 405", rec.Code)
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(method, "/groups", nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s /groups = %d, want 405", method, rec.Code)
+		}
+		if got := rec.Header().Get("Allow"); got != "GET, HEAD" {
+			t.Errorf("%s /groups Allow = %q, want \"GET, HEAD\"", method, got)
+		}
+	}
+}
+
+// Чужие пути отвечают 404 при ЛЮБОМ методе: иначе POST /webhook в
+// polling-режиме (обработчик не смонтирован) получал бы 405 от статики и
+// маскировал бы ошибку маршрутизации под «метод не поддерживается».
+func TestNonGETOnForeignPathsIsNotFound(t *testing.T) {
+	h := newTestHandler(testFiles)
+
+	for _, p := range []string{"/api/v1/me", "/webhook", "/healthz"} {
+		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(method, p, nil))
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("%s %s = %d, want 404 (не 405)", method, p, rec.Code)
+			}
+		}
 	}
 }
 

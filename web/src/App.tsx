@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppRoot, List, Placeholder, Section, Spinner } from '@telegram-apps/telegram-ui';
 
-import { getAppearance, getPlatform, hasInitData } from './lib/tma';
+import { getPlatform, hasInitData } from './lib/tma';
 import { useAuthStore } from './stores/auth';
 import { routeName, useRoute } from './router';
 import { TabBar } from './components/TabBar';
@@ -53,6 +53,28 @@ function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
+  // Осознанный выход: нейтральный экран без «ошибки» и без автоматического
+  // повторного входа (иначе logout немедленно логинился бы обратно по initData).
+  if (status === 'anonymous') {
+    return (
+      <List>
+        <Section>
+          <Placeholder
+            header="Вы вышли из аккаунта"
+            description="Сессия отозвана. Войдите снова, чтобы вернуться к дедлайнам."
+            action={
+              hasInitData() ? (
+                <button type="button" className="dl-retry" onClick={() => void bootstrap()}>
+                  Войти снова
+                </button>
+              ) : undefined
+            }
+          />
+        </Section>
+      </List>
+    );
+  }
+
   if (status === 'error') {
     return (
       <List>
@@ -81,11 +103,15 @@ function AuthGate({ children }: { children: ReactNode }) {
 }
 
 export function App() {
+  // platform статичен (клиент не меняет платформу на ходу) — прокидываем явно.
   const platform = useMemo(() => getPlatform(), []);
-  const appearance = useMemo(() => getAppearance(), []);
 
+  // appearance НЕ передаём: telegram-ui в этом случае сам берёт
+  // window.Telegram.WebApp.colorScheme и подписывается на 'themeChanged'
+  // (useAppearance.js: при заданном пропе подписки не происходит и смена темы
+  // в Telegram игнорируется).
   return (
-    <AppRoot platform={platform} appearance={appearance} className="dl-root">
+    <AppRoot platform={platform} className="dl-root">
       <QueryClientProvider client={queryClient}>
         <AuthGate>
           <main className="dl-main">

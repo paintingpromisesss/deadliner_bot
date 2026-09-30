@@ -49,6 +49,12 @@ export interface AuthHooks {
   onSession(session: Session): void;
   /** Авторизация невозможна — приложение должно показать экран ошибки. */
   onAuthFailure(message: string): void;
+  /**
+   * Разрешён ли автоматический повторный вход. false после осознанного
+   * выхода: иначе фоновый запрос, получивший 401, молча залогинил бы
+   * пользователя обратно по initData и нейтральный экран выхода исчез бы.
+   */
+  canReauth(): boolean;
 }
 
 let hooks: AuthHooks = {
@@ -56,6 +62,7 @@ let hooks: AuthHooks = {
   getInitData: () => getInitData() ?? null,
   onSession: () => {},
   onAuthFailure: () => {},
+  canReauth: () => true,
 };
 
 /** Устанавливает (частично) хуки авторизации. Вызывается один раз при старте. */
@@ -104,18 +111,51 @@ async function readError(res: Response): Promise<ApiError> {
 }
 
 /** Дедупликация параллельных повторных логинов: один запрос на пачку 401. */
-let reauthInFlight: Promise<Session | null> | null = null;
+let reauthInFlight: Promise<ReauthResult> | null = null;
 
-async function reauthenticate(): Promise<Session | null> {
+/** Результат повторного входа: сессия либо причина отказа. */
+type ReauthResult = { session: Session; error: null } | { session: null; error: Error };
+
+/**
+ * Повторный вход по initData. Ошибку логина НЕ проглатываем: она уходит в
+ * onAuthFailure с текстом причины (сервер недоступен, протух initData), а
+ * вызывающий затем бросает исходный 401 — пользователь видит понятную
+ * причину, а не безликое «Требуется авторизация».
+ *
+ * Промис нормализован (никогда не отклоняется), поэтому параллельные
+ * вызывающие получают один и тот же результат, а не разный.
+ */
+async function reauthenticate(): Promise<ReauthResult> {
   if (reauthInFlight) return reauthInFlight;
+
+  // После осознанного выхода повторный вход только по явному действию
+  // пользователя (кнопка «Войти снова» → bootstrap), не по фоновому 401.
+  if (!hooks.canReauth()) {
+    return {
+      session: null,
+      error: new ApiError(0, 'logged_out', 'Нужен повторный вход.'),
+    };
+  }
+
   const initData = hooks.getInitData();
-  if (!initData) return null;
-  reauthInFlight = authenticate(initData)
-    .catch(() => null)
+  if (!initData) {
+    return {
+      session: null,
+      error: new ApiError(0, 'no_init_data', 'Нет initData для повторного входа.'),
+    };
+  }
+
+  const attempt: Promise<ReauthResult> = authenticate(initData)
+    .then(
+      (session): ReauthResult => ({ session, error: null }),
+      (e): ReauthResult => ({ session: null, error: e instanceof Error ? e : new Error(String(e)) }),
+    )
     .finally(() => {
       reauthInFlight = null;
     });
-  return reauthInFlight;
+
+  reauthInFlight = attempt;
+  return attempt;
 }
 
 /**
@@ -143,10 +183,12 @@ export async function apiFetch<T>(path: string, opts: RequestOptions = {}): Prom
   let res = await rawRequest(path, opts, withAuth ? hooks.getToken() : null);
 
   if (res.status === 401 && withAuth && !opts.noReauth) {
-    const session = await reauthenticate();
+    const { session, error } = await reauthenticate();
     if (!session) {
+      // Причина отказа входа информативнее исходного 401 — показываем её,
+      // но бросаем исходную ошибку: код и статус ответа принадлежат ей.
       const err = await readError(res);
-      hooks.onAuthFailure(err.message);
+      hooks.onAuthFailure(error?.message ?? err.message);
       throw err;
     }
     res = await rawRequest(path, opts, session.token);

@@ -30,15 +30,22 @@ export function platformFromLaunchParams(platform: string | undefined): TGPlatfo
 }
 
 /**
- * Инициализация SDK. Возвращает launch params (или пустой объект вне Telegram).
- * Идемпотентна: вызывается один раз из main.tsx.
+ * Инициализация SDK. Идемпотентна: повторный вызов (StrictMode, HMR,
+ * повторный маунт) не перезапускает viewport.mount — SDK бросает
+ * ConcurrentCallError на параллельный маунт, а расширение viewport второй раз
+ * бессмысленно.
  */
+let tmaInitialized = false;
+
 export function initTMA(): void {
+  if (tmaInitialized) return;
   if (!isTMA()) {
     // Вне Telegram SDK не инициализируется — все дальнейшие вызовы
-    // отфильтрованы guard'ами isAvailable()/isMounted().
+    // отфильтрованы guard'ами isAvailable()/isMounted(). Флаг не выставляем:
+    // в dev-режиме страница может оказаться в Telegram после перезагрузки.
     return;
   }
+  tmaInitialized = true;
   try {
     initData.restore();
   } catch {
@@ -50,6 +57,11 @@ export function initTMA(): void {
   } catch {
     // viewport недоступен — не критично.
   }
+}
+
+/** Сброс флага инициализации. Только для тестов. */
+export function resetTMAInit(): void {
+  tmaInitialized = false;
 }
 
 /** Raw initData для POST /api/v1/auth/telegram. undefined вне Telegram. */

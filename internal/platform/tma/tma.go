@@ -53,14 +53,9 @@ type handler struct {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Страховка от преждевременного перехвата: /api/* принадлежит REST API,
-	// /webhook и /healthz — их собственным обработчикам.
+	// Порядок важен: сначала «чужие» пути, и только потом проверка метода.
+	// Иначе POST /webhook в polling-режиме (обработчик не смонтирован) получал
+	// бы 405 от статики вместо честного 404, маскируя ошибку маршрутизации.
 	if isAPIPath(r.URL.Path) || ownedElsewhere[r.URL.Path] {
 		http.NotFound(w, r)
 		return
@@ -69,6 +64,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	name, ok := cleanPath(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
+		return
+	}
+
+	// Статика TMA отдаётся только на чтение.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -136,8 +138,28 @@ func cleanPath(urlPath string) (string, bool) {
 	return cleaned, true
 }
 
+// extraTypes — расширения, которых нет во встроенной таблице mime (проверено
+// по Go 1.26: .webp есть, .woff2/.ttf/.otf/.eot — нет). В alpine-образе нет
+// /etc/mime.types, поэтому TypeByExtension для этих файлов вернул бы пусто и
+// браузер получил бы их без Content-Type. Шрифты и изображения Vite-бандла
+// хешированы, так что промах MIME кэшировался бы на год.
+var extraTypes = map[string]string{
+	".woff2": "font/woff2",
+	".woff":  "font/woff",
+	".ttf":   "font/ttf",
+	".otf":   "font/otf",
+	".eot":   "application/vnd.ms-fontobject",
+	".webp":  "image/webp",
+	".avif":  "image/avif",
+	".mjs":   "text/javascript; charset=utf-8",
+}
+
 // contentType подбирает MIME по расширению; для неизвестных — пусто
 // (браузер разберётся по содержимому).
 func contentType(name string) string {
-	return mime.TypeByExtension(path.Ext(name))
+	ext := strings.ToLower(path.Ext(name))
+	if t, ok := extraTypes[ext]; ok {
+		return t
+	}
+	return mime.TypeByExtension(ext)
 }

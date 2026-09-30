@@ -154,6 +154,43 @@ describe('apiFetch', () => {
     );
   });
 
+  it('провал повторного входа отдаёт причину логина в onAuthFailure, а бросает исходный 401', async () => {
+    const onAuthFailure = vi.fn();
+    configureAuth({ onAuthFailure });
+    const { calls } = mockFetch((url) => {
+      if (url === '/api/v1/auth/telegram') {
+        // Причина отказа входа отличается от сообщения 401 на /me.
+        return jsonResponse(401, {
+          error: { code: 'auth_failed', message: 'initData истёк — откройте Mini App заново' },
+        });
+      }
+      return unauthorized();
+    });
+
+    // Бросается исходный 401 (/me), а не ошибка логина: статус и код
+    // принадлежат тому запросу, который упал.
+    await expect(api.fetch('/me')).rejects.toMatchObject({ status: 401, code: 'unauthorized' });
+
+    expect(calls.auth).toBe(1);
+    // Причина отказа входа видна пользователю, а не проглочена.
+    expect(onAuthFailure).toHaveBeenCalledTimes(1);
+    expect(onAuthFailure.mock.calls[0][0]).toBe('initData истёк — откройте Mini App заново');
+  });
+
+  it('сетевой сбой повторного входа не превращается в «нет initData»', async () => {
+    const onAuthFailure = vi.fn();
+    configureAuth({ onAuthFailure });
+    mockFetch((url) => {
+      if (url === '/api/v1/auth/telegram') throw new Error('Failed to fetch');
+      return unauthorized();
+    });
+
+    await expect(api.fetch('/me')).rejects.toMatchObject({ status: 401 });
+
+    expect(onAuthFailure).toHaveBeenCalledTimes(1);
+    expect(onAuthFailure.mock.calls[0][0]).toContain('Failed to fetch');
+  });
+
   it('204 возвращает undefined и не пытается парсить тело', async () => {
     mockFetch(() => new Response(null, { status: 204 }));
 

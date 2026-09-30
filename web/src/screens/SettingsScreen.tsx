@@ -113,7 +113,9 @@ export function SettingsScreen() {
           </Cell>
           {suggested && suggested !== tz ? (
             <Cell
-              Component="label"
+              Component="button"
+              type="button"
+              className="dl-cell-button"
               subtitle={`Часовой пояс устройства: ${suggested}`}
               onClick={() => setTZ(suggested)}
             >

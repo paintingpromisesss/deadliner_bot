@@ -26,6 +26,17 @@ describe('parseHash', () => {
     expect(parseHash('/settings?flag').path).toEqual(['settings']);
     expect(parseHash('/settings?flag').query).toEqual({ flag: '' });
   });
+
+  it('битая percent-последовательность не бросает URIError, а отдаёт сырое значение', () => {
+    // decodeURIComponent('100%') кидает URIError; хеш приходит из адресной
+    // строки, и падать на разборе маршрута нельзя.
+    expect(() => parseHash('#/groups?q=100%')).not.toThrow();
+    expect(parseHash('#/groups?q=100%').query).toEqual({ q: '100%' });
+    expect(parseHash('#/groups?%zz=1').query).toEqual({ '%zz': '1' });
+
+    // Валидное кодирование продолжает раскрываться.
+    expect(parseHash('#/groups?q=%D0%98%D0%9A%D0%91%D0%9E').query).toEqual({ q: 'ИКБО' });
+  });
 });
 
 describe('routeName', () => {

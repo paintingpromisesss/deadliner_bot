@@ -11,7 +11,7 @@ import { getInitData } from '../lib/tma';
 
 export const TOKEN_STORAGE_KEY = 'dl_token';
 
-export type AuthStatus = 'init' | 'authed' | 'error';
+export type AuthStatus = 'init' | 'authed' | 'anonymous' | 'error';
 
 interface AuthState {
   token: string | null;
@@ -51,6 +51,57 @@ function writeStoredToken(token: string | null): void {
   }
 }
 
+/**
+ * Single-flight бутстрапа: StrictMode монтирует эффект дважды, и без общего
+ * промиса вышло бы два GET /me и два входа по initData. Тот же приём, что в
+ * api.ts для повторной авторизации.
+ */
+let bootstrapInFlight: Promise<void> | null = null;
+
+type SetState = (partial: Partial<AuthState>) => void;
+
+/**
+ * Восстановление сессии: сохранённый токен → GET /me; иначе вход по initData.
+ * Вынесено из стора, чтобы single-flight-обёртка в bootstrap() оставалась
+ * читаемой.
+ */
+async function runBootstrap(set: SetState, get: () => AuthState): Promise<void> {
+  const stored = readStoredToken();
+  if (stored) {
+    set({ token: stored, status: 'init', error: null });
+    try {
+      // noReauth: протухший токен здесь не повод для немедленного
+      // переавторизоваться — сначала убеждаемся, что он вообще не валиден,
+      // и только потом идём в initData-вход (иначе двойной логин).
+      const user = await apiFetch<User>('/me', { noReauth: true });
+      set({ user, status: 'authed' });
+      return;
+    } catch (e) {
+      // Токен протух (или отозван) — чистим и пробуем initData-вход ниже.
+      writeStoredToken(null);
+      set({ token: null, user: null });
+      if (!(e instanceof ApiError) || e.status !== 401) {
+        set({ status: 'error', error: e instanceof Error ? e.message : String(e) });
+        return;
+      }
+    }
+  }
+
+  const initData = getInitData();
+  if (!initData) {
+    set({
+      status: 'error',
+      error: 'Откройте приложение из Telegram: без initData вход невозможен.',
+    });
+    return;
+  }
+  try {
+    await get().login(initData);
+  } catch (e) {
+    set({ status: 'error', error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   token: null,
   user: null,
@@ -65,40 +116,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   async bootstrap() {
-    const stored = readStoredToken();
-    if (stored) {
-      set({ token: stored, status: 'init', error: null });
-      try {
-        // noReauth: протухший токен здесь не повод для немедленного
-        // переавторизоваться — сначала убеждаемся, что он вообще не валиден,
-        // и только потом идём в initData-вход (иначе двойной логин).
-        const user = await apiFetch<User>('/me', { noReauth: true });
-        set({ user, status: 'authed' });
-        return;
-      } catch (e) {
-        // Токен протух (или отозван) — чистим и пробуем initData-вход ниже.
-        writeStoredToken(null);
-        set({ token: null, user: null });
-        if (!(e instanceof ApiError) || e.status !== 401) {
-          set({ status: 'error', error: e instanceof Error ? e.message : String(e) });
-          return;
-        }
-      }
-    }
-
-    const initData = getInitData();
-    if (!initData) {
-      set({
-        status: 'error',
-        error: 'Откройте приложение из Telegram: без initData вход невозможен.',
-      });
-      return;
-    }
-    try {
-      await get().login(initData);
-    } catch (e) {
-      set({ status: 'error', error: e instanceof Error ? e.message : String(e) });
-    }
+    if (bootstrapInFlight) return bootstrapInFlight;
+    bootstrapInFlight = runBootstrap(set, get).finally(() => {
+      bootstrapInFlight = null;
+    });
+    return bootstrapInFlight;
   },
 
   async login(initData) {
@@ -115,7 +137,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Даже если сервер не ответил — локально выходим.
     }
     writeStoredToken(null);
-    set({ token: null, user: null, status: 'error', error: 'Вы вышли из аккаунта.' });
+    // 'anonymous', а не 'error': осознанный выход не должен показывать экран
+    // «Не удалось войти» с предложением повторить вход.
+    set({ token: null, user: null, status: 'anonymous', error: null });
   },
 
   async patchMe(patch) {
@@ -130,6 +154,11 @@ configureAuth({
   getToken: () => useAuthStore.getState().token,
   getInitData: () => getInitData() ?? null,
   onSession: (session) => useAuthStore.getState().setSession(session),
-  onAuthFailure: (message) =>
-    useAuthStore.setState({ status: 'error', error: message, token: null, user: null }),
+  canReauth: () => useAuthStore.getState().status !== 'anonymous',
+  onAuthFailure: (message) => {
+    // Фоновый 401 после выхода не должен перебивать нейтральный экран:
+    // статус уже 'anonymous', и это осознанное состояние, а не сбой.
+    if (useAuthStore.getState().status === 'anonymous') return;
+    useAuthStore.setState({ status: 'error', error: message, token: null, user: null });
+  },
 });

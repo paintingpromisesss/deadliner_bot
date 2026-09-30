@@ -26,10 +26,23 @@ export function parseHash(hash: string): Route {
     for (const pair of queryPart.split('&')) {
       if (!pair) continue;
       const [k, v = ''] = pair.split('=');
-      if (k) query[decodeURIComponent(k)] = decodeURIComponent(v);
+      if (k) query[safeDecode(k)] = safeDecode(v);
     }
   }
   return { path, query, raw: raw || '#/' };
+}
+
+/**
+ * decodeURIComponent бросает URIError на битой последовательности («%»,
+ * «%zz»): такой хеш приходит из адресной строки, и падать на разборе маршрута
+ * нельзя — показываем сырое значение.
+ */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 /** «Первый сегмент» маршрута → имя таба; неизвестное → главный экран. */

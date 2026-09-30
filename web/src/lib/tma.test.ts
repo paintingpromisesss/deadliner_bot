@@ -11,11 +11,22 @@ import {
   hapticNotification,
   initTMA,
   platformFromLaunchParams,
+  resetTMAInit,
 } from './tma';
 
 describe('tma.ts вне Telegram', () => {
   it('initTMA не бросает и не инициализирует SDK', () => {
+    resetTMAInit();
     expect(() => initTMA()).not.toThrow();
+  });
+
+  it('повторный initTMA вне Telegram не выставляет флаг (перезагрузка в Telegram возможна)', () => {
+    resetTMAInit();
+    initTMA();
+    // Вне Telegram флаг не выставляется: следующий вызов снова проверит
+    // окружение, поэтому initTMA остаётся безопасным и повторяемым.
+    expect(() => initTMA()).not.toThrow();
+    expect(getInitData()).toBeUndefined();
   });
 
   it('initData недоступен → undefined, hasInitData false', () => {

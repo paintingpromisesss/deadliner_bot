@@ -7,8 +7,23 @@
 @import 'tailwindcss/theme.css' layer(theme);
 @import 'tailwindcss/utilities.css' layer(utilities);
 
+/* TelegramUI определяет --tgui--* НЕ на :root, а на самом корневом div AppRoot
+   (.tgui-6a12827a138e8827 в styles.css кита). Поэтому html/body — его
+   ПРЕДКИ — не видят эти переменные, и объявления на них резолвятся в пустоту
+   (белый холст под тёмными компонентами). Красим контейнеры ВНУТРИ AppRoot,
+   а для областей вне него (экран-спиннер до маунта) держим фолбэк на
+   --tg-theme-*, которые в Telegram выставляет клиент. */
 :root {
   color-scheme: light dark;
+  --dl-bg: var(--tg-theme-bg-color, #ffffff);
+  --dl-text: var(--tg-theme-text-color, #000000);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --dl-bg: var(--tg-theme-bg-color, #212121);
+    --dl-text: var(--tg-theme-text-color, #ffffff);
+  }
 }
 
 html,
@@ -16,24 +31,31 @@ body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: var(--tgui--bg_color);
-  color: var(--tgui--text_color);
+  background: var(--dl-bg);
+  color: var(--dl-text);
 }
 
-#root,
+#root {
+  min-height: 100vh;
+  background: var(--dl-bg);
+  color: var(--dl-text);
+}
+
+/* .dl-root — это className самого div AppRoot, где --tgui--* и определены. */
 .dl-root {
   min-height: 100vh;
-}
-
-.dl-root {
   display: flex;
   flex-direction: column;
+  background: var(--tgui--bg_color, var(--dl-bg));
+  color: var(--tgui--text_color, var(--dl-text));
 }
 
 .dl-main {
   flex: 1 1 auto;
   /* Отступ под фиксированный таб-бар + safe-area iPhone. */
   padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  background: var(--tgui--bg_color, var(--dl-bg));
+  color: var(--tgui--text_color, var(--dl-text));
 }
 
 .dl-screen {
@@ -79,6 +101,24 @@ body {
 
 .dl-danger {
   color: var(--tgui--destructive_text_color);
+}
+
+/* Cell, отрендеренный кнопкой (Component="button"): снимаем дефолтный вид
+   кнопки браузера — сам Cell даёт раскладку и тач-таргет. Нужен для
+   доступности: ячейка с onClick обязана быть фокусируемой с клавиатуры. */
+.dl-cell-button {
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: inherit;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Корневой div AppRoot — это flex-колонка; кнопка-Cell внутри должна тянуться. */
+.dl-cell-button > * {
+  flex: 1 1 auto;
 }
 
 .dl-retry {

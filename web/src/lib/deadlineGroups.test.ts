@@ -28,6 +28,7 @@ function mk(
     id,
     group_id: null,
     owner_user_id: 1,
+    created_by: 1,
     title: `Дедлайн ${id}`,
     description: '',
     due_at: dueAt,

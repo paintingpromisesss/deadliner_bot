@@ -4,8 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"time"
+
+	"github.com/sauron/deadliner/internal/domain"
 )
 
 type Config struct {
@@ -178,7 +181,7 @@ func Load() (*Config, error) {
 			ClaimPerChatHour:     l.int("LIMIT_CLAIM_PER_CHAT_HOUR", 3),
 			ClaimCodeTTL:         l.duration("CLAIM_CODE_TTL", 10*time.Minute),
 			InviteDefaultTTLDays: l.int("INVITE_DEFAULT_TTL_DAYS", 7),
-			SlugRegex:            l.string("SLUG_REGEX", `^[А-ЯA-Z0-9]+(-[А-ЯA-Z0-9]+)*$`),
+			SlugRegex:            l.string("SLUG_REGEX", domain.DefaultSlugRegex),
 			CounterRetention:     l.duration("COUNTER_RETENTION", 8*24*time.Hour),
 		},
 	}
@@ -211,6 +214,14 @@ func Load() (*Config, error) {
 		l.errs = append(l.errs, errors.New(
 			"missing required env var WEBHOOK_URL: POLLING_MODE=webhook without a webhook URL "+
 				"starts a process that receives no updates"))
+	}
+	// Fail-closed: некомпилируемый SLUG_REGEX обязан ронять старт, а не
+	// молчаливо превращать Create в 500 на первом же пакете /groups. Сама
+	// компиляция — в slugprovider.Compile (единственная точка), проверка
+	// здесь отличается только формулировкой сообщения.
+	if _, err := regexp.Compile(cfg.Limits.SlugRegex); err != nil {
+		l.errs = append(l.errs, fmt.Errorf(
+			"SLUG_REGEX=%q is not a valid regular expression: %w", cfg.Limits.SlugRegex, err))
 	}
 	// Retention уборки счётчиков обязан быть больше самого длинного окна
 	// лимита (168ч = неделя): окно floor-ится на своё начало, поэтому живая

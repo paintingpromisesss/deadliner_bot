@@ -1,6 +1,7 @@
 // Package deadlines — use cases дедлайнов (спека §3, §5.2, §7.1): CRUD
 // с генерацией reminders в одной транзакции, регенерация при смене due_at,
-// права (персональный — owner, групповой — admin пишет / member читает).
+// права (персональный — owner; групповой пишут автор дедлайна и admin, читает
+// любой участник).
 package deadlines
 
 import (
@@ -514,13 +515,25 @@ func (s *Service) requireRead(ctx context.Context, actor *domain.User, d *domain
 	return nil
 }
 
-// requireWrite — персональный: owner/superadmin; групповой: admin/superadmin.
+// requireWrite — право записи по дедлайну (спека §5.2 «автор/admin»):
+// персональный — owner/superadmin; групповой — автора дедлайна (created_by),
+// админ группы или superadmin. Автор пишет свой дедлайн, даже будучи простым
+// участником: он его создал и отвечает за срок. Права на ЧУЖИЕ групповые
+// дедлайны остаются у админа группы.
 func (s *Service) requireWrite(ctx context.Context, actor *domain.User, d *domain.Deadline) error {
 	if d.GroupID == nil {
 		if actor.IsSuperadmin || (d.OwnerUserID != nil && *d.OwnerUserID == actor.ID) {
 			return nil
 		}
 		return fmt.Errorf("%w: deadline id=%d belongs to another user", domain.ErrForbidden, d.ID)
+	}
+	if actor.IsSuperadmin || d.CreatedBy == actor.ID {
+		// Существование группы проверяется и на этом пути: удалённая группа
+		// должна давать 404, а не «нельзя».
+		if _, err := s.groups.GetByID(ctx, *d.GroupID); err != nil {
+			return err
+		}
+		return nil
 	}
 	return s.requireGroupAdmin(ctx, actor, *d.GroupID)
 }

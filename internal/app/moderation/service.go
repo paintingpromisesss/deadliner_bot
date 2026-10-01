@@ -348,6 +348,62 @@ func (s *Service) Stats(ctx context.Context, actor *domain.User) (domain.Stats, 
 // и в справке cleanup; сама джоба опирается на claim_expires_at строки).
 func (s *Service) PendingTTL() time.Duration { return s.cfg.PendingTTL }
 
+// listGroupsLimit — максимум групп в одном ответе `admin list-groups`.
+// Ограничение осознанное: инстанс рассчитан на сотни групп, а CLI печатает
+// таблицу в терминал оператора; при превышении лимита команда честно
+// предупреждает, что список усечён, вместо того чтобы молча потерять хвост.
+const listGroupsLimit = 500
+
+// GroupSummary — строка `admin list-groups` (спека §2): слаг, название,
+// статус, число участников и время создания. Отдельная проекция, а не
+// domain.Group: CLI нужны ровно эти пять полей, а число участников требует
+// обращения к memberships.
+type GroupSummary struct {
+	Slug         string
+	Title        string
+	Status       domain.GroupStatus
+	MembersCount int
+	CreatedAt    time.Time
+}
+
+// ListGroups — все неудалённые группы с числом участников (CLI
+// `admin list-groups`, спека §2). Видны и pending-группы: они не попадают ни
+// в один ListMine, а супер-админу нужны именно они (разбор конфликтов слагов
+// и брошенных заявок). Возвращает строки и признак «список усечён лимитом».
+func (s *Service) ListGroups(ctx context.Context, actor *domain.User, status *domain.GroupStatus, limit int) ([]GroupSummary, bool, error) {
+	if err := s.requireSuperadmin(actor); err != nil {
+		return nil, false, err
+	}
+	if limit <= 0 {
+		limit = listGroupsLimit
+	}
+	groups, err := s.deps.Groups.ListAll(ctx, status, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	truncated := false
+	if len(groups) > limit {
+		groups = groups[:limit]
+		truncated = true
+	}
+
+	out := make([]GroupSummary, 0, len(groups))
+	for _, g := range groups {
+		mems, err := s.deps.Memberships.ListByGroup(ctx, g.ID)
+		if err != nil {
+			return nil, false, fmt.Errorf("moderation: list members of group id=%d: %w", g.ID, err)
+		}
+		out = append(out, GroupSummary{
+			Slug:         g.Slug,
+			Title:        g.Title,
+			Status:       g.Status,
+			MembersCount: len(mems),
+			CreatedAt:    g.CreatedAt,
+		})
+	}
+	return out, truncated, nil
+}
+
 // requireSuperadmin — единственная проверка прав модерации (спека §3: CLI и
 // бот-команды). nil-актор (аноним) — тоже отказ.
 func (s *Service) requireSuperadmin(actor *domain.User) error {

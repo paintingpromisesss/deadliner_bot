@@ -121,6 +121,29 @@ func (r *groupsRepo) SearchByPrefix(ctx context.Context, prefix string, callerID
 	return collectGroups(rows)
 }
 
+// ListAll implements domain.GroupRepo.ListAll: non-deleted groups of a status,
+// ordered by slug_norm; limit <= 0 means "all". Used by CLI `admin list-groups`
+// (спека §2).
+func (r *groupsRepo) ListAll(ctx context.Context, status *domain.GroupStatus, limit int) ([]domain.Group, error) {
+	q := `SELECT ` + groupColumns + ` FROM groups WHERE deleted_at IS NULL`
+	args := []any{}
+	if status != nil {
+		args = append(args, string(*status))
+		q += fmt.Sprintf(` AND status = $%d`, len(args))
+	}
+	q += ` ORDER BY slug_norm`
+	if limit > 0 {
+		args = append(args, limit)
+		q += fmt.Sprintf(` LIMIT $%d`, len(args))
+	}
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	return collectGroups(rows)
+}
+
 func (r *groupsRepo) Update(ctx context.Context, g *domain.Group) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE groups

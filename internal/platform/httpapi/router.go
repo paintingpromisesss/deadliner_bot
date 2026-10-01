@@ -31,7 +31,6 @@ type Deps struct {
 	Users         domain.UserRepo
 	Sessions      domain.SessionRepo
 	Log           *slog.Logger
-	I18nLoaded    bool
 	SessionTTL    time.Duration
 	// WebhookHandler — POST /webhook бота в webhook-режиме (Task 10:
 	// telegram.Bot.WebhookHandler()). nil в polling-режиме.

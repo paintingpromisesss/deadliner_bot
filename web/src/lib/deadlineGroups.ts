@@ -33,6 +33,34 @@ export function isPersonalDeadline(d: Deadline): boolean {
   return !isGroupDeadline(d);
 }
 
+/**
+ * Право записи по дедлайну (спека §5.2 «автор/admin») — то же правило, что
+ * backend.requireWrite:
+ *  - персональный: владелец (owner_user_id) или superadmin;
+ *  - групповой: автор дедлайна (created_by), админ группы или superadmin.
+ *
+ * Живёт в lib, а не в компонентах: список и форма обязаны решать одинаково,
+ * иначе кнопка исчезала бы при открытии карточки (или наоборот — показывалась
+ * бы и давала 403).
+ *
+ * `me` — id текущего пользователя (users.id, не telegram_id); undefined, пока
+ * профиль не загружен, — тогда групповые действия не показываются, кроме
+ * админских (роль уже известна из /groups).
+ */
+export function canWriteDeadline(
+  deadline: Deadline,
+  opts: { me?: number; isSuperadmin: boolean; adminGroupIDs: ReadonlySet<number> },
+): boolean {
+  if (opts.isSuperadmin) return true;
+  if (!isGroupDeadline(deadline)) {
+    // Персональный: автор и владелец совпадают (создать чужой личный дедлайн
+    // нельзя), но правило формулируем по владельцу — как backend.
+    return deadline.owner_user_id != null && deadline.owner_user_id === opts.me;
+  }
+  if (opts.me !== undefined && deadline.created_by === opts.me) return true;
+  return opts.adminGroupIDs.has(deadline.group_id as number);
+}
+
 /** Фильтр по типу. Неизвестное значение трактуется как «all». */
 export function filterByScope(list: readonly Deadline[], scope: ScopeFilter): Deadline[] {
   switch (scope) {

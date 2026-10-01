@@ -99,7 +99,6 @@ func newTestClaimsRouter(t *testing.T, nfy *captureNotifier, cfg claims.Config) 
 		Users:      users,
 		Sessions:   repo.NewSessions(pool),
 		Log:        log,
-		I18nLoaded: true,
 		SessionTTL: sessionTTL,
 	})
 }

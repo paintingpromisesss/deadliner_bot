@@ -76,6 +76,15 @@ func (r *fakeUserRepo) MarkBotBlocked(ctx context.Context, telegramID int64, blo
 	return errors.New("not used")
 }
 
+// ListSuperadmins и UpdateProfile — части domain.UserRepo, не используемые
+// сервисом уведомлений: заглушки-нули.
+func (r *fakeUserRepo) ListSuperadmins(ctx context.Context) ([]domain.User, error) {
+	return nil, nil
+}
+func (r *fakeUserRepo) UpdateProfile(ctx context.Context, id int64, firstName string) error {
+	return nil
+}
+
 type memKey struct{ groupID, userID int64 }
 
 type fakeMembershipRepo struct {
@@ -230,6 +239,12 @@ func (r *fakeGroupRepo) ListMine(ctx context.Context, userID int64) ([]domain.Gr
 
 func (r *fakeGroupRepo) ListPendingExpired(ctx context.Context, now time.Time, limit int) ([]domain.Group, error) {
 	return nil, errors.New("not used")
+}
+
+// ListAll — часть domain.GroupRepo, нужная только CLI `admin list-groups`;
+// сервисам этих пакетов не требуется.
+func (r *fakeGroupRepo) ListAll(ctx context.Context, status *domain.GroupStatus, limit int) ([]domain.Group, error) {
+	return nil, nil
 }
 
 // --- harness ---

@@ -47,6 +47,8 @@ deadliner admin …   # CLI супер админа: promote / ban / list-groups
 
 Один процесс — осознанный выбор (малый масштаб, один артефакт деплоя). Горизонтальное масштабирование возможно без изменения кода: scheduler координируется через `FOR UPDATE SKIP LOCKED` в БД, поэтому несколько инстансов `serve` не конфликтуют (для бота при этом нужен либо один инстанс-приёмник апдейтов, либо перевод polling→webhook с отдельным роутингом; фиксируем как операционное ограничение).
 
+**Операционное ограничение (масштабирование).** Документированный деплой — **один инстанс** `serve`; несколько инстансов допустимы только в webhook-режиме за балансировщиком. Взаимное исключение воркеров держится на `SCHED_LOCK_TTL`: инстанс, у которого `now - LockTTL` превысило время дренажа батча, освободит ещё живой лок (`ReleaseStale`) и переотправит напоминание — дубль в чат. Поэтому при нескольких инстансах требуется `SCHED_LOCK_TTL` больше худшего времени дренажа батча (оценка и пример в `docs/runbook.md` §2.1), а внутрипроцессная защита (`MarkSent … WHERE status='pending' AND locked_by=…`) межпроцессной не является.
+
 ### 2.1 Структура Go-пакетов (Clean Architecture)
 
 ```
@@ -90,11 +92,13 @@ type Notifier interface {               // доставка сообщений (
     SendToUser(ctx, userID int64, text string) error
 }
 type SlugProvider interface {           // ТОЧКА РАСШИРЕНИЯ: API МАИ
-    Validate(slug string) error         // v1: regex вузовских слагов
-    Suggest(prefix string) ([]string, error) // v1: по локальной таблице groups
+    Validate(slug string) error         // v1: SLUG_REGEX из конфига + правила Deadliner (длина, цифра)
+    Suggest(ctx, prefix string, callerID int64, limit int) ([]Group, error) // v1: по локальной таблице groups
 }
 type Clock interface { Now() time.Time }
 ```
+
+**Local-реализация (v1, зафиксировано).** `internal/platform/slugprovider.Local` — единственная реализация `SlugProvider` в v1: `Validate` компилирует `SLUG_REGEX` из конфига и накладывает поверх доменные правила (`domain.ValidateStrict`: длина 3–16, непустые сегменты через один дефис, **минимум одна цифра**), `Suggest` — обёртка над `GroupRepo.SearchByPrefix` (активные группы + свои pending, спека §6.4). Разделение ответственности обязательно к сохранению: charset — настройка оператора (`SLUG_REGEX`), правила длины/структуры/цифры — добавления Deadliner и действуют при ЛЮБОЙ регулярке. Некомпилируемый `SLUG_REGEX` отвергается на старте (`config.Load`). Superadmin по-прежнему создаёт группы вне формата (спека §3.3) — провайдер к нему не применяется.
 
 **Расширение «API МАИ»** (зафиксировано): будущая реализация `SlugProvider` обращается к внешнему API вуза, разрешает создание только слаг из официального пула, даёт автокомплит и помечает группы флагом `official` (колонка закладывается в схему сразу). Замена реализации — без изменения use cases.
 
@@ -137,7 +141,8 @@ type Clock interface { Now() time.Time }
 | Лимит создания групп | 3/сутки, 5/неделю на пользователя |
 | Лимит claim-кодов | 3/час на чат, cooldown 1 мин на пользователя |
 | Бан | superadmin банит telegram_id → запрет создавать группы/claim/привязывать чаты |
-| Жалобы | админ группы с конфликтующим слагом может пожаловаться → супер админу в ЛС |
+| Жалобы | админ группы с конфликтующим слагом пишет в ЛС боту `/report_slug <slug>` → жалоба в ЛС всем супер-админам (жалоба доступна админу группы в любом статусе; ответ вызывающему обобщённый) |
+| Разрешение конфликта | только супер-админ, вручную: `delete_group <slug>` (не тот слаг) или назначение админа группы; отдельной команды force-resolve нет |
 
 ## 4. Схема базы данных (PostgreSQL 16)
 
@@ -335,6 +340,7 @@ DTO-валидация: `due_at` — RFC3339, не в прошлом (для н�
 | `/groups` | ЛС | мои группы + роли |
 | `/new_deadline` | ЛС | inline-форма → Web App (deeplink `#add`) |
 | `/promote <user_id>`, `/ban <user_id>`, `/unban <user_id>`, `/stats`, `/delete_group <slug>` | ЛС superadmin | управление инстансом |
+| `/report_slug <slug>` | ЛС | админ группы жалуется на конфликтующий слаг → ЛС всем супер-админам (спека §3.3) |
 
 Регистрация команд: `setMyCommands` — клиентские и superadmin-команды в scope personal (default), команды привязки чата дополнительно в all_chat_administrators; menu button → URL TMA.
 
@@ -402,7 +408,11 @@ TG_RATE_GLOBAL=25, TG_RATE_PER_CHAT=18
 GROUP_PENDING_TTL_DAYS=14
 LIMIT_GROUP_CREATE_DAY=3, LIMIT_GROUP_CREATE_WEEK=5, LIMIT_CLAIM_PER_CHAT_HOUR=3
 CLAIM_CODE_TTL=10m, INVITE_DEFAULT_TTL_DAYS=7
-SLUG_REGEX='^[А-ЯA-Z0-9]+(-[А-ЯA-Z0-9]+)*$' (плюс валидатор длины/структуры вузовского слага)
+SLUG_REGEX='^[А-ЯA-Z0-9]+(-[А-ЯA-Z0-9]+)*$'   # charset слага; компилируется на старте
+                           # (некомпилируемое значение — отказ Load). Поверх charset
+                           # действуют правила Deadliner: длина 3–16, сегменты через
+                           # один дефис, минимум одна цифра — при любой SLUG_REGEX.
+                           # Применяется в internal/platform/slugprovider (спека §2.2).
 DEFAULT_TZ=Europe/Moscow
 LOG_LEVEL=info, LOG_FORMAT=json
 ```

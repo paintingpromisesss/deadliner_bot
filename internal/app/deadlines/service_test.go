@@ -272,6 +272,12 @@ func (r *fakeGroupRepo) ListPendingExpired(ctx context.Context, now time.Time, l
 	return nil, nil
 }
 
+// ListAll — часть domain.GroupRepo, нужная только CLI `admin list-groups`;
+// сервисам этих пакетов не требуется.
+func (r *fakeGroupRepo) ListAll(ctx context.Context, status *domain.GroupStatus, limit int) ([]domain.Group, error) {
+	return nil, nil
+}
+
 type memKey struct{ groupID, userID int64 }
 
 type fakeMembershipRepo struct {
@@ -737,6 +743,96 @@ func TestUpdatePermissions(t *testing.T) {
 	if _, err := env.svc.Update(t.Context(), owner, personal.Deadline.ID,
 		UpdateInput{DueAt: &past}); !errors.Is(err, domain.ErrValidation) {
 		t.Errorf("update due to past = %v, want ErrValidation", err)
+	}
+}
+
+// Спека §5.2 «автор/admin»: автор группового дедлайна сохраняет право записи,
+// даже если перестал быть админом группы (смена старосты — штатный сценарий,
+// §3.1). Права на ЧУЖИЕ дедлайны при этом остаются у админа.
+func TestGroupDeadlineAuthorKeepsWriteAccess(t *testing.T) {
+	env := newTestEnv(t)
+	due := env.clock.now.Add(72 * time.Hour)
+
+	author := user(4, false)
+	other := user(5, false)
+	env.addGroup(10, nil)
+	env.members.add(10, 4, domain.RoleAdmin)
+	env.members.add(10, 5, domain.RoleMember)
+
+	created, err := env.svc.Create(t.Context(), author, CreateInput{GroupID: i64Ptr(10), Title: "G", DueAt: due})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Deadline.CreatedBy != author.ID {
+		t.Fatalf("CreatedBy = %d, want the author %d", created.Deadline.CreatedBy, author.ID)
+	}
+
+	// Автор понижен до участника (например, после claim нового старосты).
+	env.members.add(10, 4, domain.RoleMember)
+
+	newTitle := "правка автора"
+	if _, err := env.svc.Update(t.Context(), author, created.Deadline.ID,
+		UpdateInput{Title: &newTitle}); err != nil {
+		t.Errorf("author update own group deadline = %v, want nil (spec §5.2)", err)
+	}
+	if _, err := env.svc.Complete(t.Context(), author, created.Deadline.ID); err != nil {
+		t.Errorf("author complete own group deadline = %v, want nil", err)
+	}
+
+	// Второй дедлайн — тот же автор, проверяем Delete отдельно (Complete уже
+	// перевёл первый в done).
+	second, err := env.svc.Create(t.Context(), other, CreateInput{GroupID: i64Ptr(10), Title: "G2", DueAt: due})
+	if err != nil {
+		// other — member, создавать групповые дедлайны ему нельзя: делаем
+		// админом на время создания и возвращаем member.
+		env.members.add(10, 5, domain.RoleAdmin)
+		second, err = env.svc.Create(t.Context(), other, CreateInput{GroupID: i64Ptr(10), Title: "G2", DueAt: due})
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.members.add(10, 5, domain.RoleMember)
+	}
+	if err := env.svc.Delete(t.Context(), other, second.Deadline.ID); err != nil {
+		t.Errorf("author delete own group deadline = %v, want nil", err)
+	}
+
+	// ЧУЖОЙ дедлайн для участника по-прежнему закрыт: автор второго — other,
+	// author к нему отношения не имеет (но он уже удалён, поэтому берём третий).
+	third, err := env.svc.Create(t.Context(), other, CreateInput{GroupID: i64Ptr(10), Title: "G3", DueAt: due})
+	if err != nil {
+		env.members.add(10, 5, domain.RoleAdmin)
+		third, err = env.svc.Create(t.Context(), other, CreateInput{GroupID: i64Ptr(10), Title: "G3", DueAt: due})
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.members.add(10, 5, domain.RoleMember)
+	}
+	if _, err := env.svc.Update(t.Context(), author, third.Deadline.ID,
+		UpdateInput{Title: &newTitle}); !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("member update another's group deadline = %v, want ErrForbidden", err)
+	}
+}
+
+// Персональный дедлайн: право записи по-прежнему только у владельца (автор и
+// владелец здесь совпадают — тест фиксирует, что новое правило не расширило
+// доступ к чужим личным дедлайнам).
+func TestPersonalDeadlineWriteAccessUnchanged(t *testing.T) {
+	env := newTestEnv(t)
+	owner := user(1, false)
+	stranger := user(2, false)
+	due := env.clock.now.Add(72 * time.Hour)
+
+	created, err := env.svc.Create(t.Context(), owner, CreateInput{Title: "P", DueAt: due})
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := "чужое"
+	if _, err := env.svc.Update(t.Context(), stranger, created.Deadline.ID,
+		UpdateInput{Title: &title}); !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("stranger update personal = %v, want ErrForbidden", err)
+	}
+	if err := env.svc.Delete(t.Context(), stranger, created.Deadline.ID); !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("stranger delete personal = %v, want ErrForbidden", err)
 	}
 }
 

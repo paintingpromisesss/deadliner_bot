@@ -82,6 +82,9 @@ type fakeUsers struct {
 	// строку: touchUser только что сделал upsert). meErr задаёт сбой чтения.
 	me    *domain.User
 	meErr error
+	// superadmins — адресаты /report_slug, superadminsErr — сбой их чтения.
+	superadmins    []*domain.User
+	superadminsErr error
 }
 
 func (u *fakeUsers) GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error) {
@@ -116,6 +119,23 @@ func (u *fakeUsers) SetSuperadmin(ctx context.Context, id int64, superadmin bool
 func (u *fakeUsers) MarkBotBlocked(ctx context.Context, telegramID int64, blocked bool) error {
 	u.unblocked = append(u.unblocked, telegramID)
 	return nil
+}
+
+// ListSuperadmins — адресаты /report_slug: список задаётся полем superadmins,
+// пустой список означает «супер-админов нет» (жалоба уходит в лог).
+func (u *fakeUsers) ListSuperadmins(ctx context.Context) ([]domain.User, error) {
+	if u.superadminsErr != nil {
+		return nil, u.superadminsErr
+	}
+	out := make([]domain.User, 0, len(u.superadmins))
+	for _, sa := range u.superadmins {
+		out = append(out, *sa)
+	}
+	return out, nil
+}
+
+func (u *fakeUsers) UpdateProfile(ctx context.Context, id int64, firstName string) error {
+	return errors.New("not used")
 }
 
 type fakeBinder struct {
@@ -668,7 +688,7 @@ func TestCommandsList(t *testing.T) {
 	cmds := hs.h.commands()
 	want := []string{
 		"start", "help", "groups", "new_deadline", "bind_group", "unbind",
-		"promote", "ban", "unban", "stats", "delete_group",
+		"promote", "ban", "unban", "stats", "delete_group", "report_slug",
 	}
 	if len(cmds) != len(want) {
 		t.Fatalf("commands = %d, want %d", len(cmds), len(want))

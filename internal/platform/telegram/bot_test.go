@@ -107,6 +107,15 @@ func (u *stubUsers) MarkBotBlocked(ctx context.Context, telegramID int64, blocke
 	return nil
 }
 
+// ListSuperadmins и UpdateProfile — части domain.UserRepo, не используемые
+// ботом в этих тестах: заглушки-нули.
+func (u *stubUsers) ListSuperadmins(ctx context.Context) ([]domain.User, error) {
+	return nil, nil
+}
+func (u *stubUsers) UpdateProfile(ctx context.Context, id int64, firstName string) error {
+	return nil
+}
+
 type stubBinder struct{ bound []int64 }
 
 func (b *stubBinder) BindChat(ctx context.Context, actor *domain.User, chatID int64, threadID *int64, slug, chatTitle string) (*domain.Group, error) {

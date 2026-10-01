@@ -21,6 +21,7 @@ type Handlers struct {
 	users        domain.UserRepo
 	binder       GroupBinder
 	superadmin   Superadmin
+	reports      SlugReporter
 	sender       MessageSender
 	adminChecker ChatAdminChecker
 	botUserID    int64
@@ -36,7 +37,10 @@ type HandlersDeps struct {
 	AdminChecker ChatAdminChecker
 	// Superadmin — служебные команды (§6.1). nil отключает их (в тестах
 	// административных сценариев передаётся явно).
-	Superadmin   Superadmin
+	Superadmin Superadmin
+	// Reports — жалоба на слаг (/report_slug, спека §3.3). nil отключает
+	// команду: без use case отправлять жалобу некуда.
+	Reports      SlugReporter
 	BotUserID    int64
 	AppPublicURL string
 }
@@ -47,7 +51,8 @@ func NewHandlers(d HandlersDeps, log *slog.Logger) *Handlers {
 	}
 	return &Handlers{
 		users: d.Users, binder: d.Binder, superadmin: d.Superadmin,
-		sender: d.Sender, adminChecker: d.AdminChecker, botUserID: d.BotUserID,
+		reports: d.Reports,
+		sender:  d.Sender, adminChecker: d.AdminChecker, botUserID: d.BotUserID,
 		appURL: d.AppPublicURL, log: log,
 	}
 }
@@ -70,6 +75,7 @@ func (h *Handlers) commands() []BotCommand {
 		{Command: "unban", Description: i18n.T("bot.cmd.unban")},
 		{Command: "stats", Description: i18n.T("bot.cmd.stats")},
 		{Command: "delete_group", Description: i18n.T("bot.cmd.delete_group")},
+		{Command: "report_slug", Description: i18n.T("bot.cmd.report_slug")},
 	}
 }
 
@@ -117,6 +123,9 @@ func (h *Handlers) Handle(ctx context.Context, upd *models.Update) {
 	case "promote", "ban", "unban", "stats", "delete_group":
 		// Служебные команды (§6.1): guard is_superadmin внутри.
 		h.handleSuperadmin(ctx, msg, actor, cmd, arg)
+	case "report_slug":
+		// Жалоба на слаг (§3.3): только ЛС, права проверяет use case.
+		h.handleReportSlug(ctx, msg, actor, arg)
 	}
 	// Неизвестные команды молча игнорируются.
 }

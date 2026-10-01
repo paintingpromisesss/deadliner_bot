@@ -145,6 +145,7 @@ func TestAdminUsageErrors(t *testing.T) {
 		{"ban non-numeric", []string{"ban", "1.5"}},
 		{"stats with extra arg", []string{"stats", "42"}},
 		{"cleanup with extra arg", []string{"cleanup", "now"}},
+		{"list-groups with extra arg", []string{"list-groups", "active", "extra"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -419,6 +420,135 @@ func TestAdminCleanupKeepsLiveWeeklyCounter(t *testing.T) {
 	if !strings.Contains(out, "Счётчиков вычищено: 1") {
 		t.Errorf("cleanup output missing the purge report: %q", out)
 	}
+}
+
+// list-groups (спека §2): таблица со слагом, названием, статусом, числом
+// участников и датой создания — по всем неудалённым группам, включая pending
+// (они не видны ни в одном /groups — супер-админу нужны именно они).
+func TestAdminListGroups(t *testing.T) {
+	newTestDB(t)
+	uid := insertUser(t, 555)
+	active := insertGroup(t, "ИКБО-33-21", uid, nil)
+	if _, err := testPool.Exec(t.Context(),
+		`UPDATE groups SET status='active' WHERE id=$1`, active); err != nil {
+		t.Fatalf("activate group: %v", err)
+	}
+	insertGroup(t, "М8О-401Б-23", uid, nil) // pending
+	// Участники активной группы: создатель + второй пользователь.
+	other := insertUser(t, 556)
+	for _, member := range []int64{uid, other} {
+		if _, err := testPool.Exec(t.Context(),
+			`INSERT INTO group_memberships (group_id, user_id, role) VALUES ($1, $2, 'member')`,
+			active, member); err != nil {
+			t.Fatalf("insert membership: %v", err)
+		}
+	}
+
+	code, out := runAdmin(t, "list-groups")
+	if code != 0 {
+		t.Fatalf("list-groups exit = %d, want 0; output: %s", code, out)
+	}
+	for _, want := range []string{
+		"ИКБО-33-21", "М8О-401Б-23", // оба слага
+		"active", "pending", // статусы обеих групп
+		"СЛАГ", "СТАТУС", "УЧАСТНИКИ", "СОЗДАНА", // заголовок таблицы
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("list-groups output missing %q:\n%s", want, out)
+		}
+	}
+
+	// Число участников — из group_memberships: активная группа собрала двух,
+	// pending — ни одного.
+	lines := groupLines(out, "ИКБО-33-21", "М8О-401Б-23")
+	if !strings.Contains(lines["ИКБО-33-21"], " 2 ") {
+		t.Errorf("active group row does not show 2 members: %q", lines["ИКБО-33-21"])
+	}
+	if !strings.Contains(lines["М8О-401Б-23"], " 0 ") {
+		t.Errorf("pending group row does not show 0 members: %q", lines["М8О-401Б-23"])
+	}
+}
+
+// Фильтр по статусу сужает список, мусорный статус — ошибка использования (2),
+// а не тихий показ всех групп.
+func TestAdminListGroupsStatusFilterAndUsage(t *testing.T) {
+	newTestDB(t)
+	uid := insertUser(t, 555)
+	insertGroup(t, "ИКБО-33-21", uid, nil)
+	active := insertGroup(t, "М8О-401Б-23", uid, nil)
+	if _, err := testPool.Exec(t.Context(),
+		`UPDATE groups SET status='active' WHERE id=$1`, active); err != nil {
+		t.Fatalf("activate group: %v", err)
+	}
+
+	code, out := runAdmin(t, "list-groups", "active")
+	if code != 0 {
+		t.Fatalf("list-groups active exit = %d, want 0; output: %s", code, out)
+	}
+	if !strings.Contains(out, "М8О-401Б-23") {
+		t.Errorf("active filter dropped the active group:\n%s", out)
+	}
+	if strings.Contains(out, "ИКБО-33-21") {
+		t.Errorf("active filter kept the pending group:\n%s", out)
+	}
+
+	if code, out = runAdmin(t, "list-groups", "frobnicate"); code != 2 {
+		t.Errorf("list-groups frobnicate = %d, want 2 (usage); output: %s", code, out)
+	}
+	if code, out = runAdmin(t, "list-groups", "active", "extra"); code != 2 {
+		t.Errorf("list-groups with a spare argument = %d, want 2; output: %s", code, out)
+	}
+}
+
+// Удалённые группы в список не попадают: супер-админ смотрит живой инстанс.
+func TestAdminListGroupsSkipsDeleted(t *testing.T) {
+	newTestDB(t)
+	uid := insertUser(t, 555)
+	insertGroup(t, "ИКБО-33-21", uid, nil)
+	gone := insertGroup(t, "М8О-401Б-23", uid, nil)
+	if _, err := testPool.Exec(t.Context(),
+		`UPDATE groups SET deleted_at = now() WHERE id=$1`, gone); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	code, out := runAdmin(t, "list-groups")
+	if code != 0 {
+		t.Fatalf("list-groups exit = %d, want 0; output: %s", code, out)
+	}
+	if !strings.Contains(out, "ИКБО-33-21") {
+		t.Errorf("live group missing from the list:\n%s", out)
+	}
+	if strings.Contains(out, "М8О-401Б-23") {
+		t.Errorf("soft-deleted group leaked into the list:\n%s", out)
+	}
+}
+
+// Пустой инстанс — понятная строка, а не пустой вывод и не заголовок таблицы.
+func TestAdminListGroupsEmpty(t *testing.T) {
+	newTestDB(t)
+
+	code, out := runAdmin(t, "list-groups")
+	if code != 0 {
+		t.Fatalf("list-groups exit = %d, want 0; output: %s", code, out)
+	}
+	if !strings.Contains(out, "Групп нет") {
+		t.Errorf("empty list output = %q, want the empty-state line", out)
+	}
+}
+
+// groupLines — строки вывода, содержащие заданный слаг: точное совпадение по
+// подстроке в тесте хрупко (слаг есть и в заголовке), поэтому берём строку с
+// названием группы.
+func groupLines(out string, slugs ...string) map[string]string {
+	res := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		for _, slug := range slugs {
+			if strings.HasPrefix(strings.TrimSpace(line), slug) {
+				res[slug] = line
+			}
+		}
+	}
+	return res
 }
 
 // nowInsertedGroup — pending-группа без TTL (claim_expires_at NULL): cleanup её

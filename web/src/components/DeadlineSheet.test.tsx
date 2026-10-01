@@ -70,6 +70,7 @@ const deadlineFixture = {
   id: 5,
   group_id: null,
   owner_user_id: 1,
+  created_by: 1,
   title: 'Курсовая',
   description: 'детали',
   due_at: '2026-12-31T20:59:00Z',
@@ -359,7 +360,9 @@ describe('DeadlineSheet: режим правки', () => {
   });
 
   it('участник группы не видит «выполнить»/«удалить» у группового дедлайна', async () => {
-    const groupDeadline = { ...deadlineFixture, group_id: 42, owner_user_id: null };
+    // Автор — другой пользователь (999): тест про «участник, НЕ автор».
+    // Иначе авторский доступ (спека §5.2) делал бы кнопки законными.
+    const groupDeadline = { ...deadlineFixture, group_id: 42, owner_user_id: null, created_by: 999 };
     stubFetch((call) => {
       if (call.url.startsWith('/api/v1/groups')) {
         return jsonResponse(200, [{ ...groupsPayload[0], role: 'member' }]);
@@ -372,14 +375,33 @@ describe('DeadlineSheet: режим правки', () => {
     renderSheet({ deadline: groupDeadline as Deadline });
 
     // Поля заполнены, но действий записи в форме нет: backend ответил бы 403
-    // (requireWrite — только админ группы).
+    // (requireWrite — автор дедлайна, админ группы или супер-админ).
     await waitFor(() => expect(field('field-title').value).toBe('Курсовая'));
     expect(screen.queryByTestId('sheet-complete')).toBeNull();
     expect(screen.queryByTestId('sheet-delete')).toBeNull();
   });
 
+  it('автор-участник видит «выполнить»/«удалить» на своём групповом дедлайне', async () => {
+    // Спека §5.2 «автор/admin»: рядовой участник — автор дедлайна, права записи
+    // у него есть (created_by совпадает с me), хотя роль в группе — member.
+    const authored = { ...deadlineFixture, group_id: 42, owner_user_id: null, created_by: 1 };
+    stubFetch((call) => {
+      if (call.url.startsWith('/api/v1/groups')) {
+        return jsonResponse(200, [{ ...groupsPayload[0], role: 'member' }]);
+      }
+      if (call.url === '/api/v1/deadlines/5') {
+        return jsonResponse(200, { deadline: authored, reminders: [] });
+      }
+      return undefined;
+    });
+    renderSheet({ deadline: authored as Deadline });
+
+    expect(await screen.findByTestId('sheet-complete')).toBeTruthy();
+    expect(screen.getByTestId('sheet-delete')).toBeTruthy();
+  });
+
   it('супер-админ видит действия и в чужой группе', async () => {
-    const groupDeadline = { ...deadlineFixture, group_id: 42, owner_user_id: null };
+    const groupDeadline = { ...deadlineFixture, group_id: 42, owner_user_id: null, created_by: 999 };
     stubFetch((call) => {
       if (call.url.startsWith('/api/v1/groups')) {
         return jsonResponse(200, [{ ...groupsPayload[0], role: 'member' }]);

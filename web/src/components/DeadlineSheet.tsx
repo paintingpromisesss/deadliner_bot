@@ -49,7 +49,7 @@ import {
 } from '../lib/queries';
 import { isMainButtonAvailable, showMainButton } from '../lib/tma';
 import { strings, tpl } from '../lib/strings';
-import { isGroupDeadline } from '../lib/deadlineGroups';
+import { canWriteDeadline } from '../lib/deadlineGroups';
 import { useAuthStore } from '../stores/auth';
 import { ConfirmDialog } from './ConfirmDialog';
 import { PresetChips } from './FilterChips';
@@ -108,14 +108,15 @@ export function DeadlineSheet({
   const groups = useMyGroups();
   const writable = useMemo(() => adminGroups(groups.data), [groups.data]);
   const isSuperadmin = useAuthStore((s) => s.user?.is_superadmin ?? false);
-  // «Выполнить»/«удалить» — запись: backend проверяет её requireWrite (админ
-  // группы или супер-админ), поэтому участнику группы кнопки не показываем —
-  // иначе единственным откликом был бы 403.
+  const me = useAuthStore((s) => s.user?.id);
+  // «Выполнить»/«удалить» — запись: backend проверяет её requireWrite (автор
+  // дедлайна, админ группы или супер-админ — спека §5.2 «автор/admin»).
+  // Предикат общий с экраном списка (lib/deadlineGroups.canWriteDeadline): если
+  // бы они расходились, кнопка появлялась бы/исчезала при открытии карточки.
+  const adminGroupIDs = useMemo(() => new Set(writable.map((g) => g.group.id)), [writable]);
   const canAct =
     !deadline ||
-    !isGroupDeadline(deadline) ||
-    isSuperadmin ||
-    writable.some((g) => g.group.id === deadline.group_id);
+    canWriteDeadline(deadline, { me, isSuperadmin, adminGroupIDs });
 
   const create = useCreateDeadline();
   const update = useUpdateDeadline();

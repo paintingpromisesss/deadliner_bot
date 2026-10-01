@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sauron/deadliner/internal/config"
+	"github.com/sauron/deadliner/internal/domain"
 )
 
 func setRequired(t *testing.T) {
@@ -302,5 +303,47 @@ func TestLoadCounterRetentionMustExceedWeekWindow(t *testing.T) {
 	}
 	if cfg.Limits.CounterRetention != 169*time.Hour {
 		t.Errorf("CounterRetention = %v, want 169h", cfg.Limits.CounterRetention)
+	}
+}
+
+// SLUG_REGEX — не просто строка в Config: некомпилируемое выражение обязано
+// ронять старт, иначе Create падал бы 500 на первом запросе, а оператор не
+// понимал бы, какая переменная виновата.
+func TestLoadInvalidSlugRegex(t *testing.T) {
+	setRequired(t)
+	t.Setenv("SLUG_REGEX", `^[А-Я`)
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() with a broken SLUG_REGEX returned nil error, want failure")
+	}
+	if !strings.Contains(err.Error(), "SLUG_REGEX") {
+		t.Errorf("error %q does not mention SLUG_REGEX", err)
+	}
+
+	// Валидное, но нестандартное выражение принимается: charset задаёт
+	// оператор, и это значение доезжает до SlugProvider без изменений.
+	t.Setenv("SLUG_REGEX", `^[A-Z0-9]+$`)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() with a valid custom SLUG_REGEX: %v", err)
+	}
+	if cfg.Limits.SlugRegex != `^[A-Z0-9]+$` {
+		t.Errorf("SlugRegex = %q, want the env value", cfg.Limits.SlugRegex)
+	}
+}
+
+// Дефолт SLUG_REGEX совпадает с domain.DefaultSlugRegex: константа одна на
+// config и на slugprovider, поэтому расхождение «дефолт конфига ≠ дефолт
+// провайдера» невозможно по построению.
+func TestLoadDefaultSlugRegexMatchesDomain(t *testing.T) {
+	setRequired(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if cfg.Limits.SlugRegex != domain.DefaultSlugRegex {
+		t.Errorf("default SlugRegex = %q, want domain.DefaultSlugRegex %q",
+			cfg.Limits.SlugRegex, domain.DefaultSlugRegex)
 	}
 }

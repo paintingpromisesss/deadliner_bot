@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sauron/deadliner/internal/domain"
+	"github.com/sauron/deadliner/internal/i18n"
 )
 
 // ErrLastAdmin — маркер конфликтов «последний админ группы» (обёрнут в
@@ -58,9 +60,20 @@ type Service struct {
 	counters domain.CounterRepo
 	audit    domain.AuditRepo
 	bindings domain.ChatBindingRepo
-	cfg      Config
-	clock    domain.Clock
-	log      *slog.Logger
+	// slugs — валидатор слага (domain.SlugProvider). nil означает «без
+	// провайдера»: в этом случае Create валидирует доменным
+	// ValidateStrict (структура + цифра) — так собираются тесты, которым
+	// провайдер не нужен. serve всегда передаёт local-провайдер поверх
+	// SLUG_REGEX, поэтому на проде charset приходит из конфига.
+	slugs domain.SlugProvider
+	// notifier — ЛС супер-админам (/report_slug, спека §3.3). nil отключает
+	// жалобу: без транспорта её некуда доставлять.
+	notifier UserNotifier
+	// users — адресаты жалоб (ListSuperadmins). nil отключает /report_slug.
+	users domain.UserRepo
+	cfg   Config
+	clock domain.Clock
+	log   *slog.Logger
 }
 
 func NewService(
@@ -82,6 +95,38 @@ func NewService(
 		counters: counters, audit: audit, bindings: bindings,
 		cfg: cfg, clock: clock, log: log,
 	}
+}
+
+// UserNotifier — узкая поверхность доставки ЛС. Реализуется
+// telegram.Notifier (domain.Notifier); сервису групп нужен ровно один метод —
+// жалоба на слаг уходит супер-админам (спека §3.3, /report_slug).
+type UserNotifier interface {
+	SendToUser(ctx context.Context, userID int64, text string) error
+}
+
+// Options — необязательные зависимости сервиса: часть сборок (unit-тесты use
+// case) обходится без провайдера слага и без нотификатора, поэтому они не
+// входят в конструктор. serve задаёт обе.
+type Options struct {
+	// Slugs — валидатор/подсказка слага (domain.SlugProvider, спека §2.2).
+	// nil → Create валидирует доменными правилами, Search идёт напрямую в репо.
+	Slugs domain.SlugProvider
+	// Notifier — доставка ЛС супер-админам для /report_slug. nil → жалоба
+	// вернёт ошибку (без транспорта отправить её нечем).
+	Notifier UserNotifier
+	// Users — источник адресатов жалобы (ListSuperadmins). nil → жалоба
+	// недоступна.
+	Users domain.UserRepo
+}
+
+// WithOptions подключает необязательные зависимости. Отдельный шаг сборки, а
+// не параметр конструктора: вызовов NewService шесть, и большинству из них
+// провайдер и нотификатор не нужны.
+func (s *Service) WithOptions(o Options) *Service {
+	s.slugs = o.Slugs
+	s.notifier = o.Notifier
+	s.users = o.Users
+	return s
 }
 
 // HashInviteCode — SHA-256 hex кода: в БД хранится только хэш (колонка
@@ -120,12 +165,17 @@ type MyGroup struct {
 }
 
 // Create создаёт pending-группу (спека §3.1: создатель НЕ админ — роль
-// выдаётся через claim) с антиспам-лимитами §3.3. Порядок: лимиты → группа →
-// membership создателя (member) → аудит.
+// выдаётся через claim) с антиспам-лимитами §3.3. Порядок: нормализация →
+// валидация слага → лимиты → группа → membership создателя (member) → аудит.
+//
+// Валидация идёт через domain.SlugProvider (спека §2.2): SLUG_REGEX из
+// конфига отвечает за charset, провайдер добавляет правила Deadliner
+// (длина/сегменты/цифра). Superadmin — обходной путь: он создаёт группы вне
+// формата (спека §3.3), поэтому провайдер к нему не применяется.
 func (s *Service) Create(ctx context.Context, actor *domain.User, slugRaw, title string) (*domain.Group, error) {
 	slug := domain.Normalize(slugRaw)
 	if !actor.IsSuperadmin {
-		if err := domain.ValidateStrict(slug); err != nil {
+		if err := s.validateSlug(slug); err != nil {
 			return nil, err
 		}
 	}
@@ -164,6 +214,99 @@ func (s *Service) Create(ctx context.Context, actor *domain.User, slugRaw, title
 	return g, nil
 }
 
+// ReportSlug — жалоба админа группы на конфликтующий слаг (спека §3.3,
+// «Жалобы»): админ пишет в ЛС боту /report_slug <slug>, и жалоба уходит в ЛС
+// ВСЕМ супер-админам.
+//
+// Права: вызывающий обязан быть админом СУЩЕСТВУЮЩЕЙ группы (любого статуса —
+// pending тоже: конфликт слага возникает до активации). Условие «слаг
+// конфликтует» намеренно НЕ проверяется: конфликт вузовских слагов — это
+// спор о принадлежности, который разрешает человек, а не бот; техническая
+// проверка «занят/свободен» только мешала бы законным жалобам.
+//
+// Не-админ и неизвестный слаг получают одинаковый ответ (ErrForbidden /
+// ErrNotFound) — по нему нельзя узнать, существует ли слаг. Отправка
+// best-effort: сбой ЛС одному супер-админу не отменяет остальных, но
+// фиксируется в логе; аудит пишется всегда (жалоба = факт обращения).
+func (s *Service) ReportSlug(ctx context.Context, actor *domain.User, slug string) (*domain.Group, error) {
+	if s.users == nil || s.notifier == nil {
+		return nil, fmt.Errorf("%w: slug reports are not wired", domain.ErrForbidden)
+	}
+	norm := domain.Normalize(slug)
+	g, err := s.groups.GetBySlugNorm(ctx, norm)
+	if err != nil {
+		return nil, err
+	}
+	// Жаловаться может админ группы (любой статус) или superadmin.
+	if err := s.requireAdmin(ctx, actor, g.ID); err != nil {
+		return nil, err
+	}
+
+	admins, err := s.users.ListSuperadmins(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("groups: list superadmins: %w", err)
+	}
+
+	reporter := reporterName(actor)
+	text := i18n.T("superadmin.slug_report",
+		i18n.EscapeHTML(g.Slug), i18n.EscapeHTML(reporter), formatInt64(g.ID))
+	delivered := 0
+	for _, sa := range admins {
+		if sa.BotBlocked {
+			// Пользователь не писал боту или заблокировал его: отправка
+			// гарантированно даст 403 (§7.3) — пропускаем с записью в лог.
+			s.log.Warn("slug report: superadmin blocked the bot",
+				slog.Int64("superadmin_id", sa.ID))
+			continue
+		}
+		if err := s.notifier.SendToUser(ctx, sa.TelegramID, text); err != nil {
+			s.log.Warn("slug report: delivery failed",
+				slog.Int64("superadmin_id", sa.ID), slog.String("error", err.Error()))
+			continue
+		}
+		delivered++
+	}
+	if delivered == 0 {
+		s.log.Warn("slug report: no superadmin received the complaint",
+			slog.Int64("group_id", g.ID), slog.Int("superadmins", len(admins)))
+	}
+
+	s.writeAudit(ctx, actor.ID, "slug.report", "group", g.ID, map[string]any{
+		"slug": g.Slug, "delivered": delivered, "superadmins": len(admins),
+	})
+	return g, nil
+}
+
+// reporterName — как подписать жалобу: имя, а при пустом — username, иначе
+// telegram_id. Пользователь, писавший боту, почти всегда имеет first_name,
+// но подставлять пустую строку в текст нельзя.
+func reporterName(u *domain.User) string {
+	if u == nil {
+		return ""
+	}
+	if u.FirstName != "" {
+		return u.FirstName
+	}
+	if u.Username != "" {
+		return "@" + u.Username
+	}
+	return formatInt64(u.TelegramID)
+}
+
+// formatInt64 — число для текста каталога.
+func formatInt64(n int64) string { return strconv.FormatInt(n, 10) }
+
+// validateSlug — валидация через подключённый провайдер, а при его
+// отсутствии — доменными правилами (структура + цифра, без charset: он
+// принадлежит SLUG_REGEX). Второй путь существует только для сборок без
+// провайдера (тесты use case); serve провайдер задаёт всегда.
+func (s *Service) validateSlug(slug string) error {
+	if s.slugs != nil {
+		return s.slugs.Validate(slug)
+	}
+	return domain.ValidateStrict(slug)
+}
+
 // checkCreateLimit инкрементирует счётчик окна и отклоняет превышение.
 // Начало окна floor-ится на слое приложения (репо принимает его как есть).
 //
@@ -188,9 +331,12 @@ func (s *Service) checkCreateLimit(ctx context.Context, userID int64, action str
 // Search — подсказка слага по префиксу: активные группы + свои pending
 // (фильтр на стороне репо, спека §6.4), не более SearchLimit результатов.
 // Роль вызывающего проставляется для групп, где он участник (иначе "").
+//
+// Подсказки берутся у SlugProvider (спека §2.2) — это его Suggest-часть
+// (спека §6.4 через локальную таблицу); при отсутствии провайдера — прямой
+// GroupRepo.SearchByPrefix, чтобы сборки без провайдера работали как раньше.
 func (s *Service) Search(ctx context.Context, actor *domain.User, q string) ([]MyGroup, error) {
-	q = domain.Normalize(q)
-	found, err := s.groups.SearchByPrefix(ctx, q, actor.ID, SearchLimit)
+	found, err := s.suggest(ctx, actor.ID, q)
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +353,14 @@ func (s *Service) Search(ctx context.Context, actor *domain.User, q string) ([]M
 		out = append(out, MyGroup{Group: g, Role: roles[g.ID]})
 	}
 	return out, nil
+}
+
+// suggest — префиксный поиск через провайдера или напрямую.
+func (s *Service) suggest(ctx context.Context, callerID int64, q string) ([]domain.Group, error) {
+	if s.slugs != nil {
+		return s.slugs.Suggest(ctx, q, callerID, SearchLimit)
+	}
+	return s.groups.SearchByPrefix(ctx, domain.Normalize(q), callerID, SearchLimit)
 }
 
 // Get возвращает группу с ролью вызывающего, привязкой чата и счётчиком

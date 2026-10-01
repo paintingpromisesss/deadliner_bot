@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sauron/deadliner/internal/app/moderation"
 	"github.com/sauron/deadliner/internal/config"
@@ -33,6 +34,8 @@ const (
 //	ban <telegram_id>        забанить (сессии отзываются немедленно)
 //	unban <telegram_id>      снять бан
 //	delete-group <slug>      soft-delete группы по слагу
+//	list-groups [status]     таблица групп: слаг, название, статус, участники,
+//	                         создана (status: pending|active|archived)
 //	stats                    счётчики инстанса
 //	cleanup                  один прогон cleanup (протухшие pending-группы,
 //	                         счётчики, сессии)
@@ -126,6 +129,15 @@ func parseArgs(args []string) (cmd, arg string, ok bool) {
 			return cmd, "", false
 		}
 		return cmd, strings.TrimSpace(rest[0]), true
+	case "list-groups":
+		// Аргумент необязателен: без него показываются все неудалённые группы.
+		if len(rest) > 1 {
+			return cmd, "", false
+		}
+		if len(rest) == 1 {
+			return cmd, strings.ToLower(strings.TrimSpace(rest[0])), true
+		}
+		return cmd, "", true
 	case "stats", "cleanup":
 		if len(rest) != 0 {
 			return cmd, "", false
@@ -192,6 +204,18 @@ func dispatch(ctx context.Context, svc *moderation.Service, cmd, arg string, out
 		}
 		printStats(out, st)
 
+	case "list-groups":
+		status, ok := parseGroupStatus(arg)
+		if !ok {
+			fmt.Fprintln(errOut, i18n.T("admin.list_groups.bad_status", arg))
+			return exitUsage
+		}
+		summaries, truncated, err := svc.ListGroups(ctx, actor, status, 0)
+		if err != nil {
+			return fail(errOut, "list-groups", err)
+		}
+		printGroups(out, summaries, truncated)
+
 	case "cleanup":
 		report, err := svc.CleanupExpiredPending(ctx)
 		if err != nil {
@@ -234,6 +258,87 @@ func printReport(w io.Writer, r moderation.CleanupReport) {
 	fmt.Fprintln(w, i18n.T("admin.cleanup.counters", formatInt(int64(r.CountersPurged))))
 	fmt.Fprintln(w, i18n.T("admin.cleanup.sessions", formatInt(int64(r.SessionsPurged))))
 }
+
+// parseGroupStatus — необязательный фильтр `admin list-groups [status]`.
+// Пустой аргумент → nil (все статусы); мусор → ok=false (ошибка использования,
+// выход 2). Значения совпадают с группами статусов в domain.GroupStatus.
+func parseGroupStatus(arg string) (*domain.GroupStatus, bool) {
+	if arg == "" {
+		return nil, true
+	}
+	st := domain.GroupStatus(arg)
+	switch st {
+	case domain.GroupStatusPending, domain.GroupStatusActive, domain.GroupStatusArchived:
+		return &st, true
+	default:
+		return nil, false
+	}
+}
+
+// printGroups — таблица `admin list-groups`. Колонки выравниваются по самой
+// длинной ячейке: слаг — ASCII/кириллица, а title произвольный, поэтому
+// фиксированная ширина ломала бы вывод (см. printStats с той же логикой).
+//
+// Число колонок фиксировано пятью (спека §2), независимо от содержимого:
+// выравнивание по максимальной ширине ВНУТРИ колонки, а не по всей строке.
+func printGroups(w io.Writer, rows []moderation.GroupSummary, truncated bool) {
+	if len(rows) == 0 {
+		fmt.Fprintln(w, i18n.T("admin.list_groups.empty"))
+		return
+	}
+
+	header := []string{
+		i18n.T("admin.list_groups.slug"),
+		i18n.T("admin.list_groups.title"),
+		i18n.T("admin.list_groups.status"),
+		i18n.T("admin.list_groups.members"),
+		i18n.T("admin.list_groups.created"),
+	}
+	table := make([][]string, 0, len(rows)+1)
+	table = append(table, header)
+	for _, r := range rows {
+		table = append(table, []string{
+			r.Slug,
+			r.Title,
+			string(r.Status),
+			formatInt(int64(r.MembersCount)),
+			r.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+
+	widths := make([]int, len(header))
+	for _, row := range table {
+		for i, cell := range row {
+			if n := len([]rune(cell)); n > widths[i] {
+				widths[i] = n
+			}
+		}
+	}
+	for _, row := range table {
+		var b strings.Builder
+		for i, cell := range row {
+			if i > 0 {
+				b.WriteString("  ")
+			}
+			b.WriteString(cell)
+			// Последняя колонка не добивается пробелами (хвостовые пробелы в
+			// терминале — мусор, по которому ломается копипаста).
+			if i < len(row)-1 {
+				b.WriteString(strings.Repeat(" ", widths[i]-len([]rune(cell))))
+			}
+		}
+		fmt.Fprintln(w, b.String())
+	}
+
+	if truncated {
+		fmt.Fprintln(w, i18n.T("admin.list_groups.truncated", formatInt(int64(listGroupsHint))))
+	}
+}
+
+// listGroupsHint — значение, о котором предупреждает усечённый вывод. Держим
+// его рядом с печатью: moderation.listGroupsLimit не экспортирован, а
+// расхождение («показано 500, написано 1000») обманывало бы оператора.
+const listGroupsHint = 500
 
 // fail печатает ошибку операции человекочитаемо и возвращает код 1.
 func fail(w io.Writer, cmd string, err error) int {

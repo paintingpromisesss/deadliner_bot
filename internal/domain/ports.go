@@ -25,10 +25,16 @@ type Notifier interface {
 	SendToUser(ctx context.Context, userID int64, text string) error
 }
 
-// SlugProvider is the extension point for a future university API (spec §2.2).
+// SlugProvider — точка расширения под будущий API МАИ (спека §2.2). v1:
+// локальная реализация (internal/platform/slugprovider) проверяет слаг по
+// SLUG_REGEX из конфига и подсказывает по локальной таблице groups.
 type SlugProvider interface {
+	// Validate проверяет НОРМАЛИЗОВАННЫЙ слаг (domain.Normalize) и возвращает
+	// ошибку, оборачивающую domain.ErrInvalidSlug.
 	Validate(slug string) error
-	Suggest(ctx context.Context, prefix string) ([]string, error)
+	// Suggest — группы, чей slug_norm начинается с префикса: активные плюс
+	// pending создателя callerID, не более limit (спека §6.4).
+	Suggest(ctx context.Context, prefix string, callerID int64, limit int) ([]Group, error)
 }
 
 type UserRepo interface {
@@ -36,9 +42,16 @@ type UserRepo interface {
 	GetByID(ctx context.Context, id int64) (*User, error)
 	UpsertByTelegram(ctx context.Context, u *User) error
 	UpdateSettings(ctx context.Context, id int64, tz string, dmNotifyDefault bool) error
+	// UpdateProfile пишет first_name (спека §5.2: PATCH /me принимает имя).
+	// Отдельный метод, а не расширение UpdateSettings: у настроек и профиля
+	// разные вызывающие (настройки пишет и notifications-сервис).
+	UpdateProfile(ctx context.Context, id int64, firstName string) error
 	SetBanned(ctx context.Context, id int64, banned bool) error
 	SetSuperadmin(ctx context.Context, id int64, superadmin bool) error
 	MarkBotBlocked(ctx context.Context, telegramID int64, blocked bool) error
+	// ListSuperadmins — все супер-админы, по id: адресаты жалоб на слаг
+	// (спека §3.3, /report_slug) и будущих служебных рассылок.
+	ListSuperadmins(ctx context.Context) ([]User, error)
 }
 
 type GroupRepo interface {
@@ -54,6 +67,11 @@ type GroupRepo interface {
 	// ListMine returns non-deleted groups the user is a member of (via
 	// group_memberships), ordered by slug_norm.
 	ListMine(ctx context.Context, userID int64) ([]Group, error)
+	// ListAll returns non-deleted groups ordered by slug_norm, не более limit
+	// (limit <= 0 — без ограничения); status != nil фильтрует по статусу.
+	// Нужен CLI `admin list-groups` (спека §2): супер-админу важно видеть
+	// pending-группы, которых нет ни в одном ListMine.
+	ListAll(ctx context.Context, status *GroupStatus, limit int) ([]Group, error)
 	ListPendingExpired(ctx context.Context, now time.Time, limit int) ([]Group, error)
 }
 

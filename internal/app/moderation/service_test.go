@@ -117,6 +117,12 @@ func (r *fakeGroupRepo) ListPendingExpired(ctx context.Context, now time.Time, l
 	return out, nil
 }
 
+// ListAll — часть domain.GroupRepo, нужная только CLI `admin list-groups`;
+// сервисам этих пакетов не требуется.
+func (r *fakeGroupRepo) ListAll(ctx context.Context, status *domain.GroupStatus, limit int) ([]domain.Group, error) {
+	return nil, nil
+}
+
 type membershipKey struct{ groupID, userID int64 }
 
 type fakeMembershipRepo struct {
@@ -385,6 +391,15 @@ func (r *fakeUserRepo) SetSuperadmin(ctx context.Context, id int64, superadmin b
 
 func (r *fakeUserRepo) MarkBotBlocked(ctx context.Context, telegramID int64, blocked bool) error {
 	return errors.New("not used")
+}
+
+// ListSuperadmins и UpdateProfile — части domain.UserRepo, не используемые
+// сервисом модерации: заглушки-нули.
+func (r *fakeUserRepo) ListSuperadmins(ctx context.Context) ([]domain.User, error) {
+	return nil, nil
+}
+func (r *fakeUserRepo) UpdateProfile(ctx context.Context, id int64, firstName string) error {
+	return nil
 }
 
 type fakeSessionRepo struct {

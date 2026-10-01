@@ -66,6 +66,14 @@ type Superadmin interface {
 	Stats(ctx context.Context, actor *domain.User) (domain.Stats, error)
 }
 
+// SlugReporter — use case-поверхность жалобы на слаг (спека §3.3,
+// /report_slug). Реализуется internal/app/groups.Service (сигнатуры
+// совпадают). Права (админ группы) и рассылка супер-админам — внутри use
+// case: хендлер только маршрутизирует и отвечает обобщённым текстом.
+type SlugReporter interface {
+	ReportSlug(ctx context.Context, actor *domain.User, slug string) (*domain.Group, error)
+}
+
 // Проверки совместимости на этапе компиляции: реальные реализации обязаны
 // удовлетворять интерфейсам без адаптеров (иначе serve сломается на сборке,
 // а не в рантайме).
@@ -75,4 +83,5 @@ var (
 	_ ChatAdminChecker = (*BotSender)(nil)
 	_ Sender           = (*BotSender)(nil)
 	_ Superadmin       = (*moderation.Service)(nil)
+	_ SlugReporter     = (*groups.Service)(nil)
 )

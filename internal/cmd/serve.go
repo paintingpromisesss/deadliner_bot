@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sauron/deadliner/internal/app/groups"
 	"github.com/sauron/deadliner/internal/app/moderation"
 	"github.com/sauron/deadliner/internal/config"
 	"github.com/sauron/deadliner/internal/domain"
@@ -19,6 +20,7 @@ import (
 	"github.com/sauron/deadliner/internal/platform/db"
 	"github.com/sauron/deadliner/internal/platform/httpapi"
 	"github.com/sauron/deadliner/internal/platform/scheduler"
+	"github.com/sauron/deadliner/internal/platform/slugprovider"
 	"github.com/sauron/deadliner/internal/platform/telegram"
 )
 
@@ -189,6 +191,13 @@ func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serv
 	notifier := telegram.New(client.Sender(), cfg.Bot.RateGlobal, cfg.Bot.RatePerChat).WithLogger(log)
 
 	groupsSvc := newGroupsService(r, cfg, clock, log)
+	slugProvider, err := slugprovider.NewLocal(cfg.Limits.SlugRegex, r.Groups)
+	if err != nil {
+		return nil, fmt.Errorf("serve: slug provider: %w", err)
+	}
+	// Жалоба на слаг (/report_slug, спека §3.3) ходит в ЛС супер-админам через
+	// тот же нотификатор, что и напоминания: один лимитер на процесс (§7.4).
+	groupsSvc.WithOptions(groups.Options{Slugs: slugProvider, Notifier: notifier, Users: r.Users})
 	moderationSvc := newModerationService(r, cfg, clock, log)
 	authSvc := newAuthService(r, cfg, clock)
 	deadlinesSvc := newDeadlinesService(r, clock, log)
@@ -200,6 +209,7 @@ func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serv
 		Users:      r.Users,
 		Binder:     groupsSvc,     // /bind_group, /unbind, /groups
 		Superadmin: moderationSvc, // /promote, /ban, /unban, /stats, /delete_group
+		Reports:    groupsSvc,     // /report_slug (§3.3)
 		Sender:     client.Sender(),
 		API:        client.API(),
 	}, log)
@@ -216,7 +226,6 @@ func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serv
 		Users:         r.Users,
 		Sessions:      r.Sessions,
 		Log:           log,
-		I18nLoaded:    true,
 		SessionTTL:    sessionTTL(cfg),
 		// nil в polling-режиме: POST /webhook тогда отвечает 404 от статики,
 		// а не принимает апдейты, которые никто не обрабатывает.

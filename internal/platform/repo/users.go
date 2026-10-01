@@ -93,6 +93,44 @@ func (r *usersRepo) UpdateSettings(ctx context.Context, id int64, tz string, dmN
 	return nil
 }
 
+func (r *usersRepo) UpdateProfile(ctx context.Context, id int64, firstName string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE users SET first_name = $2 WHERE id = $1`, id, firstName)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: user id=%d", domain.ErrNotFound, id)
+	}
+	return nil
+}
+
+// ListSuperadmins — адресаты служебных рассылок (/report_slug, спека §3.3).
+// Забаненные исключены на стороне запроса: бан снимает права супер-админа
+// (moderation.BanUser запрещает банить супер-админа, но флаг мог остаться с
+// прошлых версий), а bot_blocked отсеивается вызывающим — там же логируется
+// пропуск, чтобы «никому не дошло» было видно в логах, а не молчало.
+func (r *usersRepo) ListSuperadmins(ctx context.Context) ([]domain.User, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+userColumns+` FROM users
+		 WHERE is_superadmin AND NOT is_banned
+		 ORDER BY id`)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+
+	out := []domain.User{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, *u)
+	}
+	return out, rows.Err()
+}
+
 func (r *usersRepo) SetBanned(ctx context.Context, id int64, banned bool) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE users SET is_banned = $2 WHERE id = $1`, id, banned)

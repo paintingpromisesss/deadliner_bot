@@ -43,6 +43,7 @@ function deadline(id: number, offsetMs: number, extra: Record<string, unknown> =
     id,
     group_id: null,
     owner_user_id: 1,
+    created_by: 1,
     title: `Дедлайн ${id}`,
     description: '',
     due_at: dueAt(offsetMs),
@@ -363,7 +364,14 @@ describe('DeadlinesScreen: права на действия', () => {
     stubFetch(
       [
         deadline(1, 3 * DAY, { title: 'Личная' }),
-        deadline(2, 4 * DAY, { title: 'Групповая', group_id: 42, owner_user_id: null }),
+        // Автор группового — другой пользователь (999): проверяем именно
+        // «участник, НЕ автор» — автор группового писать вправе (спека §5.2).
+        deadline(2, 4 * DAY, {
+          title: 'Групповая',
+          group_id: 42,
+          owner_user_id: null,
+          created_by: 999,
+        }),
       ],
       { groups: memberGroupsPayload },
     );
@@ -391,7 +399,9 @@ describe('DeadlinesScreen: права на действия', () => {
   it('роль появляется после загрузки групп (до этого действий нет — не мигаем 403)', async () => {
     // Группы грузятся отдельным запросом: пока роль неизвестна, кнопки не
     // показываем. Это осознанно консервативно: показать и затем убрать хуже.
-    stubFetch([deadline(2, 4 * DAY, { group_id: 42, owner_user_id: null })], {
+    // Дедлайн чужой (created_by 999), иначе автор видел бы действия сразу же —
+    // право автора не зависит от загрузки роли.
+    stubFetch([deadline(2, 4 * DAY, { group_id: 42, owner_user_id: null, created_by: 999 })], {
       groups: memberGroupsPayload,
     });
     renderScreen();
@@ -399,6 +409,27 @@ describe('DeadlinesScreen: права на действия', () => {
     await screen.findByTestId('cell-2');
     await waitFor(() => expect(calls.some((c) => c.url === '/api/v1/groups')).toBe(true));
     expect(screen.queryByTestId('complete-2')).toBeNull();
+  });
+
+  it('автор-участник видит кнопки на своём групповом дедлайне и открывает форму', async () => {
+    // Спека §5.2 «автор/admin»: автор группового дедлайна сохраняет право
+    // записи, даже будучи рядовым участником (смена старосты — штатный
+    // сценарий §3.1: дедлайн остаётся редактируемым у его создателя).
+    stubFetch([deadline(3, 4 * DAY, { title: 'Авторская', group_id: 42, owner_user_id: null })], {
+      groups: memberGroupsPayload,
+    });
+    renderScreen();
+
+    await screen.findByTestId('cell-3');
+    expect(screen.getByTestId('complete-3')).toBeTruthy();
+    expect(screen.getByTestId('delete-3')).toBeTruthy();
+
+    // Форма правки открывается и тоже даёт действия (единый предикат).
+    await act(async () => {
+      fireEvent.click(within(cellActions(3)).getByText('Авторская'));
+    });
+    expect(((await screen.findByTestId('field-title')) as HTMLInputElement).value).toBe('Авторская');
+    expect(screen.getByTestId('sheet-complete')).toBeTruthy();
   });
 
   it('ошибка мутации из списка показывается видимой строкой, а не проглатывается', async () => {

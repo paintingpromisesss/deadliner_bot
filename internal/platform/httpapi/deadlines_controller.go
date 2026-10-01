@@ -33,11 +33,14 @@ type reminderDTO struct {
 	SentAt        *time.Time `json:"sent_at,omitempty"`
 }
 
-// deadlineDTO — публичное представление дедлайна.
+// deadlineDTO — публичное представление дедлайна. created_by нужен клиенту:
+// TMA показывает действия записи автору дедлайна, даже если он не админ группы
+// (спека §5.2 «автор/admin», backend — requireWrite).
 type deadlineDTO struct {
 	ID          int64     `json:"id"`
 	GroupID     *int64    `json:"group_id,omitempty"`
 	OwnerUserID *int64    `json:"owner_user_id,omitempty"`
+	CreatedBy   int64     `json:"created_by"`
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
 	DueAt       time.Time `json:"due_at"`
@@ -50,7 +53,8 @@ type deadlineDTO struct {
 func toDeadlineDTO(d *domain.Deadline) deadlineDTO {
 	return deadlineDTO{
 		ID: d.ID, GroupID: d.GroupID, OwnerUserID: d.OwnerUserID,
-		Title: d.Title, Description: d.Description, DueAt: d.DueAt,
+		CreatedBy: d.CreatedBy,
+		Title:     d.Title, Description: d.Description, DueAt: d.DueAt,
 		TZ: d.TZ, Status: string(d.Status), CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}
 }

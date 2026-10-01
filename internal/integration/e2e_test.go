@@ -371,7 +371,6 @@ func newEnv(t *testing.T) *env {
 		Users:         users,
 		Sessions:      sessions,
 		Log:           log,
-		I18nLoaded:    true,
 		SessionTTL:    30 * 24 * time.Hour,
 	})
 

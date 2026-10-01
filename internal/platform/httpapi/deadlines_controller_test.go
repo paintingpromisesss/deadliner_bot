@@ -45,7 +45,6 @@ func newTestDeadlinesRouter(t *testing.T) http.Handler {
 		Users:      repo.NewUsers(pool),
 		Sessions:   repo.NewSessions(pool),
 		Log:        log,
-		I18nLoaded: true,
 		SessionTTL: sessionTTL,
 	})
 }
@@ -60,6 +59,7 @@ type createDeadlineResp struct {
 		Status      string    `json:"status"`
 		GroupID     *int64    `json:"group_id"`
 		OwnerUserID *int64    `json:"owner_user_id"`
+		CreatedBy   int64     `json:"created_by"`
 	} `json:"deadline"`
 	Reminders []struct {
 		ID            int64     `json:"id"`
@@ -89,6 +89,22 @@ func setupGroupWithAdmin(t *testing.T, r http.Handler, token string, slug string
 	}
 	promoteGroupAdmin(t, r, token, created.Group.ID)
 	return created.Group.ID
+}
+
+// loginID — login + user_id из тела ответа: тестам прав нужен id в users (он
+// не совпадает с telegram_id).
+func loginID(t *testing.T, r http.Handler, tgID int64) (string, int64) {
+	t.Helper()
+	token, body := login(t, r, tgID)
+	user, ok := body["user"].(map[string]any)
+	if !ok {
+		t.Fatalf("login body has no user object: %v", body)
+	}
+	id, ok := user["id"].(float64)
+	if !ok {
+		t.Fatalf("login body has no numeric user id: %v", user)
+	}
+	return token, int64(id)
 }
 
 func TestDeadlinesPersonalCRUDHappyPath(t *testing.T) {
@@ -252,6 +268,120 @@ func TestDeadlinesGroupFlowFull(t *testing.T) {
 	}
 	if resp = doJSON(r, http.MethodGet, fmt.Sprintf("/api/v1/deadlines/%d", created.Deadline.ID), outsiderTok, nil); resp.Code != http.StatusForbidden {
 		t.Errorf("outsider get = %d, want 403", resp.Code)
+	}
+}
+
+// Спека §5.2 «автор/admin» на уровне HTTP: автор группового дедлайна,
+// понижённый до участника, продолжает получать 200 на PATCH/DELETE/complete
+// СВОЕГО дедлайна и 403 на чужой. created_by приходит в ответе — по нему TMA
+// и решает, показывать ли действия.
+func TestDeadlinesGroupAuthorWriteAccess(t *testing.T) {
+	r := newTestDeadlinesRouter(t)
+	adminTok, adminID := loginID(t, r, 3101)
+	authorTok, authorID := loginID(t, r, 3102)
+	otherTok, _ := loginID(t, r, 3103)
+
+	gid := setupGroupWithAdmin(t, r, adminTok, "АВТ-311")
+	for _, tok := range []string{authorTok, otherTok} {
+		resp := doJSON(r, http.MethodPost, fmt.Sprintf("/api/v1/groups/%d/invites", gid), adminTok,
+			map[string]any{"role": "member", "max_uses": 1})
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("invite = %d", resp.Code)
+		}
+		var inv struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(resp.Body.Bytes(), &inv)
+		if resp := doJSON(r, http.MethodPost, "/api/v1/invites/redeem", tok,
+			map[string]any{"code": inv.Code}); resp.Code != http.StatusOK {
+			t.Fatalf("redeem = %d", resp.Code)
+		}
+	}
+	_ = adminID
+
+	// Админ создаёт групповой дедлайн ЗА участника нельзя (создатель — автор),
+	// поэтому автором дедлайна делаем authorTok: на время создания он админ.
+	if _, err := testPool.Exec(t.Context(),
+		`UPDATE group_memberships SET role='admin' WHERE group_id=$1 AND user_id=$2`, gid, authorID); err != nil {
+		t.Fatalf("promote author: %v", err)
+	}
+	due := time.Now().UTC().Add(30 * 24 * time.Hour).Truncate(time.Second)
+	resp := doJSON(r, http.MethodPost, "/api/v1/deadlines", authorTok, map[string]any{
+		"group_id": gid, "title": "Авторский", "due_at": due.Format(time.RFC3339),
+	})
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("author create = %d; body: %s", resp.Code, resp.Body)
+	}
+	var created createDeadlineResp
+	_ = json.Unmarshal(resp.Body.Bytes(), &created)
+	if created.Deadline.CreatedBy != authorID {
+		t.Fatalf("created_by = %d, want the author %d", created.Deadline.CreatedBy, authorID)
+	}
+	dlID := created.Deadline.ID
+
+	// Понижение до участника: автор больше не админ группы.
+	if _, err := testPool.Exec(t.Context(),
+		`UPDATE group_memberships SET role='member' WHERE group_id=$1 AND user_id=$2`, gid, authorID); err != nil {
+		t.Fatalf("demote author: %v", err)
+	}
+
+	title := "правка автора"
+	if resp := doJSON(r, http.MethodPatch, fmt.Sprintf("/api/v1/deadlines/%d", dlID), authorTok,
+		map[string]any{"title": title}); resp.Code != http.StatusOK {
+		t.Errorf("author PATCH own group deadline = %d, want 200 (spec §5.2); body: %s", resp.Code, resp.Body)
+	}
+	if resp := doJSON(r, http.MethodPost, fmt.Sprintf("/api/v1/deadlines/%d/complete", dlID), authorTok,
+		nil); resp.Code != http.StatusOK {
+		t.Errorf("author complete own group deadline = %d, want 200; body: %s", resp.Code, resp.Body)
+	}
+
+	// Второй дедлайн того же автора — на нём проверяем DELETE.
+	resp = doJSON(r, http.MethodPost, "/api/v1/deadlines", adminTok, map[string]any{
+		"group_id": gid, "title": "Чужой", "due_at": due.Format(time.RFC3339),
+	})
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("admin create = %d; body: %s", resp.Code, resp.Body)
+	}
+	var foreign createDeadlineResp
+	_ = json.Unmarshal(resp.Body.Bytes(), &foreign)
+
+	// Чужой групповой дедлайн для участника-автора закрыт.
+	if resp := doJSON(r, http.MethodPatch, fmt.Sprintf("/api/v1/deadlines/%d", foreign.Deadline.ID), authorTok,
+		map[string]any{"title": title}); resp.Code != http.StatusForbidden {
+		t.Errorf("member PATCH another's group deadline = %d, want 403; body: %s", resp.Code, resp.Body)
+	}
+	if resp := doJSON(r, http.MethodDelete, fmt.Sprintf("/api/v1/deadlines/%d", foreign.Deadline.ID), authorTok,
+		nil); resp.Code != http.StatusForbidden {
+		t.Errorf("member DELETE another's group deadline = %d, want 403; body: %s", resp.Code, resp.Body)
+	}
+
+	// Автор удаляет СВОЙ второй дедлайн: создаём его самим автором (снова admin
+	// на один запрос) и сразу понижаем.
+	if _, err := testPool.Exec(t.Context(),
+		`UPDATE group_memberships SET role='admin' WHERE group_id=$1 AND user_id=$2`, gid, authorID); err != nil {
+		t.Fatalf("promote author: %v", err)
+	}
+	resp = doJSON(r, http.MethodPost, "/api/v1/deadlines", authorTok, map[string]any{
+		"group_id": gid, "title": "Свой второй", "due_at": due.Format(time.RFC3339),
+	})
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("author create #2 = %d; body: %s", resp.Code, resp.Body)
+	}
+	var own createDeadlineResp
+	_ = json.Unmarshal(resp.Body.Bytes(), &own)
+	if _, err := testPool.Exec(t.Context(),
+		`UPDATE group_memberships SET role='member' WHERE group_id=$1 AND user_id=$2`, gid, authorID); err != nil {
+		t.Fatalf("demote author: %v", err)
+	}
+	if resp := doJSON(r, http.MethodDelete, fmt.Sprintf("/api/v1/deadlines/%d", own.Deadline.ID), authorTok,
+		nil); resp.Code != http.StatusNoContent {
+		t.Errorf("author DELETE own group deadline = %d, want 204; body: %s", resp.Code, resp.Body)
+	}
+
+	// Другой участник по-прежнему не может править чужой дедлайн (не админ).
+	if resp := doJSON(r, http.MethodPatch, fmt.Sprintf("/api/v1/deadlines/%d", foreign.Deadline.ID), otherTok,
+		map[string]any{"title": title}); resp.Code != http.StatusForbidden {
+		t.Errorf("other member PATCH = %d, want 403; body: %s", resp.Code, resp.Body)
 	}
 }
 

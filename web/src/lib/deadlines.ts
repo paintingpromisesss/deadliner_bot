@@ -9,6 +9,12 @@ export interface Deadline {
   /** null — персональный дедлайн. */
   group_id?: number | null;
   owner_user_id?: number | null;
+  /**
+   * Автор дедлайна (users.id). Права записи на групповой дедлайн — у автора и
+   * админа группы (спека §5.2 «автор/admin»): по этому полю экран решает,
+   * показывать ли «выполнить»/«удалить»/«сохранить».
+   */
+  created_by: number;
   title: string;
   description: string;
   /** RFC3339, UTC. */

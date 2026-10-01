@@ -17,8 +17,8 @@ import { useAuthStore } from '../../stores/auth';
 import {
   SEGMENTS,
   SCOPE_FILTERS,
+  canWriteDeadline,
   filterByScope,
-  isGroupDeadline,
   nearestDeadline,
   onlyActive,
   segmentize,
@@ -63,22 +63,20 @@ export function DeadlinesScreen() {
   const remove = useDeleteDeadline();
 
   const isSuperadmin = useAuthStore((s) => s.user?.is_superadmin ?? false);
+  const me = useAuthStore((s) => s.user?.id);
 
-  // Групповые дедлайны правит только админ группы или супер-админ (backend
-  // requireWrite), так что участнику кнопки не показываем вовсе: иначе
-  // единственным откликом был бы 403. Личные дедлайны доступны владельцу.
+  // Групповые дедлайны правит автор дедлайна, админ группы или супер-админ
+  // (backend requireWrite, спека §5.2 «автор/admin»), поэтому участник видит
+  // кнопки только у СВОИХ дедлайнов. Личные дедлайны доступны владельцу.
   const writableGroupIDs = useMemo(
     () => new Set(adminGroups(groups.data).map((g) => g.group.id)),
     [groups.data],
   );
   // Роль грузится вместе с группами (useMyGroups). До ответа действий на
-  // групповых дедлайнах не показываем: мигнуть кнопкой и убрать её хуже, чем
-  // показать её с задержкой — пользователь либо уже админ, либо никогда им не
-  // был в этой группе.
+  // чужих групповых дедлайнах не показываем: мигнуть кнопкой и убрать её хуже,
+  // чем показать её с задержкой.
   const canWrite = (deadline: Deadline) =>
-    !isGroupDeadline(deadline) ||
-    isSuperadmin ||
-    writableGroupIDs.has(deadline.group_id as number);
+    canWriteDeadline(deadline, { me, isSuperadmin, adminGroupIDs: writableGroupIDs });
 
   /** Мутация из списка: ошибку показываем строкой над списком, не глотаем. */
   async function runAction(fn: () => Promise<unknown>) {

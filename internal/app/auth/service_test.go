@@ -99,6 +99,15 @@ func (r *fakeUserRepo) MarkBotBlocked(ctx context.Context, tgID int64, b bool) e
 	return errors.New("not used")
 }
 
+// ListSuperadmins и UpdateProfile — части domain.UserRepo, не используемые
+// сервисом auth: заглушки-нули, чтобы фейк продолжал удовлетворять порту.
+func (r *fakeUserRepo) ListSuperadmins(ctx context.Context) ([]domain.User, error) {
+	return nil, nil
+}
+func (r *fakeUserRepo) UpdateProfile(ctx context.Context, id int64, firstName string) error {
+	return nil
+}
+
 type fakeSessionRepo struct {
 	sessions     map[string]*domain.Session
 	createCalls  int

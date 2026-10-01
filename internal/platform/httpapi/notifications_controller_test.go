@@ -44,7 +44,6 @@ func newTestNotificationsRouter(t *testing.T) http.Handler {
 		Users:         users,
 		Sessions:      repo.NewSessions(pool),
 		Log:           log,
-		I18nLoaded:    true,
 		SessionTTL:    sessionTTL,
 	})
 }

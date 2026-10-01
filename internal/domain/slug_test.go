@@ -23,6 +23,9 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
+// ValidateStrict отвечает за длину, структуру сегментов и цифру; набор
+// символов проверяет SLUG_REGEX (см. slugprovider) — поэтому «Ё9» или «Х8!»
+// здесь проверяются с настроенной регуляркой, а не с зашитым алфавитом.
 func TestValidateStrictAccepts(t *testing.T) {
 	valid := []string{"М8О-401Б-23", "ИКБО-33-21", "AB-1", "М8О"}
 	for _, s := range valid {
@@ -41,9 +44,6 @@ func TestValidateStrictRejects(t *testing.T) {
 		"-М8О",
 		"М8О-",
 		"А1-Б2-В3-Г4-Д5-Е6",
-		"Х8!",
-		"Ё9",
-		"м8о-401б-23",
 	}
 	for _, s := range invalid {
 		err := ValidateStrict(s)
@@ -54,5 +54,14 @@ func TestValidateStrictRejects(t *testing.T) {
 		if !errors.Is(err, ErrInvalidSlug) {
 			t.Errorf("ValidateStrict(%q) = %v, want wrapping ErrInvalidSlug", s, err)
 		}
+	}
+}
+
+// Набор символов — ответственность SLUG_REGEX (local-провайдер), поэтому
+// символ вне дефолтного алфавита здесь структуру проходит: домен проверяет
+// длину, сегменты и цифру, а не буквы.
+func TestValidateStrictIsCharsetAgnostic(t *testing.T) {
+	if err := ValidateStrict("ЁЁ9"); err != nil {
+		t.Errorf("ValidateStrict(%q) = %v, want nil (charset is SLUG_REGEX's job)", "ЁЁ9", err)
 	}
 }

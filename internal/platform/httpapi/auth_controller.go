@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sauron/deadliner/internal/app/auth"
 	"github.com/sauron/deadliner/internal/domain"
@@ -85,12 +87,22 @@ func (c *authController) Me(w http.ResponseWriter, r *http.Request) {
 }
 
 // patchMeRequest — тело PATCH /api/v1/me; неизвестные поля → 400.
+// first_name — из спеки §5.2: имя меняется тем же запросом, что tz и
+// dm_notify_default (отдельного PATCH /me/profile нет).
 type patchMeRequest struct {
 	TZ              *string `json:"tz"`
 	DMNotifyDefault *bool   `json:"dm_notify_default"`
+	FirstName       *string `json:"first_name"`
 }
 
-// PatchMe — PATCH /api/v1/me {tz?, dm_notify_default?} → обновлённый профиль.
+// maxFirstNameRunes — граница имени (как у title дедлайна): имя показывается в
+// списках участников и в тексте жалобы, бесконтрольная длина ломала бы вёрстку.
+const maxFirstNameRunes = 64
+
+// PatchMe — PATCH /api/v1/me {tz?, dm_notify_default?, first_name?} →
+// обновлённый профиль. Пустой first_name — валидационная ошибка: сброс имени
+// оставил бы пользователя безымянным в списках участников (имя из initData
+// приходит всегда).
 func (c *authController) PatchMe(w http.ResponseWriter, r *http.Request) {
 	u := middleware.UserFrom(r.Context())
 	if u == nil {
@@ -116,10 +128,28 @@ func (c *authController) PatchMe(w http.ResponseWriter, r *http.Request) {
 	if req.DMNotifyDefault != nil {
 		dm = *req.DMNotifyDefault
 	}
+	firstName := u.FirstName
+	if req.FirstName != nil {
+		name := strings.TrimSpace(*req.FirstName)
+		if n := utf8.RuneCountInString(name); n < 1 || n > maxFirstNameRunes {
+			httpjson.WriteError(w, http.StatusBadRequest, "validation", i18n.T("api.error.first_name"))
+			return
+		}
+		firstName = name
+	}
 
 	if err := c.users.UpdateSettings(r.Context(), u.ID, tz, dm); err != nil {
 		httpjson.WriteDomainError(w, err)
 		return
+	}
+	if req.FirstName != nil {
+		// Второй UPDATE только когда имя реально пришло: UpdateSettings —
+		// основной путь настроек, и лишняя запись на каждый PATCH /me была бы
+		// платой за редкий случай.
+		if err := c.users.UpdateProfile(r.Context(), u.ID, firstName); err != nil {
+			httpjson.WriteDomainError(w, err)
+			return
+		}
 	}
 
 	updated, err := c.users.GetByID(r.Context(), u.ID)

@@ -61,6 +61,9 @@ type Deps struct {
 	// /delete_group (moderation.Service); nil — команды отвечают отказом
 	// (generic), как и при отсутствии сервиса.
 	Superadmin Superadmin
+	// Reports — жалоба на слаг /report_slug (спека §3.3, groups.Service);
+	// nil — команда отвечает generic'ом.
+	Reports SlugReporter
 	// Sender — транспорт отправки (BotSender).
 	Sender MessageSender
 	// AdminChecker — проверка «бот — администратор чата» (BotSender).
@@ -168,6 +171,7 @@ func (b *Bot) newHandlers(deps Deps) *Handlers {
 		Users:        deps.Users,
 		Binder:       deps.Binder,
 		Superadmin:   deps.Superadmin,
+		Reports:      deps.Reports,
 		Sender:       deps.Sender,
 		AdminChecker: deps.AdminChecker,
 		BotUserID:    deps.BotUserID,

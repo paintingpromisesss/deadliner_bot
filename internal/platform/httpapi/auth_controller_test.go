@@ -113,7 +113,6 @@ func newTestRouter(t *testing.T) http.Handler {
 		Users:      users,
 		Sessions:   sessions,
 		Log:        slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
-		I18nLoaded: true,
 		SessionTTL: ttl,
 	})
 	return r
@@ -326,6 +325,102 @@ func TestPatchMe_UnknownField_400(t *testing.T) {
 	resp := doJSON(r, http.MethodPatch, "/api/v1/me", token, map[string]any{"is_superadmin": true})
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("PATCH /me unknown field = %d, want 400; body: %s", resp.Code, resp.Body)
+	}
+}
+
+// Спека §5.2: PATCH /me принимает first_name. Проверяем round-trip —
+// ответ содержит новое имя и оно же лежит в БД (а не только в ответе).
+func TestPatchMe_FirstNamePersisted(t *testing.T) {
+	r := newTestRouter(t)
+	token, _ := login(t, r, 42)
+
+	resp := doJSON(r, http.MethodPatch, "/api/v1/me", token, map[string]any{"first_name": "  Пётр  "})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("PATCH /me first_name = %d, want 200; body: %s", resp.Code, resp.Body)
+	}
+	var body struct {
+		FirstName string `json:"first_name"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.FirstName != "Пётр" {
+		t.Errorf("response first_name = %q, want trimmed Пётр", body.FirstName)
+	}
+
+	var dbName string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT first_name FROM users WHERE telegram_id = 42`).Scan(&dbName); err != nil {
+		t.Fatalf("read first_name: %v", err)
+	}
+	if dbName != "Пётр" {
+		t.Errorf("first_name in db = %q, want Пётр", dbName)
+	}
+
+	// Имя видно и на следующем GET /me — имя не «одноразовое» на ответ.
+	resp = doJSON(r, http.MethodGet, "/api/v1/me", token, nil)
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.FirstName != "Пётр" {
+		t.Errorf("GET /me first_name = %q, want Пётр", body.FirstName)
+	}
+
+	// Имя меняется вместе с настройками одним запросом (tz не откатывается).
+	resp = doJSON(r, http.MethodPatch, "/api/v1/me", token,
+		map[string]any{"first_name": "Иван", "tz": "Asia/Almaty"})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("combined PATCH = %d, want 200; body: %s", resp.Code, resp.Body)
+	}
+	var tz string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT tz, first_name FROM users WHERE telegram_id = 42`).Scan(&tz, &dbName); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if tz != "Asia/Almaty" || dbName != "Иван" {
+		t.Errorf("tz/first_name = %q/%q, want Asia/Almaty/Иван", tz, dbName)
+	}
+}
+
+// Пустое (или пробельное) имя — 400: сброс оставил бы пользователя безымянным
+// в списках участников.
+func TestPatchMe_EmptyFirstName_400(t *testing.T) {
+	r := newTestRouter(t)
+	token, _ := login(t, r, 42)
+
+	for _, v := range []string{"", "   "} {
+		resp := doJSON(r, http.MethodPatch, "/api/v1/me", token, map[string]any{"first_name": v})
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("PATCH first_name=%q = %d, want 400; body: %s", v, resp.Code, resp.Body)
+		}
+	}
+
+	// Имя не изменилось: валидация отклоняет ДО записи.
+	var name string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT first_name FROM users WHERE telegram_id = 42`).Scan(&name); err != nil {
+		t.Fatalf("read first_name: %v", err)
+	}
+	if name != "Иван" {
+		t.Errorf("first_name = %q, want the original Иван (no partial write)", name)
+	}
+}
+
+// Слишком длинное имя — 400 (граница 64 символа).
+func TestPatchMe_LongFirstName_400(t *testing.T) {
+	r := newTestRouter(t)
+	token, _ := login(t, r, 42)
+
+	resp := doJSON(r, http.MethodPatch, "/api/v1/me", token,
+		map[string]any{"first_name": strings.Repeat("я", 65)})
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH /me long first_name = %d, want 400; body: %s", resp.Code, resp.Body)
+	}
+	// Ровно 64 — принимается.
+	resp = doJSON(r, http.MethodPatch, "/api/v1/me", token,
+		map[string]any{"first_name": strings.Repeat("я", 64)})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("PATCH /me 64-char first_name = %d, want 200; body: %s", resp.Code, resp.Body)
 	}
 }
 

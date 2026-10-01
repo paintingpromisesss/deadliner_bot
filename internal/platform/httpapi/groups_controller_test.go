@@ -14,6 +14,7 @@ import (
 	"github.com/sauron/deadliner/internal/domain"
 	"github.com/sauron/deadliner/internal/i18n"
 	"github.com/sauron/deadliner/internal/platform/repo"
+	"github.com/sauron/deadliner/internal/platform/slugprovider"
 )
 
 const sessionTTL = 30 * 24 * time.Hour
@@ -38,7 +39,6 @@ func newTestGroupsRouter(t *testing.T, cfg groups.Config) http.Handler {
 		Users:      repo.NewUsers(pool),
 		Sessions:   repo.NewSessions(pool),
 		Log:        log,
-		I18nLoaded: true,
 		SessionTTL: sessionTTL,
 	})
 }
@@ -50,6 +50,44 @@ func newTestGroupsRouterDefault(t *testing.T) http.Handler {
 		CreateDayLimit:   3,
 		CreateWeekLimit:  5,
 		InviteDefaultTTL: 7 * 24 * time.Hour,
+	})
+}
+
+// newTestGroupsRouterWithSlugRegex — тот же роутер, но groups.Service собран
+// с local-провайдером слага на заданном SLUG_REGEX: проверяем сквозной путь
+// env → провайдер → 400/201, а не только unit-тесты провайдера.
+func newTestGroupsRouterWithSlugRegex(t *testing.T, expr string) http.Handler {
+	t.Helper()
+	pool := newTestDB(t)
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	i18n.MustLoad(i18n.Locales)
+
+	groupsSvc := groups.NewService(
+		repo.NewGroups(pool), repo.NewMemberships(pool), repo.NewInvites(pool),
+		repo.NewCounters(pool), repo.NewAudit(pool), repo.NewBindings(pool),
+		groups.Config{
+			PendingTTL:       14 * 24 * time.Hour,
+			CreateDayLimit:   3,
+			CreateWeekLimit:  5,
+			InviteDefaultTTL: 7 * 24 * time.Hour,
+		}, domain.SystemClock{}, log)
+	provider, err := slugprovider.NewLocal(expr, repo.NewGroups(pool))
+	if err != nil {
+		t.Fatalf("slugprovider.NewLocal(%q): %v", expr, err)
+	}
+	groupsSvc.WithOptions(groups.Options{Slugs: provider, Users: repo.NewUsers(pool)})
+
+	return New(Deps{
+		Auth: auth.NewService(repo.NewUsers(pool), repo.NewSessions(pool), auth.Config{
+			BotToken:       testBotToken,
+			AuthDateMaxAge: 24 * time.Hour,
+			SessionTTL:     sessionTTL,
+		}, domain.SystemClock{}),
+		Groups:     groupsSvc,
+		Users:      repo.NewUsers(pool),
+		Sessions:   repo.NewSessions(pool),
+		Log:        log,
+		SessionTTL: sessionTTL,
 	})
 }
 
@@ -218,6 +256,48 @@ func TestGroupsInvalidSlug400(t *testing.T) {
 	if env["error"]["code"] != "slug_invalid" {
 		t.Errorf("error code = %q, want slug_invalid", env["error"]["code"])
 	}
+}
+
+// Сквозная проверка SLUG_REGEX (finding I-1): charset приходит из конфига в
+// провайдер, а не из зашитого в домене алфавита. «ГРУППА-1» содержит цифру и
+// структурно корректна, поэтому её судьбу решает именно регулярка.
+func TestGroupsCreateHonorsSlugRegexFromConfig(t *testing.T) {
+	t.Run("дефолтная регулярка отвергает латиницу вне A-Z и кириллицу вне А-Я", func(t *testing.T) {
+		r := newTestGroupsRouterWithSlugRegex(t, `^[А-Я0-9]+(-[А-Я0-9]+)*$`)
+		tok, _ := login(t, r, 901)
+
+		// «GROUP-1» не проходит настроенную регулярку (латиница выключена).
+		resp := doJSON(r, http.MethodPost, "/api/v1/groups", tok,
+			map[string]any{"slug": "GROUP-1", "title": "T"})
+		if resp.Code != http.StatusBadRequest {
+			t.Fatalf("GROUP-1 under a Cyrillic-only regex = %d, want 400; body: %s", resp.Code, resp.Body)
+		}
+		// «ГРУППА-1» — принимается.
+		resp = doJSON(r, http.MethodPost, "/api/v1/groups", tok,
+			map[string]any{"slug": "ГРУППА-1", "title": "T"})
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("ГРУППА-1 under a Cyrillic-only regex = %d, want 201; body: %s", resp.Code, resp.Body)
+		}
+	})
+
+	t.Run("правило цифры сохраняется при ослабленной регулярке", func(t *testing.T) {
+		// Регулярка допускает слаг без цифр (и дефисы в любом порядке) —
+		// цифру всё равно требует домен: это анти-спам-правило Deadliner
+		// поверх charset'а, а не часть SLUG_REGEX.
+		r := newTestGroupsRouterWithSlugRegex(t, `^[А-ЯA-Z0-9-]+$`)
+		tok, _ := login(t, r, 902)
+
+		resp := doJSON(r, http.MethodPost, "/api/v1/groups", tok,
+			map[string]any{"slug": "ГРУППА", "title": "T"})
+		if resp.Code != http.StatusBadRequest {
+			t.Fatalf("ГРУППА (no digit) = %d, want 400; body: %s", resp.Code, resp.Body)
+		}
+		resp = doJSON(r, http.MethodPost, "/api/v1/groups", tok,
+			map[string]any{"slug": "ГРУППА-1", "title": "T"})
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("ГРУППА-1 = %d, want 201; body: %s", resp.Code, resp.Body)
+		}
+	})
 }
 
 func TestGroupsRateLimit429WithRetryAfter(t *testing.T) {

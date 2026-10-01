@@ -135,6 +135,12 @@ func (r *fakeGroupRepo) ListPendingExpired(ctx context.Context, now time.Time, l
 	return nil, errors.New("not used")
 }
 
+// ListAll — часть domain.GroupRepo, нужная только CLI `admin list-groups`;
+// сервисам этих пакетов не требуется.
+func (r *fakeGroupRepo) ListAll(ctx context.Context, status *domain.GroupStatus, limit int) ([]domain.Group, error) {
+	return nil, nil
+}
+
 type memKey struct{ groupID, userID int64 }
 
 type fakeMembershipRepo struct {

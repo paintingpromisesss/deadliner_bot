@@ -158,6 +158,47 @@ func TestReportSlug_NotifiesEverySuperadmin(t *testing.T) {
 	}
 }
 
+// Точный порядок подстановок в шаблоне: слаг / id группы / отправитель.
+// Пиннится ВСЯ отрендеренная строка целиком, а не наличие подстрок: именно
+// проверка «в тексте есть слаг и есть имя» пропустила перестановку аргументов,
+// из-за которой супер-админы читали «Группа: id=Иван / Отправитель: 1».
+func TestReportSlug_RendersTemplateArgsInOrder(t *testing.T) {
+	if err := i18n.Load(i18n.Locales); err != nil {
+		t.Fatalf("i18n: %v", err)
+	}
+	f := newReportFixture([]domain.User{superadmin(10, 10010)})
+	ctx := context.Background()
+
+	g, err := f.svc.Create(ctx, namedUser(1, "Иван"), "ИКБО-33-21", "Моя группа")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.members.SetRole(ctx, g.ID, 1, domain.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if g.ID != 1 {
+		t.Fatalf("fixture precondition: group id = %d, want 1 (ожидаемый текст ниже завязан на него)", g.ID)
+	}
+
+	if _, err := f.svc.ReportSlug(ctx, namedUser(1, "Иван"), "ИКБО-33-21"); err != nil {
+		t.Fatalf("ReportSlug: %v", err)
+	}
+	if len(f.notifier.sent) != 1 {
+		t.Fatalf("delivered = %d, want 1", len(f.notifier.sent))
+	}
+
+	want := "⚠️ Жалоба на слаг ИКБО-33-21\n" +
+		"Группа: id=1\n" +
+		"Отправитель: Иван\n" +
+		"\n" +
+		"Разрешение конфликта — вручную: удалите лишнюю группу " +
+		"(/delete_group «слаг») или передайте админство. " +
+		"Слаг освобождается только удалением группы."
+	if got := f.notifier.sent[0].text; got != want {
+		t.Errorf("slug report text mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
 // Не-админ группы жаловаться не может: супер-админам не уходит ничего.
 func TestReportSlug_NonAdminIsForbidden(t *testing.T) {
 	f := newReportFixture([]domain.User{superadmin(10, 10010)})

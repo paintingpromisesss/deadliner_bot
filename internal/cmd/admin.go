@@ -331,14 +331,9 @@ func printGroups(w io.Writer, rows []moderation.GroupSummary, truncated bool) {
 	}
 
 	if truncated {
-		fmt.Fprintln(w, i18n.T("admin.list_groups.truncated", formatInt(int64(listGroupsHint))))
+		fmt.Fprintln(w, i18n.T("admin.list_groups.truncated", formatInt(int64(moderation.ListGroupsLimit))))
 	}
 }
-
-// listGroupsHint — значение, о котором предупреждает усечённый вывод. Держим
-// его рядом с печатью: moderation.listGroupsLimit не экспортирован, а
-// расхождение («показано 500, написано 1000») обманывало бы оператора.
-const listGroupsHint = 500
 
 // fail печатает ошибку операции человекочитаемо и возвращает код 1.
 func fail(w io.Writer, cmd string, err error) int {

@@ -248,8 +248,11 @@ func (s *Service) ReportSlug(ctx context.Context, actor *domain.User, slug strin
 	}
 
 	reporter := reporterName(actor)
+	// Порядок аргументов — строго по шаблону superadmin.slug_report:
+	// слаг / id группы / отправитель. Перестановка здесь давала супер-админам
+	// «Группа: id=Иван / Отправитель: 7» (номер группы уезжал в имя).
 	text := i18n.T("superadmin.slug_report",
-		i18n.EscapeHTML(g.Slug), i18n.EscapeHTML(reporter), formatInt64(g.ID))
+		i18n.EscapeHTML(g.Slug), formatInt64(g.ID), i18n.EscapeHTML(reporter))
 	delivered := 0
 	for _, sa := range admins {
 		if sa.BotBlocked {

@@ -202,6 +202,16 @@ func Load() (*Config, error) {
 		l.errs = append(l.errs, errors.New(
 			"missing required env var WEBHOOK_SECRET: webhook mode without a secret token accepts forged updates"))
 	}
+	// Fail-closed: POLLING_MODE=webhook без WEBHOOK_URL — процесс, который
+	// стартует и молча не принимает апдейты: регистрировать вебхук некуда,
+	// getUpdates тоже не запускается. Ошибка на старте громче и дешевле, чем
+	// «бот жив, но молчит» в проде. Пустой PollingMode сюда не попадает:
+	// webhook-режим тогда определяет сам WEBHOOK_URL, а он непуст по условию.
+	if cfg.Bot.PollingMode == PollingModeWebhook && cfg.Bot.WebhookURL == "" {
+		l.errs = append(l.errs, errors.New(
+			"missing required env var WEBHOOK_URL: POLLING_MODE=webhook without a webhook URL "+
+				"starts a process that receives no updates"))
+	}
 	// Retention уборки счётчиков обязан быть больше самого длинного окна
 	// лимита (168ч = неделя): окно floor-ится на своё начало, поэтому живая
 	// строка недельного счётчика может быть почти 168 часов от роду, и

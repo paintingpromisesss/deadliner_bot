@@ -36,10 +36,23 @@ cp .env.example .env
 Заполните в `.env` минимум три переменные:
 
 ```dotenv
-BOT_TOKEN=123456:ABC-DEF...          # от @BotFather
+# Токен от @BotFather
+BOT_TOKEN=123456:ABC-DEF...
+
+# Внутри compose хост БД — postgres (см. примечание ниже)
 DATABASE_URL=postgres://deadliner:deadliner@postgres:5432/deadliner?sslmode=disable
-APP_PUBLIC_URL=https://<ваш-домен>   # https обязателен для Telegram
+
+# https обязателен для Telegram
+APP_PUBLIC_URL=https://<ваш-домен>
 ```
+
+> **Комментарии в `.env` — только отдельными строками.** Парсеры env-файлов
+> (`docker compose env_file`, `docker run --env-file`) не считают `#`
+> комментарием после пустого значения: строка
+> `WEBHOOK_URL=    # https://example/webhook` даёт значение
+> `# https://example/webhook` — процесс уйдёт в webhook-режим с мусорным адресом
+> и будет падать на `setWebhook`. `cp .env.example .env` этой ошибки не
+> содержит: в примере все комментарии — отдельные строки.
 
 > В `docker-compose.yml` `DATABASE_URL` перекрывается на `postgres:5432` внутри
 > сети compose, поэтому значение из `.env` (с `localhost`) не мешает запуску.
@@ -107,7 +120,7 @@ make fmt          # gofmt по cmd/ и internal/
 | `DATABASE_URL` ⚠️ | — | строка подключения PostgreSQL |
 | `BOT_API_BASE` | — | локальный Bot API сервер (опционально) |
 | `POLLING_MODE` | `long_polling` | `long_polling` либо `webhook` |
-| `WEBHOOK_URL` | — | публичный адрес приёма апдейтов; непустое значение включает webhook-режим |
+| `WEBHOOK_URL` ⚠️\* | — | публичный адрес приёма апдейтов; непустое значение включает webhook-режим; обязателен при `POLLING_MODE=webhook` |
 | `WEBHOOK_SECRET` ⚠️\* | — | секрет заголовка `X-Telegram-Bot-Api-Secret-Token`; обязателен в webhook-режиме |
 | `WEBHOOK_PORT` | `0` | задел (serve слушает `HTTP_ADDR`) |
 | `TG_RATE_GLOBAL` | `25` | исходящих сообщений в секунду на процесс |
@@ -134,9 +147,11 @@ make fmt          # gofmt по cmd/ и internal/
 | `SLUG_REGEX` | `^[А-ЯA-Z0-9]+(-[А-ЯA-Z0-9]+)*$` | шаблон слага (плюс валидатор длины и цифры) |
 | `COUNTER_RETENTION` | `192h` | retention окон rate-limit-счётчиков; строго больше 168ч (недельное окно), иначе процесс не стартует |
 
-\* `WEBHOOK_SECRET` обязателен, только если включён webhook-режим
-(`POLLING_MODE=webhook` или непустой `WEBHOOK_URL`). Проверка fail-closed: без
-секрета Telegram принимает любой `POST /webhook`, то есть подделанные апдейты.
+\* `WEBHOOK_URL` и `WEBHOOK_SECRET` обязательны в webhook-режиме
+(`POLLING_MODE=webhook` либо непустой `WEBHOOK_URL`). Проверка fail-closed:
+без URL бот некуда регистрировать вебхук (процесс стартовал бы и молча не
+принимал апдейты), а без секрета Telegram принимает любой `POST /webhook`, то
+есть подделанные апдейты.
 
 Дополнительно для compose (приложением не читаются): `POSTGRES_USER`,
 `POSTGRES_PASSWORD`, `POSTGRES_DB`, `HTTP_PORT` — порт на хосте.
@@ -272,7 +287,8 @@ web/                    # исходники React TMA
   переотправляет уже ушедшее сообщение.
 - **Код claim'а виден только в чате.** В БД лежит SHA-256, plaintext существует
   в сообщении и в ответе TMA; при переборе действует лимит попыток.
-- **Fail-closed webhook.** Пустой `WEBHOOK_SECRET` — отказ старта.
+- **Fail-closed webhook.** Пустой `WEBHOOK_SECRET` или отсутствующий
+  `WEBHOOK_URL` в webhook-режиме — отказ старта.
 - **Последний админ неприкосновенен.** Понижение и кик проверяются условным SQL,
   поэтому группа не может остаться без администратора.
 - **HTML-разметка.** Все пользовательские подстановки в сообщениях проходят

@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-telegram/bot/models"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -47,6 +48,7 @@ import (
 	"github.com/sauron/deadliner/internal/platform/httpapi"
 	"github.com/sauron/deadliner/internal/platform/repo"
 	"github.com/sauron/deadliner/internal/platform/scheduler"
+	"github.com/sauron/deadliner/internal/platform/telegram"
 )
 
 // Параметры сценария: чат группы, telegram_id участников, слага.
@@ -58,6 +60,10 @@ const (
 	tgCreator = int64(1001) // создатель группы → админ через claim
 	tgMember  = int64(1002) // участник с включённым дублем в ЛС
 	tgQuiet   = int64(1003) // участник с выключенными уведомлениями
+
+	// testBotUserID — telegram id бота (префикс токена): хендлер /bind_group
+	// спрашивает у ChatAdminChecker именно про него.
+	testBotUserID = int64(424242)
 )
 
 // t0 — неподвижная точка отсчёта: все сроки считаются от неё, часы двигает
@@ -239,11 +245,31 @@ func threadPtr(id int64) *int64 {
 	return &id
 }
 
-// fakeChatAdmin — проверка «бот — админ чата»: в сценарии чекер всегда
-// положительный, потому что привязка выполняется напрямую через сервис.
-type fakeChatAdmin struct{ admin bool }
+// fakeMsgSender — транспорт хендлеров бота (telegram.MessageSender): ответы
+// команд пишутся в общий recorder, кнопки сохраняются для проверок.
+type fakeMsgSender struct {
+	rec *recorder
+}
 
-func (c fakeChatAdmin) IsChatAdmin(context.Context, int64, int64) (bool, error) {
+func (s *fakeMsgSender) Send(_ context.Context, m telegram.OutMessage) (int64, error) {
+	return s.rec.addChat(m.ChatID, m.ThreadID, recorded{
+		text: m.Text, button: m.ButtonText, buttonURL: m.ButtonURL,
+	}), nil
+}
+
+// fakeChatAdmin — проверка «бот — админ чата» (telegram.ChatAdminChecker).
+// Сценарий использует её через настоящий хендлер /bind_group: привязка чата
+// существует ТОЛЬКО в боте (в REST API такого эндпоинта нет), поэтому сквозной
+// тест обязан пройти именно через диспетчер апдейтов.
+type fakeChatAdmin struct {
+	admin bool
+	// calls — запрошенные (chatID, botUserID): проверка, что handler запрашивает
+	// админство именно для бота в целевом чате, а не «просто true».
+	calls []string
+}
+
+func (c *fakeChatAdmin) IsChatAdmin(_ context.Context, chatID, userID int64) (bool, error) {
+	c.calls = append(c.calls, fmt.Sprintf("%d/%d", chatID, userID))
 	return c.admin, nil
 }
 
@@ -264,8 +290,10 @@ type env struct {
 	notifications *notifications.Service
 	moderation    *moderation.Service
 
-	worker *scheduler.Worker
-	router http.Handler
+	worker       *scheduler.Worker
+	router       http.Handler
+	handlers     *telegram.Handlers
+	adminChecker *fakeChatAdmin
 }
 
 func newEnv(t *testing.T) *env {
@@ -276,7 +304,7 @@ func newEnv(t *testing.T) *env {
 	if _, err := testPool.Exec(ctx, `TRUNCATE
 		users, groups, chat_bindings, group_memberships, deadlines, reminders,
 		invites, claim_codes, user_action_counters, chat_action_counters, sessions,
-		audit_log CASCADE`); err != nil {
+		outbox_messages, audit_log CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 
@@ -361,19 +389,35 @@ func newEnv(t *testing.T) *env {
 		Clock:       clock,
 		Log:         log,
 	}, scheduler.Config{
-		PollInterval:    time.Minute,
-		Batch:           50,
-		LockTTL:         2 * time.Minute,
-		MaxAttempts:     5,
-		WorkerID:        "e2e-worker",
-		FinalizeTimeout: 75 * time.Second,
+		PollInterval: time.Minute,
+		Batch:        50,
+		LockTTL:      2 * time.Minute,
+		MaxAttempts:  5,
+		WorkerID:     "e2e-worker",
+		// Ноль — дефолт пакета (scheduler.DefaultFinalizeTimeout), как в serve:
+		// тест не должен закреплять собственную копию бюджета.
 	})
+
+	// Хендлеры бота (диспетчер апдейтов) собираются на тех же сервисах, что и
+	// REST API — иначе сценарий проверял бы не тот код, что работает в проде.
+	// Транспорт — фейковый recorder; проверка админства — управляемый чекер.
+	adminChecker := &fakeChatAdmin{admin: true}
+	handlers := telegram.NewHandlers(telegram.HandlersDeps{
+		Users:        users,
+		Binder:       groupsSvc,
+		Superadmin:   moderationSvc,
+		Sender:       &fakeMsgSender{rec: rec},
+		AdminChecker: adminChecker,
+		BotUserID:    testBotUserID,
+		AppPublicURL: "https://deadliner.example/app",
+	}, log)
 
 	return &env{
 		pool: testPool, clock: clock, rec: rec, log: log,
 		users: users, groups: groupsSvc, claims: claimsSvc,
 		deadlines: deadlinesSvc, notifications: notificationsSvc,
 		moderation: moderationSvc, worker: worker, router: router,
+		handlers: handlers, adminChecker: adminChecker,
 	}
 }
 
@@ -508,6 +552,36 @@ func firstChatText(t *testing.T, recs []recorded) string {
 	return recs[0].text
 }
 
+// lastChatText — текст последнего сообщения, ушедшего в чат (ответ на команду).
+func lastChatText(t *testing.T, recs []recorded) string {
+	t.Helper()
+	if len(recs) == 0 {
+		t.Fatal("no messages were sent to the chat")
+	}
+	return recs[len(recs)-1].text
+}
+
+// sendBotCommand прогоняет апдейт через настоящий диспетчер хендлеров
+// (telegram.Handlers.Handle) — тот же путь, которым идёт апдейт от Telegram
+// в polling/webhook-режиме. chatID < 0 — группа, > 0 — ЛС.
+func (e *env) sendBotCommand(t *testing.T, chatID int64, threadID *int64, fromID int64, firstName, text string) {
+	t.Helper()
+	chatType := models.ChatTypeGroup
+	if chatID > 0 {
+		chatType = models.ChatTypePrivate
+	}
+	msg := &models.Message{
+		ID:   1,
+		From: &models.User{ID: fromID, FirstName: firstName, Username: fmt.Sprintf("u%d", fromID)},
+		Chat: models.Chat{ID: chatID, Type: chatType, Title: "Тестовый чат"},
+		Text: text,
+	}
+	if threadID != nil {
+		msg.MessageThreadID = int(*threadID)
+	}
+	e.handlers.Handle(context.Background(), &models.Update{ID: 1, Message: msg})
+}
+
 // --- сценарий ---
 
 // TestE2E_DeadlineLifecycle — сквозной путь от входа до отправленного
@@ -541,14 +615,29 @@ func TestE2E_DeadlineLifecycle(t *testing.T) {
 		t.Fatalf("group = %+v, want pending group with id", created.Group)
 	}
 
-	t.Log(step, "3: привязка чата группы (чекер админства — положительный)")
-	creatorID := userIDByTelegram(t, e, tgCreator)
-	creator := &domain.User{ID: creatorID, TelegramID: tgCreator, TZ: "Europe/Moscow"}
-	if _, err := e.groups.BindChat(ctx, creator, testChatID, nil, testSlug, "Тестовый чат"); err != nil {
-		t.Fatalf("BindChat: %v", err)
+	t.Log(step, "3: привязка чата — через настоящий /bind_group в чате группы")
+	// Привязка идёт ровно тем путём, что и в проде: апдейт от Telegram →
+	// хендлер → ChatAdminChecker → groups.BindChat. В REST API такого
+	// эндпоинта нет, поэтому «привязать напрямую через сервис» проверяло бы
+	// не тот код, который работает у пользователя.
+	e.sendBotCommand(t, testChatID, nil, tgCreator, "Иван", "/bind_group "+testSlug)
+	bindReply := lastChatText(t, e.rec.inChat(testChatID))
+	if !strings.Contains(bindReply, i18n.EscapeHTML("ИКБО-33-21")) {
+		t.Fatalf("/bind_group reply = %q, want it to name the bound group", bindReply)
+	}
+	if len(e.adminChecker.calls) == 0 {
+		t.Fatal("/bind_group did not consult the chat-admin checker")
+	}
+	if got := e.adminChecker.calls[len(e.adminChecker.calls)-1]; got != fmt.Sprintf("%d/%d", testChatID, testBotUserID) {
+		t.Errorf("admin check = %q, want %q (bot id in the target chat)",
+			got, fmt.Sprintf("%d/%d", testChatID, testBotUserID))
 	}
 
 	// --- claim: код публикуется в чат ---
+	// Считаем сообщения ПОСЛЕ привязки: ответ /bind_group в чате уже есть, и
+	// привязка к его количеству сделала бы тест хрупким.
+	afterBind := len(e.rec.inChat(testChatID))
+
 	t.Log(step, "4: claim start — код уходит в чат")
 	resp = doJSON(e.router, http.MethodPost,
 		fmt.Sprintf("/api/v1/groups/%d/claim/start", groupID), creatorToken, nil)
@@ -556,12 +645,14 @@ func TestE2E_DeadlineLifecycle(t *testing.T) {
 		t.Fatalf("POST claim/start = %d, want 200; body: %s", resp.Code, resp.Body)
 	}
 	chatMsgs := e.rec.inChat(testChatID)
-	if len(chatMsgs) != 1 {
-		t.Fatalf("chat messages after claim start = %d, want 1", len(chatMsgs))
+	if len(chatMsgs) != afterBind+1 {
+		t.Fatalf("chat messages after claim start = %d, want %d (only the code message added)",
+			len(chatMsgs), afterBind+1)
 	}
-	code := claimCodeRe.FindString(firstChatText(t, chatMsgs))
+	codeMsg := chatMsgs[len(chatMsgs)-1]
+	code := claimCodeRe.FindString(codeMsg.text)
 	if code == "" {
-		t.Fatalf("no 6-digit claim code in chat message: %q", chatMsgs[0].text)
+		t.Fatalf("no 6-digit claim code in chat message: %q", codeMsg.text)
 	}
 
 	t.Log(step, "5: claim confirm — роль admin, группа active")
@@ -667,10 +758,11 @@ func TestE2E_DeadlineLifecycle(t *testing.T) {
 	}
 
 	chatMsgs = e.rec.inChat(testChatID)
-	if len(chatMsgs) != 2 { // код claim'а + напоминание
-		t.Fatalf("chat messages = %d, want 2 (claim code + reminder)", len(chatMsgs))
+	if len(chatMsgs) != afterBind+2 { // ответ /bind_group + код claim'а + напоминание
+		t.Fatalf("chat messages = %d, want %d (bind reply + claim code + reminder)",
+			len(chatMsgs), afterBind+2)
 	}
-	text := chatMsgs[1].text
+	text := lastChatText(t, chatMsgs)
 	// Текст собирается из i18n-шаблона: проверяем и разметку, и экранирование.
 	if !strings.Contains(text, "25 минут") {
 		t.Errorf("reminder text %q does not carry the humanized interval (%s - %s)", text, dueAfter, remindAfter)
@@ -760,6 +852,12 @@ func TestE2E_DeadlineLifecycle(t *testing.T) {
 	}
 	if report.Groups != 1 {
 		t.Errorf("cleanup removed %d groups, want 1 (the stale pending one)", report.Groups)
+	}
+	// Проверка «протухшая группа исчезла, живая осталась» идёт через доменные
+	// вызовы: Get живого вызывающего (создателя) — та же видимость, что у TMA.
+	creator, err := e.users.GetByTelegramID(ctx, tgCreator)
+	if err != nil {
+		t.Fatalf("users.GetByTelegramID(%d): %v", tgCreator, err)
 	}
 	if _, err := e.groups.Get(ctx, creator, stale.Group.ID); err == nil {
 		t.Error("stale pending group is still visible after cleanup")

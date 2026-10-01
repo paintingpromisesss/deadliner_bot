@@ -29,13 +29,18 @@ type Config struct {
 	DMNotifyBatch int
 	// FinalizeTimeout — бюджет на доведение уже начатой работы после отмены
 	// ctx (см. process): фиксация sent/failed не должна теряться, иначе
-	// перезапуск переотправит напоминание. По умолчанию 75s: нотификатор
-	// держит выдержку 429 retry_after внутри себя до 60с и повторяет отправку,
-	// поэтому бюджет обязан покрывать 60с выдержки плюс запас на саму
-	// отправку и UPDATE — иначе graceful shutdown обрывал бы легитимное
-	// ожидание и сообщение оставалось бы с локом (дубль после рестарта).
+	// перезапуск переотправит напоминание. Ноль (и меньше) → DefaultFinalizeTimeout.
 	FinalizeTimeout time.Duration
 }
+
+// DefaultFinalizeTimeout — бюджет финализации по умолчанию. 75s, а не 30s:
+// нотификатор держит выдержку 429 retry_after внутри себя до 60с
+// (telegram.maxInternalRetryAfter) и повторяет отправку, поэтому бюджет обязан
+// покрывать 60с выдержки плюс запас на саму отправку и UPDATE — иначе graceful
+// shutdown обрывал бы легитимное ожидание и сообщение оставалось бы с локом
+// (дубль после рестарта). Экспортирован, чтобы serve не дублировал значение:
+// расхождение здесь вернуло бы баг незаметно.
+const DefaultFinalizeTimeout = 75 * time.Second
 
 // Deps — зависимости воркера (только domain-порты + пул для транзакций).
 type Deps struct {
@@ -89,11 +94,7 @@ func New(deps Deps, cfg Config) *Worker {
 		cfg.LockTTL = 2 * time.Minute
 	}
 	if cfg.FinalizeTimeout <= 0 {
-		// 75s, а не 30s: нотификатор выдерживает 429 retry_after до 60с
-		// внутри себя (maxInternalRetryAfter) и повторяет отправку — бюджет
-		// финализации обязан покрывать эту выдержку, иначе graceful shutdown
-		// отберёт у напоминания шанс зафиксировать уже отправленное сообщение.
-		cfg.FinalizeTimeout = 75 * time.Second
+		cfg.FinalizeTimeout = DefaultFinalizeTimeout
 	}
 	log := deps.Log
 	if log == nil {
@@ -106,6 +107,11 @@ func New(deps Deps, cfg Config) *Worker {
 		sem:  make(chan struct{}, cfg.Concurrency),
 	}
 }
+
+// FinalizeTimeout — фактический бюджет финализации воркера (после подстановки
+// дефолта). Интроспективное API для тестов сборки графа: serve не задаёт
+// значение сам, и проверять нужно реально применяемое, а не константу.
+func (w *Worker) FinalizeTimeout() time.Duration { return w.cfg.FinalizeTimeout }
 
 // Run — главный цикл (спека §7.2): джиттер 0–500мс, ReleaseStale → FetchDue
 // → батч параллельно (семафор) → MarkSent|MarkFailed. ctx.Done: ждём

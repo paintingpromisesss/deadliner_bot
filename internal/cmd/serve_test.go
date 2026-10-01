@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sauron/deadliner/internal/config"
+	"github.com/sauron/deadliner/internal/platform/scheduler"
 	"github.com/sauron/deadliner/internal/platform/telegram"
 )
 
@@ -21,6 +24,9 @@ import (
 type stubBotAPI struct {
 	mu      sync.Mutex
 	methods []string
+	// failSetWebhook — заглушка отвечает 401 на setWebhook (неверный токен):
+	// так проверяется путь отказа регистрации вебхука.
+	failSetWebhook bool
 }
 
 func (s *stubBotAPI) start(t *testing.T) string {
@@ -30,6 +36,12 @@ func (s *stubBotAPI) start(t *testing.T) string {
 		s.mu.Lock()
 		s.methods = append(s.methods, method)
 		s.mu.Unlock()
+
+		if method == "setWebhook" && s.failSetWebhook {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"ok":false,"error_code":401,"description":"Unauthorized"}`)
+			return
+		}
 
 		result := "true"
 		switch method {
@@ -64,7 +76,9 @@ func cfgForServe(apiBase string, webhook bool) *config.Config {
 			DefaultTZ: "Europe/Moscow", LogLevel: "error", LogFormat: "text",
 			AuthDateMaxAge: 24 * time.Hour, SessionTTLDays: 30,
 		},
-		DB:  config.DB{URL: "postgres://localhost/deadliner", PoolMax: 4},
+		// Serve начинается с миграций и подключения: URL контейнера из TestMain
+		// (без него тесты падали бы на «DATABASE_URL is not set»).
+		DB:  config.DB{URL: testDatabaseURL, PoolMax: 4},
 		Bot: config.Bot{Token: "42:TEST", APIBase: apiBase, RateGlobal: 25, RatePerChat: 18},
 		Scheduler: config.Scheduler{
 			PollInterval: time.Minute, Batch: 10, LockTTL: time.Minute, MaxAttempts: 5,
@@ -172,6 +186,28 @@ func TestBuildGraphBuildsOffline(t *testing.T) {
 	}
 }
 
+// Воркер из графа serve обязан работать под дефолтным FinalizeTimeout: serve не
+// задаёт значение сам (иначе копия константы могла бы разойтись с пакетом
+// scheduler и тихо вернуть баг с недоотправленным напоминанием). Проверяем
+// поведением, а не полем: воркер, у которого бюджет меньше выдержки 429 в
+// нотификаторе, не смог бы зафиксировать отправку.
+func TestBuildGraphWorkerUsesDefaultFinalizeTimeout(t *testing.T) {
+	cfg := cfgForServe("http://127.0.0.1:1", false)
+
+	g, err := buildGraph(cfg, nil, testLogger())
+	if err != nil {
+		t.Fatalf("buildGraph: %v", err)
+	}
+	got := g.worker.FinalizeTimeout()
+	if got != scheduler.DefaultFinalizeTimeout {
+		t.Errorf("serve's worker FinalizeTimeout = %v, want %v (= scheduler default)",
+			got, scheduler.DefaultFinalizeTimeout)
+	}
+	if got <= 60*time.Second {
+		t.Errorf("serve's worker FinalizeTimeout = %v, must exceed the notifier's 60s retry_after wait", got)
+	}
+}
+
 // Заглушка Bot API подтверждает, что полный цикл сборки не делает ни одного
 // запроса: getMe не вызывается (иначе каждый старт зависел бы от сети).
 func TestBuildGraphDoesNotCallGetMe(t *testing.T) {
@@ -183,5 +219,59 @@ func TestBuildGraphDoesNotCallGetMe(t *testing.T) {
 	}
 	if stub.called("getMe") {
 		t.Error("buildGraph called getMe: the bot must be built offline")
+	}
+}
+
+// Путь ошибки net.Listen обязан снять вебхук: к моменту падения он уже
+// зарегистрирован (startBot идёт раньше прослушивания), и оставленный адрес
+// указывал бы на мёртвый инстанс. Тест занимает порт заранее, гоняет Serve и
+// проверяет, что после setWebhook последовал deleteWebhook.
+//
+// Полноценный Serve запускается с заглушкой Bot API; до реального дренажа дело
+// не доходит — Serve падает на прослушивании сразу после регистрации вебхука.
+func TestServeListenFailureUnregistersWebhook(t *testing.T) {
+	stub := &stubBotAPI{}
+	cfg := cfgForServe(stub.start(t), true)
+
+	// Занимаем порт: тот же адрес, что возьмёт Serve.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	defer ln.Close()
+	cfg.App.HTTPAddr = ln.Addr().String()
+
+	err = Serve(context.Background(), cfg, testLogger())
+	if err == nil {
+		t.Fatal("Serve with an occupied port = nil, want a listen error")
+	}
+	if !strings.Contains(err.Error(), "listen") {
+		t.Errorf("Serve error = %v, want it to name the listen failure", err)
+	}
+
+	if !stub.called("setWebhook") {
+		t.Error("setWebhook was not called: the webhook must be registered before listening")
+	}
+	if !stub.called("deleteWebhook") {
+		t.Error("deleteWebhook was not called on the listen-failure path: " +
+			"the webhook would keep pointing at a dead instance")
+	}
+}
+
+// Отказ setWebhook не должен сопровождаться снятием вебхука: он не
+// регистрировался, а deleteWebhook в этом пути только маскировал бы причину.
+func TestServeSetWebhookFailureSkipsUnregister(t *testing.T) {
+	stub := &stubBotAPI{failSetWebhook: true}
+	cfg := cfgForServe(stub.start(t), true)
+
+	err := Serve(context.Background(), cfg, testLogger())
+	if err == nil {
+		t.Fatal("Serve with a failing setWebhook = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "setWebhook") {
+		t.Errorf("Serve error = %v, want it to name setWebhook", err)
+	}
+	if stub.called("deleteWebhook") {
+		t.Error("deleteWebhook was called although the webhook was never registered")
 	}
 }

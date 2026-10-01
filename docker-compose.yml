@@ -16,6 +16,11 @@ services:
 
   app:
     build: .
+    # Внутренние бюджеты остановки: HTTP 15с, воркер 90с, cleanup 30с, плюс
+    # best-effort deleteWebhook — суммарно до ~2м. Меньший grace-period у compose
+    # (дефолт 10с) прибил бы процесс SIGKILL в середине дренажа, и напоминание
+    # осталось бы с локом (дубль после рестарта).
+    stop_grace_period: 2m
     # .env содержит BOT_TOKEN, DATABASE_URL (хост `postgres`!) и WEBHOOK_SECRET —
     # без него процесс не стартует (fail-closed, спека §6.1).
     env_file: .env

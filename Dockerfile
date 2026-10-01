@@ -23,7 +23,6 @@ FROM alpine:3.20
 # расчёты напоминаний идут через IANA-зону, которую alpine не содержит.
 RUN apk add --no-cache tzdata && adduser -D -u 10001 deadliner
 COPY --from=builder /bin/deadliner /usr/local/bin/deadliner
-COPY migrations /migrations
 USER deadliner
 ENTRYPOINT ["deadliner"]
 CMD ["serve"]

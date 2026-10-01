@@ -120,8 +120,9 @@ curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/deleteWebhook" \
 # применить (serve делает это сам на старте)
 docker compose run --rm app migrate
 
-# текущая версия
-docker compose run --rm app migrate 2>&1 | grep -o 'version=[0-9]*'
+# текущая версия схемы: логи JSON (LOG_FORMAT=json), поэтому выдёргиваем поле
+docker compose run --rm app migrate 2>&1 | grep -o '"version":[0-9]*'
+# → "version":5
 ```
 
 Миграции встроены в бинарник (`migrations/embed.go`), поэтому внешний том не
@@ -218,14 +219,26 @@ Healthcheck контейнера в compose делает то же самое ч
 
 ### 6.2 Логи
 
-`LOG_FORMAT=json` в проде — строки разбираются `jq`:
+`LOG_FORMAT=json` в проде — строки разбираются `jq`. Обязательны два приёма:
+`--no-log-prefix` (иначе у каждой строки префикс `app-1  | ` и JSON не парсится)
+и `-R 'fromjson?'` (библиотека Bot API пишет свои сообщения в stderr обычным
+текстом — `[TGBOT] [ERROR] error get updates…`; без `-R` парсер падает на первой
+же такой строке):
 
 ```bash
-docker compose logs -f app | jq -r 'select(.level=="ERROR") | "\(.msg) \(.error // "")"'
+# ошибки процесса
+docker compose logs --no-log-prefix app | jq -R 'fromjson? | select(.level=="ERROR") | "\(.msg) \(.error // "")"'
 
 # напоминания, которые не дошли
-docker compose logs app | jq -r 'select(.msg=="scheduler: reminder failed permanently") | .reminder_id'
+docker compose logs --no-log-prefix app | jq -R 'fromjson? | select(.msg=="scheduler: reminder failed permanently") | .reminder_id'
+
+# живой поток (Ctrl+C для выхода)
+docker compose logs -f --no-log-prefix app | jq -R 'fromjson? | select(.level=="ERROR" or .level=="WARN") | "\(.level) \(.msg)"'
 ```
+
+Апдейты Telegram в поток не попадают как WARN: при недоступном `BOT_TOKEN`
+библиотека пишет `[TGBOT] [ERROR]` в stderr — их видно и без `jq`, а причина
+обычно в первой строке stderr (`telegram: setMyCommands failed`).
 
 Ключевые строки для наблюдения:
 
@@ -280,12 +293,27 @@ docker compose exec -T postgres pg_dump -U deadliner -Fc deadliner > pre-upgrade
 
 ## 8. Диагностика
 
+Ошибки конфигурации печатает `main` **до** старта `serve` — это обычный текст в
+stderr, без JSON и без префикса «serve failed»:
+
+```
+config: missing required env var BOT_TOKEN
+```
+
+В compose они видны так (сервис не поднимается и попадает в `restart loop`):
+
+```bash
+docker compose up app            # вывод в терминал
+docker compose logs app | head -3   # или из логов: первая строка — причина
+```
+
 | Симптом | Причина и действие |
 | --- | --- |
-| `serve failed: config: missing required env var BOT_TOKEN` | не заполнен `.env` |
-| `missing required env var WEBHOOK_SECRET: webhook mode without a secret…` | включён webhook без секрета — заполнить `WEBHOOK_SECRET` |
-| `COUNTER_RETENTION=… must exceed the longest rate-limit window (168h…)` | retention уборки счётчиков ≤ недельного окна лимита — поставить `192h`+ |
-| `POLLING_MODE="polling" is not a known mode` | опечатка; допустимо `long_polling`, `webhook` или непустой `WEBHOOK_URL` |
+| `config: missing required env var BOT_TOKEN` | не заполнен `.env` |
+| `config: missing required env var WEBHOOK_SECRET: webhook mode without a secret…` | включён webhook без секрета — заполнить `WEBHOOK_SECRET` |
+| `config: missing required env var WEBHOOK_URL: POLLING_MODE=webhook without a webhook URL…` | `POLLING_MODE=webhook`, а адрес не задан — заполнить `WEBHOOK_URL` либо вернуться на `long_polling` |
+| `config: COUNTER_RETENTION=… must exceed the longest rate-limit window (168h…)` | retention уборки счётчиков ≤ недельного окна лимита — поставить `192h`+ |
+| `config: POLLING_MODE="polling" is not a known mode` | опечатка: допустимо `long_polling`, `webhook` |
 | `serve: setWebhook: … unauthorized` | неверный `BOT_TOKEN` |
 | `serve: listen :8080: address already in use` | порт занят другим процессом/контейнером |
 | бот молчит в группах | бот не админ чата: `/bind_group` требует прав администратора |
@@ -310,6 +338,28 @@ docker compose stop app      # SIGTERM → graceful shutdown (до ~2 мин: в
 docker compose start app
 docker compose down          # остановить всё (том pgdata сохраняется)
 docker compose down -v       # ⚠️ вместе с данными
+```
+
+### Окно graceful shutdown
+
+Внутренние бюджеты остановки (см. `internal/cmd/serve.go`):
+
+| Шаг | Бюджет | Что делает |
+| --- | --- | --- |
+| HTTP | 15с | перестаёт принимать, дожидается долетающих запросов TMA |
+| Бот | 15с | выходит цикл приёма апдейтов (в webhook-режиме — воркеры дорабатывают принятое) |
+| `deleteWebhook` | 10с | best-effort снятие вебхука (только webhook-режим) |
+| Воркер | 90с | дожидается текущего батча; начатые отправки доводятся под `FinalizeTimeout` = 75с |
+| Cleanup | 30с | выходит по ctx (первый прогон мог быть в середине) |
+
+Суммарно — до ~2 минут. Поэтому в `docker-compose.yml` у сервиса `app` стоит
+**`stop_grace_period: 2m`**: дефолт compose (10с) прибил бы процесс SIGKILL в
+середине дренажа, и напоминание осталось бы с локом — после рестарта чат получил
+бы дубль. Меняя бюджеты в коде, синхронизируйте это значение.
+
+```bash
+# сколько compose ждёт перед SIGKILL
+docker compose config | grep -A1 stop_grace_period
 ```
 
 SIGINT/SIGTERM обрабатывается одинаково: `Ctrl+C` в `go run` и `docker stop`

@@ -15,6 +15,7 @@ import (
 	"github.com/sauron/deadliner/internal/app/moderation"
 	"github.com/sauron/deadliner/internal/config"
 	"github.com/sauron/deadliner/internal/domain"
+	"github.com/sauron/deadliner/internal/i18n"
 	"github.com/sauron/deadliner/internal/platform/db"
 	"github.com/sauron/deadliner/internal/platform/httpapi"
 	"github.com/sauron/deadliner/internal/platform/scheduler"
@@ -28,8 +29,9 @@ const (
 	shutdownTimeout = 15 * time.Second
 	// workerDrainTimeout — сколько ждём scheduler-воркер. Воркер дожидается
 	// ТЕКУЩЕГО батча, а его горутины доводят начатую отправку под собственным
-	// FinalizeTimeout (75s: нотификатор держит 429 retry_after до 60с),
-	// поэтому бюджет — FinalizeTimeout плюс запас на MarkSent.
+	// FinalizeTimeout (scheduler.DefaultFinalizeTimeout = 75s: нотификатор
+	// держит 429 retry_after до 60с), поэтому бюджет — FinalizeTimeout плюс
+	// запас на MarkSent.
 	workerDrainTimeout = 90 * time.Second
 	// botDrainTimeout — остановка бота: polling-цикл выходит сразу, воркеры
 	// webhook-режима дорабатывают уже принятый апдейт.
@@ -41,12 +43,6 @@ const (
 	// webhookTimeout — best-effort setWebhook/deleteWebhook. Делается
 	// собственным контекстом: на выходе ctx уже отменён сигналом.
 	webhookTimeout = 10 * time.Second
-	// finalizeTimeout — бюджет финализации напоминания в воркере. 75s, а не
-	// 30s: нотификатор держит 429 retry_after до 60с внутри себя и повторяет
-	// отправку — бюджет обязан покрывать выдержку плюс саму отправку и
-	// UPDATE, иначе graceful shutdown обрывал бы легитимное ожидание, и
-	// отправленное сообщение осталось бы с локом (дубль после рестарта).
-	finalizeTimeout = 75 * time.Second
 	// readHeaderTimeout — защита от медленного клиента на уровне сервера.
 	readHeaderTimeout = 15 * time.Second
 )
@@ -59,6 +55,12 @@ func Serve(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
 	}
+	// Каталог строк грузится здесь, а не только в main: роутер, контроллеры и
+	// воркер берут тексты из пакета i18n (ключ без загрузки вернётся сам собой,
+	// а сообщения уйдут в Telegram «сырыми»). Загрузка идемпотентна — вызов из
+	// main безвреден и оставлен для других подрежимов.
+	i18n.MustLoad(i18n.Locales)
+
 	mode := botMode(cfg)
 	log.Info("serve: starting",
 		slog.String("mode", mode),
@@ -233,12 +235,15 @@ func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serv
 		Clock:       clock,
 		Log:         log,
 	}, scheduler.Config{
-		PollInterval:    cfg.Scheduler.PollInterval,
-		Batch:           cfg.Scheduler.Batch,
-		LockTTL:         cfg.Scheduler.LockTTL,
-		MaxAttempts:     cfg.Scheduler.MaxAttempts,
-		WorkerID:        workerID(),
-		FinalizeTimeout: finalizeTimeout,
+		PollInterval: cfg.Scheduler.PollInterval,
+		Batch:        cfg.Scheduler.Batch,
+		LockTTL:      cfg.Scheduler.LockTTL,
+		MaxAttempts:  cfg.Scheduler.MaxAttempts,
+		WorkerID:     workerID(),
+		// Ноль — воркер подставит свой дефолт (scheduler.DefaultFinalizeTimeout).
+		// Значение дублировать здесь не нужно: оно обязано совпадать с тем, под
+		// которым воркер реально работает, а единственный источник — константа
+		// в пакете scheduler (проверяется тестом).
 	})
 
 	return &serveGraph{moder: moderationSvc, worker: worker, bot: bot, router: router}, nil
@@ -316,8 +321,13 @@ func recoverLoop(what string, log *slog.Logger) {
 // (bot.StartWebhook; сами апдейты приходят в POST /webhook). Возвращает канал,
 // закрывающийся по выходу цикла: после отмены ctx его нужно дождаться, иначе
 // процесс завершится, не доработав уже принятый апдейт.
+//
+// Проверки «UsesWebhook() ⇒ URL непуст» здесь нет: config.Load отвергает
+// POLLING_MODE=webhook без WEBHOOK_URL, а при пустом режиме webhook включает сам
+// URL. От пустого адреса всё равно страхует RegisterWebhook (возвращает ошибку),
+// поэтому рассинхронизация валидации даст отказ старта, а не молчащий бот.
 func startBot(ctx context.Context, g *serveGraph, cfg *config.Config, log *slog.Logger) (<-chan struct{}, error) {
-	if cfg.Bot.UsesWebhook() && cfg.Bot.WebhookURL != "" {
+	if cfg.Bot.UsesWebhook() {
 		// Регистрация — под отдельным контекстом: setWebhook переживает сигнал
 		// остановки, пришедший до готовности, и не тянет за собой отмену.
 		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), webhookTimeout)

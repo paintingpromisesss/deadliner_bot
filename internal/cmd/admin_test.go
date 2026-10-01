@@ -21,7 +21,12 @@ import (
 
 // NOTE: контейнерная обвязка продублирована из internal/platform/repo и
 // internal/platform/httpapi — хелперы тестов не импортируются между пакетами.
-var testPool *pgxpool.Pool
+var (
+	testPool *pgxpool.Pool
+	// testDatabaseURL — строка подключения контейнера: нужна тестам serve
+	// (Serve стартует с миграций и подключения к БД).
+	testDatabaseURL string
+)
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
@@ -56,6 +61,10 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	testPool = pool
+
+	// URL контейнера нужен тестам serve: Serve начинается с миграций и
+	// подключения, поэтому заглушки БД недостаточно.
+	testDatabaseURL = url
 
 	// CLI читает конфиг из env: DATABASE_URL указывает на контейнер, а
 	// BOT_TOKEN обязателен для config.Load (serve-переменные CLI не нужны).

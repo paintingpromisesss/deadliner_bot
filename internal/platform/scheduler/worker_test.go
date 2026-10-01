@@ -669,16 +669,27 @@ func TestWorkerShutdownFinalizesInFlightSend(t *testing.T) {
 // нотификатора (maxInternalRetryAfter = 60s). Меньшее значение означало бы,
 // что graceful shutdown обрывает легитимное ожидание 429 и отправленное
 // сообщение остаётся с локом — после рестарта чат получает дубль.
+//
+// Проверяется и то, что serve работает ИМЕННО под этим дефолтом: он не задаёт
+// FinalizeTimeout (ноль → дефолт пакета), поэтому значение обязано совпадать с
+// DefaultFinalizeTimeout — иначе константа в serve разошлась бы с реальностью.
 func TestWorkerFinalizeTimeoutDefaultCovers429Penalty(t *testing.T) {
+	if DefaultFinalizeTimeout != 75*time.Second {
+		t.Errorf("DefaultFinalizeTimeout = %v, want 75s", DefaultFinalizeTimeout)
+	}
+	if DefaultFinalizeTimeout <= 60*time.Second {
+		t.Errorf("DefaultFinalizeTimeout = %v, must exceed the notifier's 60s retry_after wait",
+			DefaultFinalizeTimeout)
+	}
+
+	// Конфиг serve: FinalizeTimeout не задан (ноль) — воркер подставляет дефолт.
 	w := New(Deps{}, Config{})
-	if w.cfg.FinalizeTimeout != 75*time.Second {
-		t.Errorf("FinalizeTimeout default = %v, want 75s", w.cfg.FinalizeTimeout)
+	if w.cfg.FinalizeTimeout != DefaultFinalizeTimeout {
+		t.Errorf("worker built with serve's config: FinalizeTimeout = %v, want %v",
+			w.cfg.FinalizeTimeout, DefaultFinalizeTimeout)
 	}
-	if w.cfg.FinalizeTimeout <= 60*time.Second {
-		t.Errorf("FinalizeTimeout = %v, must exceed the notifier's 60s retry_after wait",
-			w.cfg.FinalizeTimeout)
-	}
-	// Явное значение уважается (serve передаёт 75s, тесты могут задать своё).
+
+	// Явное значение уважается (тесты могут задать своё).
 	if explicit := New(Deps{}, Config{FinalizeTimeout: time.Second}); explicit.cfg.FinalizeTimeout != time.Second {
 		t.Errorf("explicit FinalizeTimeout was overridden: %v", explicit.cfg.FinalizeTimeout)
 	}

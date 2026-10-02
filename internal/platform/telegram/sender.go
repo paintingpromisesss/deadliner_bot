@@ -138,7 +138,13 @@ func isAdminCommand(cmd string) bool {
 // SetMenuButton — menu button типа web_app (спека §6.1).
 func (s *BotSender) SetMenuButton(ctx context.Context, text, url string) error {
 	if _, err := s.api.SetChatMenuButton(ctx, &tgbot.SetChatMenuButtonParams{
+		// Type обязателен: у MenuButtonWebApp тег `rules:"required,equals:web_app"`,
+		// и без него уходит {"type":""} — Telegram отвечает
+		// "Bad Request: can't parse menu button: MenuButton has unsupported type".
+		// Обёртка models.MenuButton тут не подходит: её MarshalJSON проставляет тип,
+		// но menuButtonTag() у неё нет, а поле требует InputMenuButton.
 		MenuButton: &models.MenuButtonWebApp{
+			Type:   models.MenuButtonTypeWebApp,
 			Text:   text,
 			WebApp: models.WebAppInfo{URL: url},
 		},

@@ -19,19 +19,50 @@ import (
 )
 
 // stubTelegram — заглушка Telegram Bot API для смоук-теста Bot: отвечает
-// ok-ом на любой метод и запоминает, какие методы вызывались.
+// ok-ом на любой метод, запоминает вызванные методы и разобранные поля запросов
+// (библиотека шлёт все вызовы multipart-ом, а не JSON-ом).
 type stubTelegram struct {
 	mu      sync.Mutex
 	methods []string
+	fields  map[string][]map[string]string
 }
 
 func (s *stubTelegram) start(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+
+		parsed := map[string]string{}
+		if err := r.ParseMultipartForm(4 << 20); err == nil && r.MultipartForm != nil {
+			for k, v := range r.MultipartForm.Value {
+				if len(v) > 0 {
+					parsed[k] = v[0]
+				}
+			}
+		}
+
 		s.mu.Lock()
 		s.methods = append(s.methods, method)
+		if s.fields == nil {
+			s.fields = map[string][]map[string]string{}
+		}
+		s.fields[method] = append(s.fields[method], parsed)
 		s.mu.Unlock()
+
+		// Telegram отвергает menu button без типа — ровно так, как это было в
+		// проде ("MenuButton has unsupported type"). Заглушка воспроизводит
+		// проверку, иначе кривой тип проходит молча.
+		if method == "setChatMenuButton" {
+			var p struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal([]byte(parsed["menu_button"]), &p); err != nil || p.Type != "web_app" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, `{"ok":false,"error_code":400,"description":"Bad Request: can't parse menu button: MenuButton has unsupported type"}`)
+				return
+			}
+		}
 
 		result := "true"
 		switch method {
@@ -49,6 +80,18 @@ func (s *stubTelegram) start(t *testing.T) string {
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+// fieldOf возвращает поле N-го (0-based) вызова метода.
+func (s *stubTelegram) fieldOf(method, field string, n int) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	calls := s.fields[method]
+	if n >= len(calls) {
+		return "", false
+	}
+	v, ok := calls[n][field]
+	return v, ok
 }
 
 func (s *stubTelegram) methodCount(method string) int {
@@ -160,6 +203,29 @@ func TestNewBotSmoke(t *testing.T) {
 	}
 	if !stub.called("setChatMenuButton") {
 		t.Errorf("setChatMenuButton not called; methods = %v", stub.methods)
+	}
+	// Тело menu button проверяем по существу: Telegram отвергает тип, отличный
+	// от web_app (в проде это давало "MenuButton has unsupported type"),
+	// и кнопка обязана вести на APP_PUBLIC_URL.
+	var mb struct {
+		Type   string `json:"type"`
+		Text   string `json:"text"`
+		WebApp struct {
+			URL string `json:"url"`
+		} `json:"web_app"`
+	}
+	raw, ok := stub.fieldOf("setChatMenuButton", "menu_button", 0)
+	if !ok {
+		t.Fatal("setChatMenuButton body has no menu_button field")
+	}
+	if err := json.Unmarshal([]byte(raw), &mb); err != nil {
+		t.Fatalf("menu button %s: %v", raw, err)
+	}
+	if mb.Type != "web_app" {
+		t.Errorf("menu button type = %q, want %q (body: %s)", mb.Type, "web_app", raw)
+	}
+	if mb.WebApp.URL != "https://deadliner.example/app" {
+		t.Errorf("menu button url = %q, want %q", mb.WebApp.URL, "https://deadliner.example/app")
 	}
 	// Спека §6.1: команды регистрируются и для администраторов чатов — значит
 	// setMyCommands вызывается дважды (default + all_chat_administrators).

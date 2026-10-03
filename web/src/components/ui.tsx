@@ -5,7 +5,7 @@
 // bottom sheets, тёмная/светлая темы. Все примитивы — тонкие обёртки над
 // нативными элементами (button/input/select/label), чтобы сохранить
 // семантику и клавиатурную доступность без библиотеки.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 /* ─── Тема ──────────────────────────────────────────────────────────────── */
@@ -403,8 +403,25 @@ interface ModalProps {
 /**
  * Bottom sheet по макету: скрим + лист снизу с грип-полоской. Закрытие —
  * тап по скриму или Esc; содержимое не рендерится при open=false.
+ *
+ * Выход анимируется: пока open=false, 320мс держится «closing»-фаза (лист
+ * уезжает вниз — CSS на .dl-modal[data-closing]), затем размонтирование.
+ * prefers-reduced-motion убирает фазу — закрытие мгновенное.
  */
 export function Modal({ open, onOpenChange, header, nested, children }: ModalProps) {
+  // Было ли open=true в предыдущем рендере — старт closing-фазы на переходе.
+  const [closing, setClosing] = useState(false);
+  const wasOpen = useRef(false);
+
+  if (open) {
+    wasOpen.current = true;
+    if (closing) setClosing(false);
+  } else if (wasOpen.current) {
+    // Переход true → false: держим контент 320мс для анимации выхода.
+    wasOpen.current = false;
+    if (!closing) setClosing(true);
+  }
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -414,10 +431,28 @@ export function Modal({ open, onOpenChange, header, nested, children }: ModalPro
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onOpenChange]);
 
-  if (!open) return null;
+  useEffect(() => {
+    if (!closing) return;
+    // Reduced motion: без анимации выхода — закрываем мгновенно.
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      const id = window.setTimeout(() => setClosing(false), 0);
+      return () => window.clearTimeout(id);
+    }
+    // 320мс — длительность transition листа (dl-modal__sheet в styles.css).
+    const id = window.setTimeout(() => setClosing(false), 320);
+    return () => window.clearTimeout(id);
+  }, [closing]);
+
+  // open=false вне closing-фазы — контент не рендерится (как раньше).
+  if (!open && !closing) return null;
 
   return (
-    <div className={nested ? 'dl-modal dl-modal--nested' : 'dl-modal'} role="dialog" aria-modal="true">
+    <div
+      className={nested ? 'dl-modal dl-modal--nested' : 'dl-modal'}
+      data-closing={!open ? 'true' : 'false'}
+      role="dialog"
+      aria-modal="true"
+    >
       <div className="dl-modal__scrim" onClick={() => onOpenChange(false)} />
       <div className="dl-modal__sheet">
         <div className="dl-modal__grip" aria-hidden />

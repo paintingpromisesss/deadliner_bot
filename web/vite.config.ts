@@ -26,5 +26,8 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['src/**/*.test.{ts,tsx}'],
     restoreMocks: true,
+    // jsdom не реализует matchMedia: патчим до тестов (анимации Modal читают
+    // prefers-reduced-motion, тема — prefers-color-scheme).
+    setupFiles: ['./src/test/setup.ts'],
   },
 });

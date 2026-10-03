@@ -47,6 +47,9 @@ func main() {
 	values := url.Values{}
 	values.Set("auth_date", authDate)
 	values.Set("query_id", "devquery")
+	// signature — обязательный ключ схемы SDK (проверяется его наличие, не
+	// значение; серверную подпись несёт hash). Пустая строка проходит.
+	values.Set("signature", "")
 	values.Set("user", userJSON)
 
 	// data_check_string: пары без hash, отсортированные по ключу, "key=value"
@@ -69,9 +72,11 @@ func main() {
 	values.Set("hash", hash)
 
 	// SDK читает launch params из query: tgWebAppData (initData) и окружение.
+	// tgWebAppVersion и tgWebAppThemeParams обязательны схемой LaunchParams.
 	launch := url.Values{}
 	launch.Set("tgWebAppData", values.Encode())
 	launch.Set("tgWebAppPlatform", "tdesktop")
+	launch.Set("tgWebAppVersion", "7.0")
 	launch.Set("tgWebAppThemeParams", `{"bg_color":"#1c1c1d","text_color":"#f5f5f5","hint_color":"#7e7e80"}`)
 
 	sep := "?"

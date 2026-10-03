@@ -11,7 +11,7 @@
 // родитель уже знает, что чат не привязан (binding === null в деталях группы):
 // пользователь видит инструкцию /bind_group, не тратя запрос на 409.
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Cell, Input, Modal } from '@telegram-apps/telegram-ui';
+import { Button, Input, Modal } from './ui';
 import { SheetHeader } from './SheetHeader';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useConfirmClaim, useStartClaim } from '../lib/queries';
@@ -184,18 +184,16 @@ export function ClaimSheet({
                     {tpl(strings.groups.claimExpiresIn, humanDuration(Math.max(0, remaining)))}
                   </div>
                 ) : null}
-                <Cell multiline>
-                  <Input
-                    header={strings.groups.claimCodeLabel}
-                    placeholder={strings.groups.claimCodePlaceholder}
-                    value={code}
-                    inputMode="numeric"
-                    maxLength={6}
-                    disabled={busy}
-                    onChange={(e) => setCode(e.target.value.replace(/[^0-9]/g, ''))}
-                    data-testid="claim-code"
-                  />
-                </Cell>
+                <Input
+                  header={strings.groups.claimCodeLabel}
+                  placeholder={strings.groups.claimCodePlaceholder}
+                  value={code}
+                  inputMode="numeric"
+                  maxLength={6}
+                  disabled={busy}
+                  onChange={(e) => setCode(e.target.value.replace(/[^0-9]/g, ''))}
+                  data-testid="claim-code"
+                />
                 <div className="dl-hint">{strings.groups.claimCodeSentHint}</div>
                 <div className="dl-row">
                   <Button

@@ -1,9 +1,9 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { AppRoot, List, Placeholder, Section, Spinner } from '@telegram-apps/telegram-ui';
+import { AppRoot, List, Placeholder, Section, Spinner } from './components/ui';
 
-import { getPlatform, hasInitData } from './lib/tma';
+import { hasInitData } from './lib/tma';
 import { useAuthStore } from './stores/auth';
 import { routeGroupID, routeName, useRoute } from './router';
 import { TabBar } from './components/TabBar';
@@ -117,15 +117,8 @@ function AuthGate({ children }: { children: ReactNode }) {
 }
 
 export function App() {
-  // platform статичен (клиент не меняет платформу на ходу) — прокидываем явно.
-  const platform = useMemo(() => getPlatform(), []);
-
-  // appearance НЕ передаём: telegram-ui в этом случае сам берёт
-  // window.Telegram.WebApp.colorScheme и подписывается на 'themeChanged'
-  // (useAppearance.js: при заданном пропе подписки не происходит и смена темы
-  // в Telegram игнорируется).
   return (
-    <AppRoot platform={platform} className="dl-root">
+    <AppRoot>
       <QueryClientProvider client={queryClient}>
         <AuthGate>
           <main className="dl-main">

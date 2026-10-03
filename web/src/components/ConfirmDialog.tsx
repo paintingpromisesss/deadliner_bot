@@ -1,8 +1,7 @@
 // Подтверждение необратимого действия (удаление дедлайна). Отдельный
 // компонент, потому что подтверждение нужно в двух местах: из списка (кнопка
-// удаления на строке) и из формы редактирования. Собственная кнопка/заголовок —
-// Modal.Header кита рендерит текст только на iOS.
-import { Button, Modal } from '@telegram-apps/telegram-ui';
+// удаления на строке) и из формы редактирования.
+import { Button, Modal } from './ui';
 import { strings } from '../lib/strings';
 import { hapticNotification } from '../lib/tma';
 
@@ -14,7 +13,7 @@ interface ConfirmDialogProps {
   confirmLabel: string;
   onConfirm: () => void;
   onCancel: () => void;
-  /** true, если диалог открывается поверх другого Modal (vaul). */
+  /** true, если диалог открывается поверх другого Modal. */
   nested?: boolean;
   /** data-testid подтверждающей кнопки. */
   confirmTestId?: string;

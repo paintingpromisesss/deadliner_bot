@@ -6,7 +6,7 @@
 // редактирования (там «выполнить»/«удалить»), кнопки справа на строке делают то
 // же самое без открытия формы. Удаление подтверждается в обоих местах.
 import { useMemo, useState } from 'react';
-import { Button, Cell, List, Placeholder, Section, Spinner } from '@telegram-apps/telegram-ui';
+import { Button, Cell, List, Placeholder, Section, Spinner } from '../../components/ui';
 import { Screen } from '../../components/Screen';
 import { DeadlineCell, DeadlineHero, useMinuteTick } from '../../components/DeadlineCard';
 import { DeadlineSheet } from '../../components/DeadlineSheet';

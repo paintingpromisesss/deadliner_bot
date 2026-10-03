@@ -1,7 +1,6 @@
-// Чип-фильтр на базе TelegramUI Chip (Blocks → Form/Chip). Chip рендерит
-// div/Tappable, поэтому для доступности передаём Component="button": фильтр —
-// это действие, а не декорация, и должен быть фокусируемым с клавиатуры.
-import { Chip } from '@telegram-apps/telegram-ui';
+// Чипы-фильтры и пресеты (спека §9: «Все/Личные/Групповые» и 7д/3д/24ч).
+// Собственная реализация по дизайн-системе макета: кнопка-чип с состоянием
+// selected/on; фильтр — «залитый» активный чип, пресет — контурный включённый.
 import { hapticImpact } from '../lib/tma';
 
 export interface FilterOption<T extends string> {
@@ -29,11 +28,9 @@ export function FilterChips<T extends string>({
       {options.map((option) => {
         const selected = option.value === value;
         return (
-          <Chip
+          <button
             key={option.value}
-            Component="button"
             type="button"
-            mode={selected ? 'elevated' : 'mono'}
             className="dl-chip"
             aria-pressed={selected}
             data-selected={selected ? 'true' : 'false'}
@@ -43,7 +40,7 @@ export function FilterChips<T extends string>({
             }}
           >
             {option.label}
-          </Chip>
+          </button>
         );
       })}
     </div>
@@ -59,11 +56,10 @@ interface PresetChipsProps {
   disabled?: boolean;
 }
 
-/** Чипы-пресеты напоминаний (7д/3д/24ч), переключаемые (спека §9, экран 4).
+/** Чипы-пресеты напоминаний (7д/3д/24ч), переключаемые (спeca §9, экран 4).
  *
- * Рисуются тем же Chip, что и фильтры: отличие только в неподсвеченном режиме
- * (outline) и в haptic-отклике на нажатие — форма и список пользуются одним
- * примитивом, а не двумя похожими разметками.
+ * Включённый пресет — контурный чип-«on» (не «залитый», как фильтр): в макете
+ * это два разных состояния одного примитива.
  */
 export function PresetChips({
   options,
@@ -77,12 +73,10 @@ export function PresetChips({
       {options.map((option) => {
         const on = selected.includes(option.minutes);
         return (
-          <Chip
+          <button
             key={option.minutes}
-            Component="button"
             type="button"
-            mode={on ? 'elevated' : 'outline'}
-            className="dl-chip"
+            className={['dl-chip', on ? 'dl-chip--on' : ''].filter(Boolean).join(' ')}
             aria-pressed={on}
             data-selected={on ? 'true' : 'false'}
             data-testid={`preset-${option.minutes}`}
@@ -93,7 +87,7 @@ export function PresetChips({
             }}
           >
             {option.label}
-          </Chip>
+          </button>
         );
       })}
     </div>

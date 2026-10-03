@@ -11,7 +11,7 @@
 // показать можно ровно то, что создано на этом экране, и об этом сказано
 // подписью блока.
 import { useEffect, useState } from 'react';
-import { Button, Cell, List, Placeholder, Section, Spinner } from '@telegram-apps/telegram-ui';
+import { Button, Cell, List, Placeholder, Section, Spinner } from '../../components/ui';
 import { Screen } from '../../components/Screen';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { ClaimSheet, RevokeClaimDialog } from '../../components/ClaimSheet';

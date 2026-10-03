@@ -20,7 +20,7 @@ import {
   Select,
   Spinner,
   Switch,
-} from '@telegram-apps/telegram-ui';
+} from '../components/ui';
 import { Screen } from '../components/Screen';
 import { useAuthStore } from '../stores/auth';
 import { NOTIFICATIONS_QUERY_KEY, useNotificationSettings, usePatchNotificationSettings } from '../lib/queries';
@@ -156,8 +156,7 @@ export function SettingsScreen() {
                 </option>
               ))}
             </Select>
-          </Cell>
-          {suggested && suggested !== tz ? (
+          </Cell>          {suggested && suggested !== tz ? (
             <Cell
               Component="button"
               type="button"

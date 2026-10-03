@@ -1,7 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import '@telegram-apps/telegram-ui/dist/styles.css';
 import './styles.css';
 
 import { initTMA } from './lib/tma';

@@ -6,7 +6,7 @@
 // компонента — он рендерится и напрямую, и в будущих местах вызова.
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
-import { AppRoot } from '@telegram-apps/telegram-ui';
+import { AppRoot } from './ui';
 
 import { DeadlineCell, DeadlineHero } from './DeadlineCard';
 import type { Deadline } from '../lib/deadlines';

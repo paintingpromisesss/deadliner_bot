@@ -1,20 +1,15 @@
-// Регрессионный тест I-1: TelegramUI обязан подписываться на 'themeChanged'.
+// Регрессионный тест I-1: AppRoot обязан подписываться на 'themeChanged'.
 //
-// useAppearance.js кита при заданном пропе appearance делает
-// `setAppearance(prop); return () => {}` — подписки нет, смена темы в Telegram
-// игнорируется. Тест монтирует App целиком и проверяет, что после
-// themeChanged корневой элемент переключается на тёмный/светлый класс, то есть
-// подписка реально состоялась (если бы App передавал appearance, класс не
-// изменился бы).
+// Тема из клиента Telegram применяется на ходу: тест монтирует App целиком
+// и проверяет, что после themeChanged корневой элемент переключается на
+// тёмный/светлый класс (dl-theme-dark / dl-theme-light), то есть подписка
+// реально состоялась.
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
 import { TOKEN_STORAGE_KEY } from './stores/auth';
-
-/** Классы темы из styles.css telegram-ui (dark/light — цветовые наборы). */
-const DARK_CLASS = 'tgui-865b921add8ee075';
 
 const user = {
   id: 1,
@@ -28,7 +23,7 @@ const user = {
 
 type Handler = () => void;
 
-/** Минимальный window.Telegram.WebApp: только то, что читает useAppearance. */
+/** Минимальный window.Telegram.WebApp: только то, что читает AppRoot. */
 function installFakeTelegram(colorScheme: string) {
   const handlers = new Map<string, Handler[]>();
   let scheme = colorScheme;
@@ -106,21 +101,17 @@ describe('тема Telegram подхватывается на лету (I-1)', (
     const tg = installFakeTelegram('light');
     const appRoot = await renderApp();
 
-    // Подписка состоялась: при переданном пропе appearance её бы не было.
+    // Подписка состоялась: без слушателя смена темы молча игнорировалась бы.
     expect(tg.listenerCount()).toBe(1);
 
     await tg.flipTheme('dark');
-    expect(appRoot.className).toContain(DARK_CLASS);
+    expect(appRoot.className).toContain('dl-theme-dark');
 
     await tg.flipTheme('light');
-    expect(appRoot.className).not.toContain(DARK_CLASS);
+    expect(appRoot.className).toContain('dl-theme-light');
   });
 
-  it('без пропа appearance начальная тема берётся из системной (matchMedia)', async () => {
-    // telegram-ui при отсутствии пропа стартует от getInitialAppearance(),
-    // то есть от prefers-color-scheme — так же, как в браузере. Тест
-    // подтверждает, что мы не «приклеиваем» тему пропом.
-    installFakeTelegram('light');
+  it('вне Telegram начальная тема берётся из системной (matchMedia)', async () => {
     vi.stubGlobal(
       'matchMedia',
       vi.fn(() => ({
@@ -131,6 +122,6 @@ describe('тема Telegram подхватывается на лету (I-1)', (
     );
 
     const appRoot = await renderApp();
-    expect(appRoot.className).toContain(DARK_CLASS);
+    expect(appRoot.className).toContain('dl-theme-dark');
   });
 });

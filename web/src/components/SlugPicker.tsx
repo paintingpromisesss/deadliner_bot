@@ -8,7 +8,7 @@
 //
 // Уже вступленные группы из подсказок исключаются: список моих групп есть на
 // том же экране, и дублировать его в поиске незачем.
-import { Cell, List, Section, Spinner } from '@telegram-apps/telegram-ui';
+import { List, Section, Spinner } from './ui';
 import { RoleBadge } from './RoleBadge';
 import { SlugAvatar } from './SlugAvatar';
 import { navigate } from '../router';
@@ -62,26 +62,40 @@ export function SlugPicker({ items, loading, searched, allMine }: SlugPickerProp
     <List data-testid="slug-suggestions">
       <Section header={strings.groups.searchSuggestions}>
         {items.map((item) => (
-          <Cell
-            key={item.group.id}
-            Component="button"
-            type="button"
-            className="dl-cell-button"
-            before={<SlugAvatar slug={item.group.slug} />}
-            subtitle={strings.groups.searchJoinHint}
-            after={<RoleBadge role={item.role} />}
-            multiline
-            data-testid={`suggestion-${item.group.id}`}
-            onClick={() => {
-              hapticImpact('light');
-              navigate(`/groups/${item.group.id}`);
-            }}
-          >
-            {item.group.slug}
-          </Cell>
+          <SlugSuggestion key={item.group.id} item={item} />
         ))}
       </Section>
     </List>
+  );
+}
+
+interface SlugSuggestionProps {
+  item: GroupSummary;
+}
+
+/** Кнопка-подсказка: слаг + пояснение «вход по инвайту» + роль-бейдж. */
+function SlugSuggestion({ item }: SlugSuggestionProps) {
+  return (
+    <button
+      type="button"
+      className="dl-cell dl-cell--multiline"
+      data-testid={`suggestion-${item.group.id}`}
+      onClick={() => {
+        hapticImpact('light');
+        navigate(`/groups/${item.group.id}`);
+      }}
+    >
+      <span className="dl-cell__before">
+        <SlugAvatar slug={item.group.slug} />
+      </span>
+      <span className="dl-cell__main">
+        <span className="dl-cell__title">{item.group.slug}</span>
+        <span className="dl-cell__subtitle">{strings.groups.searchJoinHint}</span>
+      </span>
+      <span className="dl-cell__after">
+        <RoleBadge role={item.role} />
+      </span>
+    </button>
   );
 }
 

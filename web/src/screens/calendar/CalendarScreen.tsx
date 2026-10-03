@@ -6,7 +6,7 @@
 // видимый месяц: GET /me/deadlines?scope=all&from&to в границах месяца,
 // посчитанных в tz пользователя (monthBounds).
 import { useMemo, useState } from 'react';
-import { Button, Cell, List, Placeholder, Section, Spinner } from '@telegram-apps/telegram-ui';
+import { Button, Cell, List, Placeholder, Section, Spinner } from '../../components/ui';
 import { Screen } from '../../components/Screen';
 import { DeadlineCell, useMinuteTick } from '../../components/DeadlineCard';
 import { DeadlineSheet } from '../../components/DeadlineSheet';

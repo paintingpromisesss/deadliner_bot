@@ -1,73 +1,108 @@
-/* Точечная раскладка поверх TelegramUI (спека §9: «точечно Tailwind для
-   раскладки»).
-   Tailwind подключается без preflight: тема + утилиты, но без агрессивного
-   сброса, который сломал бы стили TelegramUI (--tgui--* переменные и
-   собственные классы кита). Тёмная/светлая тема — из themeParams через
-   CSS-переменные TelegramUI, поэтому подхватывается автоматически. */
+/* ═══════════════════════════════════════════════════════════════════════════
+   Deadliner TMA · собственная дизайн-система (по экспорту Open Design,
+   deadliner-mini-app.html): themeParams через CSS-переменные, стиль
+   Telegram Wallet. Тёмная/светлая тема — два набора токенов на .dl-root,
+   поверх клиентские themeParams перекрывают дефолты инлайном.
+   Tailwind подключается без preflight — только утилиты для раскладки.
+   ═══════════════════════════════════════════════════════════════════════════ */
 @import 'tailwindcss/theme.css' layer(theme);
 @import 'tailwindcss/utilities.css' layer(utilities);
 
-/* TelegramUI определяет --tgui--* НЕ на :root, а на самом корневом div AppRoot
-   (.tgui-6a12827a138e8827 в styles.css кита). Поэтому html/body — его
-   ПРЕДКИ — не видят эти переменные, и объявления на них резолвятся в пустоту
-   (белый холст под тёмными компонентами). Красим контейнеры ВНУТРИ AppRoot,
-   а для областей вне него (экран-спиннер до маунта) держим фолбэк на
-   --tg-theme-*, которые в Telegram выставляет клиент. */
+/* ── Токены тем (значения из макета) ── */
+.dl-root {
+  --dl-green: #2eb85a;
+}
+
+/* тёмная схема (themeParams dark) */
+.dl-root.dl-theme-dark {
+  --tg-theme-bg-color: #1c1c1d;
+  --tg-theme-secondary-bg-color: #232326;
+  --tg-theme-text-color: #f5f5f5;
+  --tg-theme-hint-color: #7e7e80;
+  --tg-theme-button-color: #3390ec;
+  --tg-theme-button-text-color: #ffffff;
+  --tg-theme-accent-text-color: #62bcf9;
+  --tg-theme-section-bg-color: #232326;
+  --tg-theme-section-separator-color: #2f2f33;
+  --tg-theme-destructive-text-color: #e85555;
+}
+
+/* светлая схема (themeParams light) */
+.dl-root.dl-theme-light {
+  --tg-theme-bg-color: #ffffff;
+  --tg-theme-secondary-bg-color: #f2f2f2;
+  --tg-theme-text-color: #1c1c1d;
+  --tg-theme-hint-color: #8a8a8e;
+  --tg-theme-button-color: #2481cc;
+  --tg-theme-button-text-color: #ffffff;
+  --tg-theme-accent-text-color: #2481cc;
+  --tg-theme-section-bg-color: #ffffff;
+  --tg-theme-section-separator-color: #e9e9e9;
+  --tg-theme-destructive-text-color: #e85555;
+}
+
+/* Вне .dl-root (экран до маунта): фолбэк на --tg-theme-*, которые клиент
+   Telegram выставляет на :root, иначе — системная схема. */
 :root {
   color-scheme: light dark;
-  --dl-bg: var(--tg-theme-bg-color, #ffffff);
-  --dl-text: var(--tg-theme-text-color, #000000);
+  --dl-fallback-bg: var(--tg-theme-bg-color, #ffffff);
+  --dl-fallback-text: var(--tg-theme-text-color, #000000);
 }
-
 @media (prefers-color-scheme: dark) {
   :root {
-    --dl-bg: var(--tg-theme-bg-color, #212121);
-    --dl-text: var(--tg-theme-text-color, #ffffff);
+    --dl-fallback-bg: var(--tg-theme-bg-color, #212121);
+    --dl-fallback-text: var(--tg-theme-text-color, #ffffff);
   }
 }
-
 html,
 body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: var(--dl-bg);
-  color: var(--dl-text);
+  background: var(--dl-fallback-bg);
+  color: var(--dl-fallback-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
-
 #root {
   min-height: 100vh;
-  background: var(--dl-bg);
-  color: var(--dl-text);
 }
 
-/* .dl-root — это className самого div AppRoot, где --tgui--* и определены. */
+*, *::before, *::after { box-sizing: border-box; }
+button { font: inherit; cursor: pointer; }
+img, svg { display: block; max-width: 100%; }
+p, h1, h2, h3, h4 { margin: 0; }
+
+/* ── Корень ── */
 .dl-root {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--tgui--bg_color, var(--dl-bg));
-  color: var(--tgui--text_color, var(--dl-text));
+  background: var(--tg-theme-bg-color);
+  color: var(--tg-theme-text-color);
 }
 
 .dl-main {
   flex: 1 1 auto;
   /* Отступ под фиксированный таб-бар + safe-area iPhone. */
   padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
-  background: var(--tgui--bg_color, var(--dl-bg));
-  color: var(--tgui--text_color, var(--dl-text));
+  background: var(--tg-theme-bg-color);
+  color: var(--tg-theme-text-color);
 }
 
 .dl-screen {
-  padding: 8px 0 0;
+  padding: 0 0 8px;
 }
 
+/* Шапка экрана (как .app-header макета): заголовок + подпись. */
 .dl-screen__title {
   margin: 0;
-  padding: 12px 16px 4px;
-  font-size: 28px;
-  line-height: 34px;
-  font-weight: 700;
+  padding: 10px 16px 6px;
+  font-size: 20px;
+  line-height: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .dl-centered {
@@ -75,46 +110,200 @@ body {
   align-items: center;
   justify-content: center;
   min-height: 60vh;
+  padding: 24px 0;
 }
 
+/* ── Секции и ячейки (по макету .cell-list / .cell) ── */
+.dl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 14px 8px;
+}
+
+.dl-section__header {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tg-theme-hint-color);
+  padding: 2px 8px 6px;
+}
+
+.dl-section__footer {
+  font-size: 12px;
+  color: var(--tg-theme-hint-color);
+  padding: 6px 8px 0;
+}
+
+.cell-list {
+  background: var(--tg-theme-section-bg-color);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.dl-cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  min-height: 58px;
+  width: 100%;
+  background: none;
+  border: 0;
+  color: inherit;
+  text-align: inherit;
+}
+.dl-cell + .dl-cell {
+  border-top: 1px solid var(--tg-theme-section-separator-color);
+}
+.dl-cell--multiline {
+  align-items: flex-start;
+}
+
+/* Кнопка-ячейка (Component="button"): тач-таргет и фокус. */
+button.dl-cell {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+button.dl-cell:focus-visible {
+  outline: 2px solid var(--tg-theme-accent-text-color);
+  outline-offset: -2px;
+}
+button.dl-cell:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.dl-cell__before {
+  flex: none;
+  display: inline-flex;
+}
+.dl-cell__main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.dl-cell__title {
+  display: block;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dl-cell--multiline .dl-cell__title {
+  white-space: normal;
+}
+.dl-cell__subtitle {
+  display: block;
+  font-size: 13px;
+  color: var(--tg-theme-hint-color);
+  line-height: 1.3;
+  margin-top: 2px;
+}
+.dl-cell__after {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Аватары (группа/профиль): круг с монограммой. */
 .dl-avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  font-weight: 600;
-  background: var(--tgui--secondary_bg_color);
-  color: var(--tgui--text_color);
-}
-
-.dl-row {
-  padding: 8px 16px;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  flex: none;
+  font-weight: 700;
+  font-size: 15px;
+  background: color-mix(in oklch, var(--tg-theme-accent-text-color) 16%, transparent);
+  color: var(--tg-theme-accent-text-color);
 }
 
 .dl-danger {
-  color: var(--tgui--destructive_text_color);
+  color: var(--tg-theme-destructive-text-color);
 }
 
-/* Cell, отрендеренный кнопкой (Component="button"): снимаем дефолтный вид
-   кнопки браузера — сам Cell даёт раскладку и тач-таргет. Нужен для
-   доступности: ячейка с onClick обязана быть фокусируемой с клавиатуры. */
-.dl-cell-button {
-  width: 100%;
+/* ── Пустые состояния ── */
+.dl-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 28px 32px;
+  color: var(--tg-theme-hint-color);
+}
+.dl-empty__title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--tg-theme-text-color);
+}
+.dl-empty__text {
+  font-size: 14px;
+}
+.dl-empty__action {
+  margin-top: 6px;
+}
+
+/* ── Спиннер ── */
+.dl-spinner {
+  display: inline-flex;
+  color: var(--tg-theme-accent-text-color);
+}
+.dl-spinner svg {
+  width: 24px;
+  height: 24px;
+  animation: dl-spin 0.9s linear infinite;
+}
+.dl-spinner--s svg { width: 18px; height: 18px; }
+.dl-spinner--l svg { width: 32px; height: 32px; }
+@keyframes dl-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Кнопки ── */
+.dl-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   border: 0;
+  border-radius: 12px;
+  font-weight: 600;
+  padding: 0 20px;
+  min-height: 44px;
+  font-size: 15px;
+  -webkit-tap-highlight-color: transparent;
+}
+.dl-button--l { min-height: 50px; font-size: 16px; }
+.dl-button--s { min-height: 36px; font-size: 14px; border-radius: 10px; }
+.dl-button--stretched { width: 100%; }
+.dl-button--filled {
+  background: var(--tg-theme-button-color);
+  color: var(--tg-theme-button-text-color, #fff);
+}
+.dl-button--gray {
+  background: color-mix(in oklch, var(--tg-theme-text-color) 10%, transparent);
+  color: var(--tg-theme-text-color);
+}
+.dl-button--plain {
   background: none;
-  text-align: inherit;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
+  color: var(--tg-theme-accent-text-color);
+}
+.dl-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+button.dl-button:focus-visible {
+  outline: 2px solid var(--tg-theme-accent-text-color);
+  outline-offset: 2px;
 }
 
-/* Корневой div AppRoot — это flex-колонка; кнопка-Cell внутри должна тянуться. */
-.dl-cell-button > * {
-  flex: 1 1 auto;
-}
-
+/* Повтор запроса на экранах ошибок. */
 .dl-retry {
   border: 0;
   border-radius: 12px;
@@ -122,50 +311,233 @@ body {
   font: inherit;
   font-weight: 600;
   cursor: pointer;
-  background: var(--tgui--button_color, var(--tgui--link_color));
-  color: var(--tgui--button_text_color, #fff);
+  background: var(--tg-theme-button-color);
+  color: var(--tg-theme-button-text-color, #fff);
 }
 
-/* Нижний таб-бар: 4 таба, фиксирован по низу, учитывает safe-area. */
+/* ── Поля формы (по макету .field/.input) ── */
+.dl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px 14px 4px;
+}
+.dl-field__label {
+  font-size: 13px;
+  color: var(--tg-theme-hint-color);
+}
+.dl-input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--tg-theme-section-separator-color);
+  border-radius: 12px;
+  background: var(--tg-theme-secondary-bg-color);
+  color: var(--tg-theme-text-color);
+  font: inherit;
+  font-size: 15px;
+}
+.dl-input:focus {
+  outline: 0;
+  border-color: var(--tg-theme-accent-text-color);
+}
+.dl-textarea {
+  min-height: 66px;
+  resize: none;
+}
+.dl-field--error .dl-input {
+  border-color: var(--tg-theme-destructive-text-color);
+}
+
+/* ── Переключатель (по макету .switch) ── */
+.dl-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 46px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--tg-theme-section-separator-color);
+  position: relative;
+  cursor: pointer;
+  flex: none;
+  margin: 0;
+  transition: background 0.15s ease;
+}
+.dl-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: left 0.15s ease;
+}
+.dl-switch:checked {
+  background: var(--dl-green);
+}
+.dl-switch:checked::after {
+  left: 20px;
+}
+.dl-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.dl-switch:focus-visible {
+  outline: 2px solid var(--tg-theme-accent-text-color);
+  outline-offset: 2px;
+}
+
+/* ── Бейджи, разделители, подписи ── */
+.dl-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.dl-badge--primary {
+  background: color-mix(in oklch, var(--dl-green) 14%, transparent);
+  color: var(--dl-green);
+}
+.dl-badge--secondary {
+  background: color-mix(in oklch, var(--tg-theme-accent-text-color) 12%, transparent);
+  color: var(--tg-theme-accent-text-color);
+}
+.dl-badge--gray {
+  background: color-mix(in oklch, var(--tg-theme-text-color) 8%, transparent);
+  color: var(--tg-theme-hint-color);
+}
+
+.dl-divider {
+  border: 0;
+  border-top: 1px solid var(--tg-theme-section-separator-color);
+  margin: 10px 16px;
+}
+
+.dl-caption {
+  font-size: 12px;
+  color: var(--tg-theme-hint-color);
+}
+
+/* ── Bottom sheet (по макету .sheet/.sheet-scrim) ── */
+.dl-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+}
+.dl-modal--nested {
+  z-index: 110;
+}
+.dl-modal__scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+.dl-modal__sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--tg-theme-secondary-bg-color);
+  border-radius: 16px 16px 0 0;
+  padding: 6px 6px 0;
+  max-height: 86%;
+  overflow-y: auto;
+}
+.dl-modal__grip {
+  width: 36px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--tg-theme-section-separator-color);
+  margin: 6px auto 4px;
+}
+
+/* Заголовок шита: текст + кнопка закрытия. */
+.dl-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px 4px;
+}
+.dl-sheet-header__title {
+  font-size: 17px;
+  font-weight: 600;
+}
+.dl-sheet-header__close {
+  color: var(--tg-theme-hint-color);
+  font-size: 22px;
+  line-height: 1;
+  background: none;
+  border: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  min-width: 34px;
+  min-height: 34px;
+}
+.dl-sheet-header__close:focus-visible {
+  outline: 2px solid var(--tg-theme-accent-text-color);
+}
+
+.dl-sheet {
+  padding: 4px 0 20px;
+}
+
+.dl-section-block {
+  padding-top: 8px;
+}
+.dl-section-header {
+  padding: 8px 16px 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--tg-theme-hint-color);
+}
+
+/* ── Нижний таб-бар (по макету .tabbar/.tab) ── */
 .dl-tabbar {
   position: fixed;
   inset-inline: 0;
   bottom: 0;
   z-index: 10;
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 1fr;
-  gap: 4px;
-  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
-  background: var(--tgui--bg_color);
-  border-top: 1px solid var(--tgui--divider, rgba(128, 128, 128, 0.2));
+  display: flex;
+  height: 62px;
+  background: var(--tg-theme-secondary-bg-color);
+  border-top: 1px solid var(--tg-theme-section-separator-color);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
-
 .dl-tabbar__item {
+  flex: 1;
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  border: 0;
-  background: none;
-  padding: 6px 2px;
-  border-radius: 12px;
-  color: var(--tgui--hint_color);
-  font: inherit;
+  justify-content: center;
+  gap: 3px;
+  color: var(--tg-theme-hint-color);
   font-size: 11px;
-  line-height: 14px;
-  cursor: pointer;
+  font-weight: 500;
+  padding-bottom: 6px;
+  background: none;
+  border: 0;
   -webkit-tap-highlight-color: transparent;
 }
-
-.dl-tabbar__item[data-selected='true'] {
-  color: var(--tgui--link_color);
+.dl-tabbar__item svg {
+  width: 26px;
+  height: 26px;
 }
-
+.dl-tabbar__item[data-selected='true'] {
+  color: var(--tg-theme-accent-text-color);
+}
+.dl-tabbar__item:focus-visible {
+  outline: 2px solid var(--tg-theme-accent-text-color);
+  outline-offset: -4px;
+}
 .dl-tabbar__icon {
   display: inline-flex;
 }
-
 .dl-tabbar__label {
   white-space: nowrap;
   overflow: hidden;
@@ -173,67 +545,67 @@ body {
   max-width: 100%;
 }
 
-/* --- Дедлайны: hero-карточка, чипы, cell-действия, FAB --------------------- */
-
-/* Hero-карточка «ближайший дедлайн» (спека §9: как баланс в Wallet). */
+/* ── Hero-карточка «ближайший дедлайн» (по макету .hero-card) ── */
 .dl-hero {
   position: relative;
-  padding: 8px 16px 12px;
+  padding: 4px 14px 8px;
 }
-
 .dl-hero__card {
-  padding: 16px;
+  background: var(--tg-theme-section-bg-color);
+  border-radius: 16px;
+  padding: 18px 18px 16px;
 }
-
 .dl-hero__label {
   font-size: 13px;
-  line-height: 18px;
-  color: var(--tgui--hint_color);
+  font-weight: 500;
+  color: var(--tg-theme-hint-color);
 }
-
 .dl-hero__title {
-  margin-top: 2px;
-  font-size: 20px;
-  line-height: 26px;
-  font-weight: 600;
+  margin-top: 6px;
+  font-size: 16px;
+  line-height: 1.3;
 }
-
 .dl-hero__scope {
   margin-top: 2px;
   font-size: 13px;
-  line-height: 18px;
-  color: var(--tgui--subtitle_text_color, var(--tgui--hint_color));
+  color: var(--tg-theme-hint-color);
 }
-
-/* Крупная дата — фокус карточки (аналог баланса). */
 .dl-hero__due {
-  margin-top: 12px;
-  font-size: 32px;
-  line-height: 38px;
+  margin-top: 8px;
+  font-size: 34px;
   font-weight: 700;
   letter-spacing: -0.02em;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
 }
-
 .dl-hero__due--overdue {
-  color: var(--tgui--destructive_text_color);
+  color: var(--tg-theme-destructive-text-color);
 }
-
 .dl-countdown {
-  margin-top: 4px;
-  font-size: 15px;
-  line-height: 20px;
-  color: var(--tgui--link_color);
+  margin-top: 8px;
+  font-size: 14px;
+  color: var(--tg-theme-hint-color);
 }
-
 .dl-countdown--overdue {
-  color: var(--tgui--destructive_text_color);
+  color: var(--tg-theme-destructive-text-color);
 }
 
-/* Прозрачная кнопка поверх карточки: делает всю hero-область кликабельной,
-   не мешая выделению текста внутри самой карточки. */
+.dl-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--tg-theme-accent-text-color) 12%, transparent);
+  color: var(--tg-theme-accent-text-color);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Прозрачная кнопка поверх карточки: делает hero-область кликабельной. */
 .dl-hero__overlay {
   position: absolute;
-  inset: 8px 16px 12px;
+  inset: 4px 14px 8px;
   border: 0;
   padding: 0;
   background: none;
@@ -241,66 +613,72 @@ body {
   border-radius: 16px;
   -webkit-tap-highlight-color: transparent;
 }
-
 .dl-hero__overlay:focus-visible {
-  outline: 2px solid var(--tgui--link_color);
+  outline: 2px solid var(--tg-theme-accent-text-color);
   outline-offset: 2px;
 }
 
-/* Чипы-фильтры и пресеты: горизонтальная прокрутка без переноса строк. */
+/* ── Чипы-фильтры и пресеты (по макету .chips/.chip) ── */
 .dl-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 0 16px 8px;
+  padding: 0 14px 8px;
 }
-
 .dl-filters {
   padding-top: 4px;
 }
-
 .dl-chip {
-  cursor: pointer;
-  border: 0;
-  font: inherit;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--tg-theme-section-separator-color);
+  background: var(--tg-theme-section-bg-color);
+  color: var(--tg-theme-hint-color);
+  font-size: 13px;
+  font-weight: 500;
+  -webkit-tap-highlight-color: transparent;
 }
-
+.dl-chip:focus-visible {
+  outline: 2px solid var(--tg-theme-accent-text-color);
+  outline-offset: 2px;
+}
 .dl-chip[data-selected='true'] {
-  outline: 1px solid var(--tgui--link_color);
+  background: var(--tg-theme-accent-text-color);
+  border-color: var(--tg-theme-accent-text-color);
+  color: #fff;
+}
+.dl-chip--on {
+  border-color: var(--tg-theme-accent-text-color);
+  color: var(--tg-theme-accent-text-color);
 }
 
-.dl-chip--button {
-  border-radius: 12px;
-  padding: 8px 12px;
-  font-size: 14px;
-  background: var(--tgui--secondary_bg_color);
-  color: var(--tgui--text_color);
-}
-
-.dl-chip--button[data-selected='true'] {
-  background: var(--tgui--button_color, var(--tgui--link_color));
-  color: var(--tgui--button_text_color, #fff);
-}
-
-/* Строка списка + кнопки действий (выполнить/удалить). */
+/* ── Строка списка + кнопки действий ── */
 .dl-cell-wrap {
   display: flex;
-  align-items: center;
+  align-items: stretch;
+  background: var(--tg-theme-section-bg-color);
 }
-
+.dl-cell-wrap .dl-cell {
+  border-radius: 0;
+}
+.dl-cell-wrap + .dl-cell-wrap {
+  border-top: 1px solid var(--tg-theme-section-separator-color);
+}
 .dl-cell-wrap > .dl-cell-button {
   flex: 1 1 auto;
   min-width: 0;
 }
-
-.dl-cell--overdue {
-  color: var(--tgui--destructive_text_color);
+.dl-cell--overdue .dl-cell__title,
+.dl-cell--overdue .dl-cell__subtitle {
+  color: var(--tg-theme-destructive-text-color);
 }
 
 .dl-cell-actions {
   display: flex;
   gap: 4px;
+  align-items: center;
   padding-right: 12px;
+  background: var(--tg-theme-section-bg-color);
 }
 
 .dl-action {
@@ -312,48 +690,48 @@ body {
   line-height: 1;
   padding: 10px 8px;
   border-radius: 10px;
-  color: var(--tgui--hint_color);
+  color: var(--tg-theme-hint-color);
 }
-
 .dl-action:hover {
-  background: var(--tgui--secondary_bg_color);
+  background: var(--tg-theme-secondary-bg-color);
 }
-
 .dl-action.dl-danger {
-  color: var(--tgui--destructive_text_color);
+  color: var(--tg-theme-destructive-text-color);
 }
 
-/* Круглая FAB «+» (спека §9), над таб-баром и с учётом safe-area. */
+/* ── FAB «+» (по макету .fab) ── */
 .dl-fab {
   position: fixed;
-  right: 16px;
-  bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+  right: 18px;
+  bottom: calc(80px + env(safe-area-inset-bottom, 0px));
   z-index: 11;
   width: 56px;
   height: 56px;
   border: 0;
-  border-radius: 50%;
+  border-radius: 999px;
   font-size: 28px;
   line-height: 1;
   cursor: pointer;
-  color: var(--tgui--button_text_color, #fff);
-  background: var(--tgui--button_color, var(--tgui--link_color));
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.24);
+  color: var(--tg-theme-button-text-color, #fff);
+  background: var(--tg-theme-button-color);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  -webkit-tap-highlight-color: transparent;
+}
+.dl-fab:focus-visible {
+  outline: 2px solid var(--tg-theme-accent-text-color);
+  outline-offset: 2px;
 }
 
-/* --- Календарь ------------------------------------------------------------- */
-
+/* ── Календарь (по макету .cal-grid/.cal-day) ── */
 .dl-cal {
-  padding: 0 12px 8px;
+  padding: 0 14px 8px;
 }
-
 .dl-cal__nav {
   display: grid;
   grid-template-columns: 40px 1fr 40px;
   align-items: center;
   padding: 4px 0 8px;
 }
-
 .dl-cal__nav-button {
   border: 0;
   background: none;
@@ -363,29 +741,32 @@ body {
   padding: 8px;
   border-radius: 10px;
   cursor: pointer;
-  color: var(--tgui--link_color);
+  color: var(--tg-theme-accent-text-color);
 }
-
+.dl-cal__nav-button:focus-visible {
+  outline: 2px solid var(--tg-theme-accent-text-color);
+}
 .dl-cal__nav-title {
   text-align: center;
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 600;
-  text-transform: capitalize;
+  letter-spacing: -0.01em;
 }
-
 .dl-cal__grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
+  background: var(--tg-theme-section-bg-color);
+  border-radius: 14px;
+  padding: 8px 8px 10px;
   gap: 2px;
 }
-
 .dl-cal__weekday {
   text-align: center;
-  font-size: 12px;
-  line-height: 20px;
-  color: var(--tgui--hint_color);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--tg-theme-hint-color);
+  padding: 6px 0 4px;
 }
-
 .dl-cal__day {
   position: relative;
   display: flex;
@@ -393,129 +774,85 @@ body {
   align-items: center;
   justify-content: center;
   min-height: 40px;
+  aspect-ratio: 1;
   border: 0;
   background: none;
   font: inherit;
   font-size: 15px;
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
-  border-radius: 10px;
-  color: var(--tgui--text_color);
+  border-radius: 999px;
+  color: var(--tg-theme-text-color);
   -webkit-tap-highlight-color: transparent;
 }
-
-/* Дни соседних месяцев — приглушённые, но кликабельные (перелистывают месяц). */
 .dl-cal__day[data-outside='true'] {
-  color: var(--tgui--hint_color);
-  opacity: 0.6;
+  color: var(--tg-theme-hint-color);
+  opacity: 0.45;
 }
-
 .dl-cal__day[data-today='true'] {
+  background: var(--tg-theme-button-color);
+  color: #fff;
   font-weight: 700;
-  color: var(--tgui--link_color);
 }
-
 .dl-cal__day[data-selected='true'] {
-  background: var(--tgui--button_color, var(--tgui--link_color));
-  color: var(--tgui--button_text_color, #fff);
+  outline: 2px solid var(--tg-theme-accent-text-color);
+  outline-offset: -2px;
 }
-
-/* Точка-маркер: есть дедлайны на дне. */
+.dl-cal__day:focus-visible {
+  outline: 2px solid var(--tg-theme-accent-text-color);
+}
 .dl-cal__dot {
   position: absolute;
   bottom: 5px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--tgui--link_color);
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--tg-theme-accent-text-color);
+}
+.dl-cal__day[data-today='true'] .dl-cal__dot {
+  background: #fff;
 }
 
-.dl-cal__day[data-selected='true'] .dl-cal__dot {
-  background: var(--tgui--button_text_color, #fff);
-}
-
-/* --- Bottom sheet формы --------------------------------------------------- */
-
-.dl-sheet {
-  padding: 4px 0 16px;
-}
-
-.dl-sheet-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 16px 8px;
-}
-
-.dl-sheet-header__title {
-  font-size: 17px;
-  font-weight: 600;
-}
-
-.dl-sheet-header__close {
-  border: 0;
-  background: none;
-  font: inherit;
-  font-size: 16px;
-  line-height: 1;
-  padding: 8px 10px;
-  border-radius: 10px;
-  cursor: pointer;
-  color: var(--tgui--hint_color);
-}
-
-.dl-section-block {
-  padding-top: 8px;
-}
-
-.dl-section-header {
-  padding: 8px 16px 4px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--tgui--hint_color);
-}
-
-/* Пара «дата + время» в одну строку; на узких экранах — друг под другом. */
+/* ── Форма дедлайна: пара «дата + время», кастомные напоминания ── */
 .dl-due-row {
   display: flex;
   gap: 12px;
   width: 100%;
 }
-
 .dl-due-row > * {
   flex: 1 1 0;
   min-width: 0;
 }
-
 .dl-custom {
-  border-top: 1px solid var(--tgui--divider, rgba(128, 128, 128, 0.2));
+  border-top: 1px solid var(--tg-theme-section-separator-color);
   padding-top: 4px;
 }
-
 .dl-error {
-  padding: 0 16px 8px;
+  padding: 4px 16px 8px;
   font-size: 13px;
   line-height: 18px;
-  color: var(--tgui--destructive_text_color);
+  color: var(--tg-theme-destructive-text-color);
 }
-
 .dl-hint {
   padding: 4px 16px 8px;
   font-size: 13px;
   line-height: 18px;
-  color: var(--tgui--hint_color);
+  color: var(--tg-theme-hint-color);
 }
-
+.dl-hint__sub {
+  font-size: 12px;
+  line-height: 16px;
+  opacity: 0.85;
+  padding-top: 2px;
+}
 .dl-reminders {
   padding: 4px 0 8px;
 }
-
 .dl-reminders__list {
   margin: 0;
   padding: 0 16px;
   list-style: none;
 }
-
 .dl-reminders__list li {
   display: flex;
   align-items: center;
@@ -523,25 +860,21 @@ body {
   gap: 12px;
   padding: 6px 0;
   font-size: 14px;
-  border-bottom: 1px solid var(--tgui--divider, rgba(128, 128, 128, 0.15));
+  border-bottom: 1px solid var(--tg-theme-section-separator-color);
 }
-/* --- Группы: участники, коды, меню действий ------------------------------- */
 
-/* Строка участника: ячейка + подпись «в группе с …» + раскрытое меню. */
+/* ── Группы: участники, коды, меню действий ── */
 .dl-member__meta {
   padding: 0 16px 6px;
   font-size: 12px;
   line-height: 16px;
-  color: var(--tgui--hint_color);
+  color: var(--tg-theme-hint-color);
 }
-
 .dl-member__menu {
   display: flex;
   flex-direction: column;
   padding: 0 16px 8px;
 }
-
-/* Пункт меню действий: крупный тач-таргет (≥44px), как требуют HIG/Material. */
 .dl-menu-item {
   border: 0;
   background: none;
@@ -551,22 +884,18 @@ body {
   padding: 12px 0;
   min-height: 44px;
   cursor: pointer;
-  color: var(--tgui--link_color, var(--tgui--text_color));
-  border-bottom: 1px solid var(--tgui--divider, rgba(128, 128, 128, 0.15));
+  color: var(--tg-theme-accent-text-color);
+  border-bottom: 1px solid var(--tg-theme-section-separator-color);
 }
-
 .dl-menu-item:last-child {
   border-bottom: 0;
 }
-
-/* Код (инвайт/claim): моноширинный и разряженный — его читают и переписывают. */
 .dl-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 20px;
   letter-spacing: 2px;
   font-weight: 600;
 }
-
 .dl-search-state {
   display: flex;
   align-items: center;
@@ -574,10 +903,6 @@ body {
   padding: 12px 0;
 }
 
-/* Вторая строка подсказки: слабее основной. */
-.dl-hint__sub {
-  font-size: 12px;
-  line-height: 16px;
-  opacity: 0.85;
-  padding-top: 2px;
+.dl-row {
+  padding: 8px 14px;
 }

@@ -8,7 +8,6 @@
 // Себе действия не показываем: backend отвергнет демоут/кик последнего админа
 // (409 last_admin), а «выйти» — отдельная кнопка на экране группы. Так
 // интерфейс не предлагает заведомо неудачное действие.
-import { Cell } from '@telegram-apps/telegram-ui';
 import { RoleBadge } from './RoleBadge';
 import { strings, tpl } from '../lib/strings';
 import { formatDue } from '../lib/format';
@@ -53,20 +52,32 @@ export function MemberCell({
 
   return (
     <div data-testid={`member-${member.user_id}`}>
-      <Cell
-        Component={showMenu ? 'button' : 'div'}
-        // Cell с onClick обязан быть фокусируемым: иначе меню действий
-        // недоступно с клавиатуры.
-        {...(showMenu ? { type: 'button' as const } : {})}
-        className={showMenu ? 'dl-cell-button' : undefined}
-        subtitle={subtitle}
-        after={<RoleBadge role={member.role} />}
-        multiline
-        onClick={showMenu ? onMenuToggle : undefined}
-        aria-expanded={showMenu ? menuOpen : undefined}
-      >
-        {name}
-      </Cell>
+      {showMenu ? (
+        <button
+          type="button"
+          className="dl-cell dl-cell--multiline"
+          onClick={onMenuToggle}
+          aria-expanded={menuOpen}
+        >
+          <span className="dl-cell__main">
+            <span className="dl-cell__title">{name}</span>
+            {subtitle ? <span className="dl-cell__subtitle">{subtitle}</span> : null}
+          </span>
+          <span className="dl-cell__after">
+            <RoleBadge role={member.role} />
+          </span>
+        </button>
+      ) : (
+        <div className="dl-cell dl-cell--multiline">
+          <span className="dl-cell__main">
+            <span className="dl-cell__title">{name}</span>
+            {subtitle ? <span className="dl-cell__subtitle">{subtitle}</span> : null}
+          </span>
+          <span className="dl-cell__after">
+            <RoleBadge role={member.role} />
+          </span>
+        </div>
+      )}
 
       <div className="dl-member__meta">
         {tpl(strings.groups.joinedAt, formatDue(member.joined_at, tz))}

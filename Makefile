@@ -1,7 +1,12 @@
-.PHONY: web build test up fmt clean
+.PHONY: web build test up fmt clean serve dev-url
 
 GO ?= go
 NPM ?= npm
+
+# .env читает только docker compose (env_file): config.Load берёт переменные
+# из окружения процесса. Для локального запуска бинарника экспортируем файл
+# через envload.sh (см. его заголовок: почему не «source»).
+ENV_FILE ?= .env
 
 # Сборка TMA и укладка бандла туда, откуда его берёт //go:embed
 # (internal/platform/tma/dist). Каталог пересоздаётся целиком, иначе stale-ассеты
@@ -22,6 +27,15 @@ web:
 # Бинарник в bin/ (каталог в .gitignore) — не мусорим в корне репозитория.
 build:
 	$(GO) build -o bin/deadliner ./cmd/deadliner
+
+# Локальный запуск сервера с переменными из .env (см. ENV_FILE выше).
+serve:
+	@eval $$($(CURDIR)/envload.sh $(ENV_FILE)); exec ./bin/deadliner serve
+
+# URL с валидным initData для теста TMA в браузере (см. cmd/devinitdata).
+# Требует запущенного make serve и `cd web && npm run dev`.
+dev-url:
+	@eval $$($(CURDIR)/envload.sh $(ENV_FILE)); exec $(GO) run ./cmd/devinitdata
 
 test:
 	$(GO) test ./... -count=1

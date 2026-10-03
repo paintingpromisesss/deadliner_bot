@@ -10,7 +10,7 @@
 // нет) — сессионные коды хранит родитель и показывает отдельным блоком с
 // пометкой, что список неполный.
 import { useEffect, useState } from 'react';
-import { Button, Cell, Input, Modal, Select } from '@telegram-apps/telegram-ui';
+import { Button, Input, Modal, Select } from './ui';
 import { SheetHeader } from './SheetHeader';
 import { useCreateInvite } from '../lib/queries';
 import { mutationErrorMessage } from '../lib/errorText';
@@ -112,9 +112,9 @@ export function InviteSheet({ open, onOpenChange, groupID, tz, onCreated }: Invi
         {created ? (
           <>
             <div className="dl-section-header">{strings.groups.inviteCreated}</div>
-            <Cell multiline data-testid="invite-code-value">
+            <div className="dl-row" data-testid="invite-code-value">
               <span className="dl-code">{created.code}</span>
-            </Cell>
+            </div>
             <div className="dl-hint" data-testid="invite-expires">
               {tpl(strings.groups.inviteExpiresAt, formatDue(created.expires_at, tz))}
             </div>
@@ -126,58 +126,51 @@ export function InviteSheet({ open, onOpenChange, groupID, tz, onCreated }: Invi
           </>
         ) : (
           <>
-            <Cell multiline>
-              <Select
-                header={strings.groups.inviteRole}
-                value={role}
-                onChange={(e) => setRole(e.target.value === 'admin' ? 'admin' : 'member')}
-                data-testid="invite-role"
-              >
-                <option value="member">{strings.groups.inviteRoleMember}</option>
-                <option value="admin">{strings.groups.inviteRoleAdmin}</option>
-              </Select>
-            </Cell>
+            <Select
+              header={strings.groups.inviteRole}
+              value={role}
+              onChange={(e) => setRole(e.target.value === 'admin' ? 'admin' : 'member')}
+              data-testid="invite-role"
+            >
+              <option value="member">{strings.groups.inviteRoleMember}</option>
+              <option value="admin">{strings.groups.inviteRoleAdmin}</option>
+            </Select>
 
-            <Cell
-              Component="label"
-              multiline
-              after={
+            <label className="dl-cell dl-cell--multiline">
+              <span className="dl-cell__main">
+                <span className="dl-cell__title">{strings.groups.inviteMaxUsesUnlimited}</span>
+              </span>
+              <span className="dl-cell__after">
                 <input
                   type="checkbox"
                   checked={unlimited}
                   data-testid="invite-unlimited"
                   onChange={(e) => setUnlimited(e.target.checked)}
                 />
-              }
-            >
-              {strings.groups.inviteMaxUsesUnlimited}
-            </Cell>
+              </span>
+            </label>
             {!unlimited ? (
-              <Cell multiline>
-                <Input
-                  header={strings.groups.inviteMaxUses}
-                  value={maxUses}
-                  inputMode="numeric"
-                  onChange={(e) => setMaxUses(e.target.value.replace(/[^0-9]/g, ''))}
-                  data-testid="invite-max-uses"
-                />
-              </Cell>
+              <Input
+                header={strings.groups.inviteMaxUses}
+                value={maxUses}
+                inputMode="numeric"
+                onChange={(e) => setMaxUses(e.target.value.replace(/[^0-9]/g, ''))}
+                data-testid="invite-max-uses"
+              />
             ) : null}
 
-            <Cell multiline>
-              <Select
-                header={strings.groups.inviteTTL}
-                value={String(ttlHours)}
-                onChange={(e) => setTTLHours(Number(e.target.value))}
-                data-testid="invite-ttl"
-              >
-                {TTL_OPTIONS.map((hours) => (
-                  <option key={hours} value={hours}>
-                    {ttlLabel(hours)}
-                  </option>
-                ))}
-              </Select>
-            </Cell>
+            <Select
+              header={strings.groups.inviteTTL}
+              value={String(ttlHours)}
+              onChange={(e) => setTTLHours(Number(e.target.value))}
+              data-testid="invite-ttl"
+            >
+              {TTL_OPTIONS.map((hours) => (
+                <option key={hours} value={hours}>
+                  {ttlLabel(hours)}
+                </option>
+              ))}
+            </Select>
 
             {error ? (
               <div className="dl-error" role="alert" data-testid="invite-error">

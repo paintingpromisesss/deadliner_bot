@@ -6,7 +6,7 @@
 // (409 занят, 400 slug_invalid, 429 лимит) показываются здесь же строкой
 // role="alert".
 import { useEffect, useState } from 'react';
-import { Button, Cell, Input, Modal } from '@telegram-apps/telegram-ui';
+import { Button, Input, Modal } from './ui';
 import { SheetHeader } from './SheetHeader';
 import { useCreateGroup } from '../lib/queries';
 import { checkSlug } from '../lib/slug';
@@ -64,18 +64,16 @@ export function CreateGroupSheet({ open, onOpenChange, onCreated }: CreateGroupS
   return (
     <Modal open={open} onOpenChange={onOpenChange} header={<SheetHeader title={strings.groups.createTitle} onClose={() => onOpenChange(false)} />}>
       <div className="dl-sheet" data-testid="create-group-sheet">
-        <Cell multiline>
-          <Input
-            header={strings.groups.fieldSlug}
-            placeholder={strings.groups.fieldSlugPlaceholder}
-            value={slug}
-            maxLength={24}
-            status={showSlugError ? 'error' : 'default'}
-            onChange={(e) => setSlug(e.target.value)}
-            onBlur={() => setAttempted(true)}
-            data-testid="field-slug"
-          />
-        </Cell>
+        <Input
+          header={strings.groups.fieldSlug}
+          placeholder={strings.groups.fieldSlugPlaceholder}
+          value={slug}
+          maxLength={24}
+          status={showSlugError ? 'error' : 'default'}
+          onChange={(e) => setSlug(e.target.value)}
+          onBlur={() => setAttempted(true)}
+          data-testid="field-slug"
+        />
         <div className="dl-hint">{strings.groups.slugHint}</div>
         {showSlugError && slugError ? (
           <div className="dl-error" role="alert" data-testid="error-slug">
@@ -83,17 +81,15 @@ export function CreateGroupSheet({ open, onOpenChange, onCreated }: CreateGroupS
           </div>
         ) : null}
 
-        <Cell multiline>
-          <Input
-            header={strings.groups.fieldTitle}
-            placeholder={strings.groups.fieldTitlePlaceholder}
-            value={title}
-            maxLength={200}
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={() => setAttempted(true)}
-            data-testid="field-group-title"
-          />
-        </Cell>
+        <Input
+          header={strings.groups.fieldTitle}
+          placeholder={strings.groups.fieldTitlePlaceholder}
+          value={title}
+          maxLength={200}
+          onChange={(e) => setTitle(e.target.value)}
+          onBlur={() => setAttempted(true)}
+          data-testid="field-group-title"
+        />
         {attempted && titleError ? (
           <div className="dl-error" role="alert" data-testid="error-group-title">
             {groupTitleErrorMessage(titleError)}

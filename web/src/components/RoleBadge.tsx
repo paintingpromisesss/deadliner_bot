@@ -2,7 +2,7 @@
 // нейтральный, пустая роль (не участник, в подсказках поиска) — серая подпись
 // «не участник». Отдельный компонент, потому что роль рисуется в трёх местах:
 // список групп, поиск и админ-панель.
-import { Badge } from '@telegram-apps/telegram-ui';
+import { Badge } from './ui';
 import { strings } from '../lib/strings';
 import type { GroupRole } from '../lib/groups';
 
@@ -13,20 +13,20 @@ interface RoleBadgeProps {
 export function RoleBadge({ role }: RoleBadgeProps) {
   if (role === 'admin') {
     return (
-      <Badge type="number" mode="primary" data-testid="role-badge" data-role="admin">
+      <Badge mode="primary" data-testid="role-badge" data-role="admin">
         {strings.groups.roleAdmin}
       </Badge>
     );
   }
   if (role === 'member') {
     return (
-      <Badge type="number" mode="secondary" data-testid="role-badge" data-role="member">
+      <Badge mode="secondary" data-testid="role-badge" data-role="member">
         {strings.groups.roleMember}
       </Badge>
     );
   }
   return (
-    <Badge type="number" mode="gray" data-testid="role-badge" data-role="none">
+    <Badge mode="gray" data-testid="role-badge" data-role="none">
       {strings.groups.roleNone}
     </Badge>
   );

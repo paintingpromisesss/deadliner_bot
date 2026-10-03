@@ -6,7 +6,7 @@
 // неразличимы как 404, исчерпанный max_uses — 409, лимиты — 429) показываются
 // строкой под полем.
 import { useEffect, useState } from 'react';
-import { Button, Cell, Input, Modal } from '@telegram-apps/telegram-ui';
+import { Button, Input, Modal } from './ui';
 import { SheetHeader } from './SheetHeader';
 import { useRedeemInvite } from '../lib/queries';
 import { redeemErrorMessage } from '../lib/errorText';
@@ -51,18 +51,16 @@ export function RedeemSheet({ open, onOpenChange, onRedeemed }: RedeemSheetProps
   return (
     <Modal open={open} onOpenChange={onOpenChange} header={<SheetHeader title={strings.groups.redeemTitle} onClose={() => onOpenChange(false)} />}>
       <div className="dl-sheet" data-testid="redeem-sheet">
-        <Cell multiline>
-          <Input
-            header={strings.groups.fieldCode}
-            placeholder={strings.groups.fieldCodePlaceholder}
-            value={code}
-            maxLength={16}
-            status={attempted && empty ? 'error' : 'default'}
-            onChange={(e) => setCode(e.target.value)}
-            onBlur={() => setAttempted(true)}
-            data-testid="field-invite-code"
-          />
-        </Cell>
+        <Input
+          header={strings.groups.fieldCode}
+          placeholder={strings.groups.fieldCodePlaceholder}
+          value={code}
+          maxLength={16}
+          status={attempted && empty ? 'error' : 'default'}
+          onChange={(e) => setCode(e.target.value)}
+          onBlur={() => setAttempted(true)}
+          data-testid="field-invite-code"
+        />
         <div className="dl-hint">{strings.groups.redeemHint}</div>
 
         {error ? (

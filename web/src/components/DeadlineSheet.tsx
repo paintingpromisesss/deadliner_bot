@@ -14,13 +14,12 @@ import type { ReactNode } from 'react';
 import {
   Button,
   Caption,
-  Cell,
   Divider,
   Input,
   Modal,
   Select,
   Textarea,
-} from '@telegram-apps/telegram-ui';
+} from './ui';
 import {
   MAX_DESCRIPTION,
   MAX_TITLE,
@@ -271,35 +270,31 @@ export function DeadlineSheet({
       header={<SheetHeader title={isEdit ? strings.sheet.editTitle : strings.sheet.createTitle} onClose={() => onOpenChange(false)} />}
     >
       <div className="dl-sheet" data-testid="deadline-sheet">
-        <Cell multiline>
-          <Input
-            header={strings.sheet.fieldTitle}
-            placeholder={strings.sheet.fieldTitlePlaceholder}
-            value={form.title}
-            maxLength={MAX_TITLE}
-            status={showErrors && validation.errors.title ? 'error' : 'default'}
-            onChange={(e) => patchForm({ title: e.target.value })}
-            onBlur={() => setTouched(true)}
-            data-testid="field-title"
-          />
-        </Cell>
+        <Input
+          header={strings.sheet.fieldTitle}
+          placeholder={strings.sheet.fieldTitlePlaceholder}
+          value={form.title}
+          maxLength={MAX_TITLE}
+          status={showErrors && validation.errors.title ? 'error' : 'default'}
+          onChange={(e) => patchForm({ title: e.target.value })}
+          onBlur={() => setTouched(true)}
+          data-testid="field-title"
+        />
         {showErrors && validation.errors.title ? (
           <div className="dl-error" role="alert" data-testid="error-title">
             {validation.errors.title}
           </div>
         ) : null}
 
-        <Cell multiline>
-          <Textarea
-            header={strings.sheet.fieldDescription}
-            placeholder={strings.sheet.fieldDescriptionPlaceholder}
-            value={form.description}
-            maxLength={MAX_DESCRIPTION}
-            status={showErrors && validation.errors.description ? 'error' : 'default'}
-            onChange={(e) => patchForm({ description: e.target.value })}
-            data-testid="field-description"
-          />
-        </Cell>
+        <Textarea
+          header={strings.sheet.fieldDescription}
+          placeholder={strings.sheet.fieldDescriptionPlaceholder}
+          value={form.description}
+          maxLength={MAX_DESCRIPTION}
+          status={showErrors && validation.errors.description ? 'error' : 'default'}
+          onChange={(e) => patchForm({ description: e.target.value })}
+          data-testid="field-description"
+        />
         {showErrors && validation.errors.description ? (
           <div className="dl-error" role="alert">
             {validation.errors.description}
@@ -308,55 +303,51 @@ export function DeadlineSheet({
 
         {/* Тип: личный / группа. В режиме правки заблокирован — тип дедлайна
             неизменяем (PATCH не принимает group_id). */}
-        <Cell multiline>
-          <Select
-            header={strings.sheet.fieldType}
-            value={form.groupId === null ? '' : String(form.groupId)}
-            disabled={isEdit}
-            onChange={(e) =>
-              patchForm({ groupId: e.target.value === '' ? null : Number(e.target.value) })
-            }
-            data-testid="field-group"
-          >
-            <option value="">{strings.sheet.typePersonal}</option>
-            {writable.map((g) => (
-              <option key={g.group.id} value={g.group.id}>
-                {strings.sheet.typeGroup} · {g.group.slug}
-              </option>
-            ))}
-          </Select>
-        </Cell>
+        <Select
+          header={strings.sheet.fieldType}
+          value={form.groupId === null ? '' : String(form.groupId)}
+          disabled={isEdit}
+          onChange={(e) =>
+            patchForm({ groupId: e.target.value === '' ? null : Number(e.target.value) })
+          }
+          data-testid="field-group"
+        >
+          <option value="">{strings.sheet.typePersonal}</option>
+          {writable.map((g) => (
+            <option key={g.group.id} value={g.group.id}>
+              {strings.sheet.typeGroup} · {g.group.slug}
+            </option>
+          ))}
+        </Select>
         {writable.length === 0 ? (
           <div className="dl-hint">{strings.sheet.noGroups}</div>
         ) : null}
 
-        <Cell multiline>
-          <div className="dl-due-row">
-            <Input
-              type="date"
-              header={strings.sheet.fieldDate}
-              value={form.date}
-              status={showErrors && validation.errors.due ? 'error' : 'default'}
-              onChange={(e) => {
-                setTouched(true);
-                patchForm({ date: e.target.value });
-              }}
-              onBlur={() => setTouched(true)}
-              data-testid="field-date"
-            />
-            <Input
-              type="time"
-              header={strings.sheet.fieldTime}
-              value={form.time}
-              onChange={(e) => {
-                setTouched(true);
-                patchForm({ time: e.target.value });
-              }}
-              onBlur={() => setTouched(true)}
-              data-testid="field-time"
-            />
-          </div>
-        </Cell>
+        <div className="dl-due-row">
+          <Input
+            type="date"
+            header={strings.sheet.fieldDate}
+            value={form.date}
+            status={showErrors && validation.errors.due ? 'error' : 'default'}
+            onChange={(e) => {
+              setTouched(true);
+              patchForm({ date: e.target.value });
+            }}
+            onBlur={() => setTouched(true)}
+            data-testid="field-date"
+          />
+          <Input
+            type="time"
+            header={strings.sheet.fieldTime}
+            value={form.time}
+            onChange={(e) => {
+              setTouched(true);
+              patchForm({ time: e.target.value });
+            }}
+            onBlur={() => setTouched(true)}
+            data-testid="field-time"
+          />
+        </div>
         {showErrors && validation.errors.due ? (
           <div className="dl-error" role="alert" data-testid="error-due">
             {validation.errors.due}
@@ -417,8 +408,7 @@ export function DeadlineSheet({
                 >
                   <option value="custom_offset">{strings.sheet.reminderKindOffset}</option>
                   <option value="custom_at">{strings.sheet.reminderKindExact}</option>
-                </Select>
-                {item.kind === 'custom_offset' ? (
+                </Select>                {item.kind === 'custom_offset' ? (
                   <div className="dl-due-row">
                     <Input
                       type="number"

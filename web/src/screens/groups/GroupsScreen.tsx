@@ -4,7 +4,7 @@
 // Роль берётся из того же ответа GET /groups, что и список: отдельного запроса
 // «моя роль» нет, а второй источник роли неизбежно разошёлся бы с первым.
 import { useMemo, useState } from 'react';
-import { Button, Cell, Input, List, Placeholder, Section, Spinner } from '@telegram-apps/telegram-ui';
+import { Button, Cell, Input, List, Placeholder, Section, Spinner } from '../../components/ui';
 import { Screen } from '../../components/Screen';
 import { CreateGroupSheet } from '../../components/CreateGroupSheet';
 import { RedeemSheet } from '../../components/RedeemSheet';

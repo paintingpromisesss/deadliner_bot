@@ -7,7 +7,6 @@
 // дешевле любого внешнего таймера и не зависит от сети.
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Card, Cell } from '@telegram-apps/telegram-ui';
 import { countdownTo, formatDueOrDash, isValidInstant } from '../lib/format';
 import { isGroupDeadline } from '../lib/deadlineGroups';
 import type { Deadline } from '../lib/deadlines';
@@ -61,7 +60,7 @@ export function DeadlineHero({ deadline, tz, groupSlug, now, onOpen }: DeadlineH
 
   return (
     <div className="dl-hero">
-      <Card className="dl-hero__card">
+      <div className="dl-hero__card">
         <div className="dl-hero__label">
           {overdue ? strings.deadlines.heroLabelOverdue : strings.deadlines.heroLabel}
         </div>
@@ -81,7 +80,7 @@ export function DeadlineHero({ deadline, tz, groupSlug, now, onOpen }: DeadlineH
         >
           {countdownText(deadline.due_at, now)}
         </div>
-      </Card>
+      </div>
       {onOpen ? (
         <button type="button" className="dl-hero__overlay" aria-label={deadline.title} onClick={onOpen} />
       ) : null}
@@ -121,16 +120,16 @@ export function DeadlineCell({
       data-overdue={overdue ? 'true' : 'false'}
       data-testid={`cell-${deadline.id}`}
     >
-      <Cell
-        Component="button"
+      <button
         type="button"
-        className={overdue ? 'dl-cell-button dl-cell--overdue' : 'dl-cell-button'}
-        subtitle={subtitle}
-        multiline
+        className={overdue ? 'dl-cell dl-cell--overdue' : 'dl-cell'}
         onClick={() => onSelect(deadline)}
       >
-        {deadline.title}
-      </Cell>
+        <span className="dl-cell__main">
+          <span className="dl-cell__title">{deadline.title}</span>
+          <span className="dl-cell__subtitle">{subtitle}</span>
+        </span>
+      </button>
       {actions ? <div className="dl-cell-actions">{actions}</div> : null}
     </div>
   );

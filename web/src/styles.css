@@ -11,6 +11,10 @@
 /* ── Токены тем (значения из макета) ── */
 .dl-root {
   --dl-green: #2eb85a;
+  /* Кривые движения (easing.dev): вход/выход, движение по экрану, drawer. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 /* тёмная схема (themeParams dark) */
@@ -93,6 +97,16 @@ p, h1, h2, h3, h4 { margin: 0; }
 
 .dl-screen {
   padding: 0 0 8px;
+  /* Смена экрана без телепортации контента: лёгкий fade + подъём.
+     Экран монтируется при смене маршрута — CSS-анимация играет на mount. */
+  animation: dl-screen-in 200ms var(--ease-out);
+}
+
+@keyframes dl-screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }
 
 /* Шапка экрана (как .app-header макета): заголовок + подпись. */
@@ -163,6 +177,12 @@ p, h1, h2, h3, h4 { margin: 0; }
 button.dl-cell {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+  /* Highlight вместо scale: ячейка растянута на всю строку внутри cell-list,
+     scale обнажил бы зазоры по краям скруглённой секции. */
+  transition: background-color 120ms ease;
+}
+button.dl-cell:active {
+  background: color-mix(in oklch, var(--tg-theme-text-color) 6%, transparent);
 }
 button.dl-cell:focus-visible {
   outline: 2px solid var(--tg-theme-accent-text-color);
@@ -278,6 +298,8 @@ button.dl-cell:disabled {
   min-height: 44px;
   font-size: 15px;
   -webkit-tap-highlight-color: transparent;
+  /* Отклик на нажатие: 160мс, сильный ease-out (рецепт «button press»). */
+  transition: transform 160ms var(--ease-out);
 }
 .dl-button--l { min-height: 50px; font-size: 16px; }
 .dl-button--s { min-height: 36px; font-size: 14px; border-radius: 10px; }
@@ -301,6 +323,9 @@ button.dl-cell:disabled {
 button.dl-button:focus-visible {
   outline: 2px solid var(--tg-theme-accent-text-color);
   outline-offset: 2px;
+}
+button.dl-button:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 /* Повтор запроса на экранах ошибок. */
@@ -372,13 +397,14 @@ button.dl-button:focus-visible {
   border-radius: 999px;
   background: #fff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-  transition: left 0.15s ease;
+  /* transform вместо left: не трогает layout на каждом кадре. */
+  transition: transform 180ms var(--ease-out);
 }
 .dl-switch:checked {
   background: var(--dl-green);
 }
 .dl-switch:checked::after {
-  left: 20px;
+  transform: translateX(18px);
 }
 .dl-switch:disabled {
   opacity: 0.5;
@@ -435,7 +461,18 @@ button.dl-button:focus-visible {
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.45);
+  opacity: 1;
+  transition: opacity 250ms var(--ease-out);
 }
+
+/* Вход шита: @starting-style даёт «до-анимационное» состояние на первом
+   кадре после вставки элемента; выход — класс [data-closing] из React. */
+@starting-style {
+  .dl-modal__scrim {
+    opacity: 0;
+  }
+}
+
 .dl-modal__sheet {
   position: absolute;
   left: 0;
@@ -446,6 +483,22 @@ button.dl-button:focus-visible {
   padding: 6px 6px 0;
   max-height: 86%;
   overflow-y: auto;
+  transform: translateY(0);
+  transition: transform 320ms var(--ease-drawer);
+}
+
+@starting-style {
+  .dl-modal__sheet {
+    transform: translateY(100%);
+  }
+}
+
+/* Выход симметричен входу: лист уходит вниз, скрим гаснет. */
+.dl-modal[data-closing='true'] .dl-modal__scrim {
+  opacity: 0;
+}
+.dl-modal[data-closing='true'] .dl-modal__sheet {
+  transform: translateY(100%);
 }
 .dl-modal__grip {
   width: 36px;
@@ -523,6 +576,8 @@ button.dl-button:focus-visible {
   background: none;
   border: 0;
   -webkit-tap-highlight-color: transparent;
+  /* Табы переключают десятки раз в день: только цвет, без движения. */
+  transition: color 150ms ease;
 }
 .dl-tabbar__item svg {
   width: 26px;
@@ -637,6 +692,13 @@ button.dl-button:focus-visible {
   font-size: 13px;
   font-weight: 500;
   -webkit-tap-highlight-color: transparent;
+  /* Чипы часто: фидбек — цвет и лёгкий scale (секция сама по себе мала,
+     зазоров от scale не возникает, в отличие от dl-cell в cell-list). */
+  transition:
+    background-color 150ms var(--ease-out),
+    border-color 150ms var(--ease-out),
+    color 150ms var(--ease-out),
+    transform 160ms var(--ease-out);
 }
 .dl-chip:focus-visible {
   outline: 2px solid var(--tg-theme-accent-text-color);
@@ -650,6 +712,9 @@ button.dl-button:focus-visible {
 .dl-chip--on {
   border-color: var(--tg-theme-accent-text-color);
   color: var(--tg-theme-accent-text-color);
+}
+.dl-chip:active:not(:disabled) {
+  transform: scale(0.95);
 }
 
 /* ── Строка списка + кнопки действий ── */
@@ -716,10 +781,16 @@ button.dl-button:focus-visible {
   background: var(--tg-theme-button-color);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
   -webkit-tap-highlight-color: transparent;
+  /* FAB нажимают редко (создание дедлайна — не чаще нескольких раз в день),
+     но кнопка одна и маленькая: лёгкий press-фидбек уместен. */
+  transition: transform 160ms var(--ease-out);
 }
 .dl-fab:focus-visible {
   outline: 2px solid var(--tg-theme-accent-text-color);
   outline-offset: 2px;
+}
+.dl-fab:active {
+  transform: scale(0.92);
 }
 
 /* ── Календарь (по макету .cal-grid/.cal-day) ── */
@@ -905,4 +976,45 @@ button.dl-button:focus-visible {
 
 .dl-row {
   padding: 8px 14px;
+}
+
+/* ── Reduced motion: меньше и мягче, не ноль ──
+   Экран и лист оставляют только fade, движение (translate) убирается.
+   Closing-фаза Modal сокращена в JS до мгновенного размонтирования. */
+@media (prefers-reduced-motion: reduce) {
+  .dl-screen {
+    animation-duration: 150ms;
+  }
+  @keyframes dl-screen-in {
+    from {
+      opacity: 0;
+      transform: none;
+    }
+  }
+  .dl-modal__sheet,
+  .dl-modal__scrim {
+    transition-duration: 150ms;
+  }
+  @starting-style {
+    .dl-modal__sheet {
+      transform: none;
+    }
+  }
+  .dl-modal[data-closing='true'] .dl-modal__sheet {
+    transform: none;
+  }
+  .dl-modal[data-closing='true'] .dl-modal__sheet {
+    transform: none;
+  }
+  .dl-modal[data-closing='true'] .dl-modal__scrim {
+    opacity: 0;
+  }
+  .dl-switch::after {
+    transition-duration: 100ms;
+  }
+  button.dl-button:active:not(:disabled),
+  .dl-chip:active:not(:disabled),
+  .dl-fab:active {
+    transform: none;
+  }
 }

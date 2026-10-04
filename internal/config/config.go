@@ -174,7 +174,7 @@ func Load() (*Config, error) {
 			Interval: l.duration("CLEANUP_INTERVAL", time.Hour),
 		},
 		Limits: Limits{
-			GroupPendingTTL:      l.days("GROUP_PENDING_TTL_DAYS", 14),
+			GroupPendingTTL:      l.days("GROUP_PENDING_TTL_DAYS", 1),
 			GroupCreateDay:       l.int("LIMIT_GROUP_CREATE_DAY", 3),
 			GroupCreateWeek:      l.int("LIMIT_GROUP_CREATE_WEEK", 5),
 			ClaimPerChatHour:     l.int("LIMIT_CLAIM_PER_CHAT_HOUR", 3),

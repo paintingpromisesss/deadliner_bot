@@ -227,6 +227,10 @@ func (r *fakeGroupRepo) SoftDelete(ctx context.Context, id int64) error {
 	return errors.New("not used")
 }
 
+func (r *fakeGroupRepo) HardDelete(ctx context.Context, id int64) error {
+	return errors.New("not used")
+}
+
 func (r *fakeGroupRepo) ListMine(ctx context.Context, userID int64) ([]domain.Group, error) {
 	out := make([]domain.Group, 0, len(r.mine))
 	for _, id := range r.mine {

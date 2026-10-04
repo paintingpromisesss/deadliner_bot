@@ -93,7 +93,7 @@ async function renderApp() {
   return document.querySelector('.dl-root') as HTMLElement;
 }
 
-describe('тема Telegram подхватывается на лету (I-1)', () => {
+describe('тема Telegram подхватывается на лету', () => {
   it('подписывается на themeChanged и переключает тёмный класс', async () => {
     const tg = installFakeTelegram('light');
     const appRoot = await renderApp();

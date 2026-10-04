@@ -171,9 +171,8 @@ func TestMarkSentWithFanoutForeignLock(t *testing.T) {
 	}
 }
 
-// I-3: два fan-out'а одного дедлайна → по ребёнку на (цель, fire_at), а не
-// «один на цель навсегда». Прежний unique (deadline_id, target_user_id) молча
-// проглатывал второго ребёнка (ON CONFLICT DO NOTHING).
+// Два fan-out'а одного дедлайна → по ребёнку на (цель, fire_at), а не
+// «один на цель навсегда».
 func TestMarkSentWithFanoutMultipleFanoutsPerDeadline(t *testing.T) {
 	pool := newTestDB(t)
 	ctx := context.Background()

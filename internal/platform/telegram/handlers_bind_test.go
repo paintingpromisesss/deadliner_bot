@@ -269,7 +269,7 @@ func TestGroupUpdateDoesNotClearBotBlocked(t *testing.T) {
 	}
 }
 
-// F-5 (companion): приватный апдейт снимает флаг (пишущий боту не блокировал его).
+// Приватный апдейт снимает флаг (пишущий боту не блокировал его).
 func TestPrivateUpdateClearsBotBlocked(t *testing.T) {
 	hs := newHarness()
 	hs.h.Handle(context.Background(), update(500, models.ChatTypePrivate, 7, "ivan", "привет"))
@@ -562,9 +562,8 @@ func TestNewDeadlineWithoutAppURL(t *testing.T) {
 
 // --- служебные инварианты ---
 
-// F-2 (fix round): забаненный не привязывает и не отвязывает чат. Привязка
-// живёт только в боте — middleware.Auth её не прикрывает, поэтому проверка
-// бана обязана быть здесь: use case НЕ вызывается, привязка не создаётся.
+// Забаненный не привязывает и не отвязывает чат. Привязка живёт только в
+// боте — middleware.Auth её не прикрывает: use case НЕ вызывается.
 func TestBindGroupAndUnbindRefuseBannedUser(t *testing.T) {
 	hs := newHarness()
 	hs.users.me = &domain.User{ID: 7, TelegramID: 777, IsBanned: true}
@@ -607,7 +606,7 @@ func TestBindGroupBanCheckFailureFailsClosed(t *testing.T) {
 	}
 }
 
-// Не-забаненный пользователь проходит проверку: /bind_group работает как раньше.
+// Не-забаненный пользователь проходит проверку: /bind_group работает.
 func TestBindGroupUnaffectedForActiveUser(t *testing.T) {
 	hs := newHarness()
 	hs.users.me = &domain.User{ID: 7, TelegramID: 7}

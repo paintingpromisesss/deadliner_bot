@@ -84,7 +84,7 @@ func newTestDB(t *testing.T) *pgxpool.Pool {
 	defer cancel()
 	_, err := testPool.Exec(ctx, `TRUNCATE
 		users, groups, chat_bindings, group_memberships, deadlines, reminders,
-		invites, claim_codes, user_action_counters, chat_action_counters, sessions,
+		invites, user_action_counters, chat_action_counters, sessions,
 		outbox_messages, audit_log CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
@@ -347,14 +347,15 @@ func TestAdminCleanup(t *testing.T) {
 		t.Errorf("cleanup output missing the report: %q", out)
 	}
 
-	var deleted *time.Time
+	var doomedCount int
 	if err := testPool.QueryRow(t.Context(),
-		`SELECT deleted_at FROM groups WHERE id = $1`, doomed).Scan(&deleted); err != nil {
+		`SELECT count(*) FROM groups WHERE id = $1`, doomed).Scan(&doomedCount); err != nil {
 		t.Fatalf("select doomed: %v", err)
 	}
-	if deleted == nil {
-		t.Error("expired pending group was not deleted by cleanup")
+	if doomedCount != 0 {
+		t.Errorf("expired pending group was not hard-deleted by cleanup: count = %d", doomedCount)
 	}
+	var deleted *time.Time
 	for _, id := range []int64{alive, fresh} {
 		if err := testPool.QueryRow(t.Context(),
 			`SELECT deleted_at FROM groups WHERE id = $1`, id).Scan(&deleted); err != nil {
@@ -377,16 +378,15 @@ func TestAdminCleanup(t *testing.T) {
 	}
 }
 
-// Демонстрация сквозного wiring'а: CLI-cleanup обязан брать ретенцию из
-// конфига (COUNTER_RETENTION), а не из захардкоженной константы. С прежними
-// 48ч живая строка недельного лимита удалялась бы — здесь она выживает,
+// Демонстрация сквозного wiring'а: CLI-cleanup берёт ретенцию из конфига
+// (COUNTER_RETENTION). Живая строка недельного лимита выживает,
 // а 200-часовая вычищается.
 func TestAdminCleanupKeepsLiveWeeklyCounter(t *testing.T) {
 	newTestDB(t)
 	uid := insertUser(t, 555)
 	now := time.Now().UTC()
 	// Возраст 150ч: живая строка недельного окна (LIMIT_GROUP_CREATE_WEEK,
-	// Truncate(168h) — возраст до 168ч) и заведомо старше прежней ретенции 48ч.
+	// Truncate(168h) — возраст до 168ч).
 	liveWeek := now.Add(-150 * time.Hour).Truncate(time.Microsecond)
 	stale := now.Add(-200 * time.Hour).Truncate(time.Microsecond)
 	for _, w := range []time.Time{liveWeek, stale} {

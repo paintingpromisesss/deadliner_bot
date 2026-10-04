@@ -103,31 +103,21 @@ afterEach(() => {
 });
 
 describe('SettingsScreen: базовые секции', () => {
-  it('показывает профиль, tz и общий дефолт (регрессия Task 13)', async () => {
+  it('показывает профиль, tz и общий дефолт', async () => {
     renderScreen();
 
     expect(await screen.findByText('Pavel')).toBeTruthy();
     expect(screen.getByText('@durov')).toBeTruthy();
-    expect(screen.getByText('Дубли в личку по умолчанию')).toBeTruthy();
-    // Кнопка сохранения заблокирована, пока ничего не изменено.
-    const save = screen.getByRole('button', { name: 'Сохранить' }) as HTMLButtonElement;
-    expect(save.disabled).toBe(true);
+    expect(screen.getByText('Дублировать напоминания в ЛС')).toBeTruthy();
   });
 
-  it('изменение tz включает сохранение и шлёт PATCH /me', async () => {
+  it('изменение tz автосохраняется и шлёт PATCH /me', async () => {
     renderScreen();
 
     await screen.findByText('Pavel');
     const select = screen.getByDisplayValue('Europe/Moscow') as HTMLSelectElement;
     await act(async () => {
       fireEvent.change(select, { target: { value: 'Asia/Yekaterinburg' } });
-    });
-
-    const save = screen.getByRole('button', { name: 'Сохранить' }) as HTMLButtonElement;
-    expect(save.disabled).toBe(false);
-    await act(async () => {
-      fireEvent.click(save);
-      await Promise.resolve();
     });
 
     await waitFor(() => {
@@ -143,10 +133,10 @@ describe('SettingsScreen: переопределения по группам', (
 
     const own = await screen.findByTestId('group-notify-42');
     expect(own.textContent).toContain('М8О-401Б-23');
-    expect(own.textContent).toContain('своё значение');
+    expect(own.textContent).toContain('индивидуально');
 
     const inherited = screen.getByTestId('group-notify-43');
-    expect(inherited.textContent).toContain('как по умолчанию');
+    expect(inherited.textContent).toContain('как в общих настройках');
   });
 
   it('кнопка «наследовать» есть только у переопределённой группы', async () => {
@@ -236,15 +226,12 @@ describe('SettingsScreen: переопределения по группам', (
     // Исходное состояние: дефолт включён, наследующая группа включена.
     await screen.findByTestId('group-notify-43');
     expect((screen.getByTestId('group-notify-switch-43') as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByTestId('group-notify-43').textContent).toContain('как по умолчанию');
+    expect(screen.getByTestId('group-notify-43').textContent).toContain('как в общих настройках');
 
-    // Выключаем общий дефолт и сохраняем.
-    const dmSwitch = screen.getByRole('checkbox', { name: /Дубли в личку/ }) as HTMLInputElement;
+    // Выключаем общий дефолт (автосохранение).
+    const dmSwitch = screen.getByRole('checkbox', { name: /Дублировать напоминания/ }) as HTMLInputElement;
     await act(async () => {
       fireEvent.click(dmSwitch);
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
       await Promise.resolve();
     });
 

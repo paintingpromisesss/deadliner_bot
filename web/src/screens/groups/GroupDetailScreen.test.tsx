@@ -55,6 +55,7 @@ interface Handlers {
 }
 
 let handlers: Handlers = {};
+let groupInvites: any[] = [];
 
 function stubFetch() {
   vi.stubGlobal(
@@ -86,11 +87,33 @@ function stubFetch() {
       }
       if (url === '/api/v1/groups/42/me' && method === 'DELETE') return json(204, null);
       if (url === '/api/v1/groups/42' && method === 'DELETE') return json(204, null);
+      if (url === '/api/v1/groups/42/invites' && method === 'GET') {
+        return json(200, { invites: groupInvites });
+      }
       if (url === '/api/v1/groups/42/invites' && method === 'POST') {
-        const [status, payload] = handlers.invite ?? [201, { code: 'ABCD2345', expires_at: '2026-10-08T12:00:00Z' }];
+        const [status, payload] = handlers.invite ?? [
+          201,
+          {
+            id: 1,
+            code: 'ABCD2345',
+            role: (body as { role?: string })?.role ?? 'member',
+            max_uses: (body as { max_uses?: number })?.max_uses ?? -1,
+            used_count: 0,
+            expires_at: '2026-10-08T12:00:00Z',
+            status: 'active',
+            revoked_at: null,
+          },
+        ];
+        if (status < 400 && payload && (payload as any).code) {
+          groupInvites.unshift(payload);
+        }
         return json(status, status >= 400 ? { error: { code: 'validation', message: 'Неверно' } } : payload);
       }
-      if (url.startsWith('/api/v1/groups/42/invites/') && method === 'DELETE') return json(204, null);
+      if (url.startsWith('/api/v1/groups/42/invites/') && method === 'DELETE') {
+        const code = url.split('/').pop();
+        groupInvites = groupInvites.filter((inv) => inv.code !== code);
+        return json(204, null);
+      }
       if (url === '/api/v1/groups/42/deadlines/pending') return json(200, handlers.pendingDeadlines ?? []);
       if (url === '/api/v1/deadlines/7/approve') return json(200, { deadline: { id: 7, status: 'active' }, reminders: [] });
       if (url === '/api/v1/deadlines/7/reject') return json(200, { deadline: { id: 7, status: 'rejected' }, reminders: [] });
@@ -131,6 +154,7 @@ function authUser(id = 1) {
 beforeEach(() => {
   calls = [];
   handlers = {};
+  groupInvites = [];
   configureAuth({ getToken: () => 'tok', getInitData: () => null, canReauth: () => true });
   authUser(1);
   stubFetch();
@@ -182,7 +206,7 @@ describe('GroupDetailScreen: шапка и привязка', () => {
     );
     renderScreen();
 
-    expect((await screen.findByTestId('group-status')).textContent).toContain('ожидает привязки');
+    expect((await screen.findByTestId('group-status')).textContent).toContain('Ожидает привязки');
     expect(screen.getByTestId('binding-status').textContent).toContain('не привязан');
   });
 });
@@ -379,13 +403,13 @@ describe('GroupDetailScreen: админские действия над учас
 });
 
 describe('GroupDetailScreen: инвайты', () => {
-  it('код показывается один раз и попадает в сессионный список', async () => {
+  it('код показывается один раз и попадает в список инвайтов', async () => {
     renderScreen();
 
     const open_invite_el = await screen.findByTestId('open-invite');
-      await act(async () => {
-        fireEvent.click(open_invite_el);
-      });
+    await act(async () => {
+      fireEvent.click(open_invite_el);
+    });
     await act(async () => {
       fireEvent.click(screen.getByTestId('submit-invite'));
       await Promise.resolve();
@@ -399,14 +423,14 @@ describe('GroupDetailScreen: инвайты', () => {
       fireEvent.click(screen.getByLabelText('Закрыть'));
     });
 
-    // После закрытия шита код остаётся в сессионном списке с отзывом.
-    expect(await screen.findByTestId('session-invite-ABCD2345')).toBeTruthy();
+    // После закрытия шита код остаётся в списке с отзывом.
+    expect(await screen.findByTestId('group-invite-ABCD2345')).toBeTruthy();
     expect(screen.getByTestId('revoke-invite-ABCD2345')).toBeTruthy();
     const post = calls.find((c) => c.url === '/api/v1/groups/42/invites' && c.method === 'POST');
     expect(post?.body).toEqual({ role: 'member', max_uses: -1, ttl_hours: 168, publish_to_chat: false });
   });
 
-  it('выбранная роль попадает и в запрос, и в подпись сессионного кода', async () => {
+  it('выбранная роль попадает и в запрос, и в подпись кода', async () => {
     renderScreen();
 
     const open_invite_el = await screen.findByTestId('open-invite');
@@ -428,7 +452,7 @@ describe('GroupDetailScreen: инвайты', () => {
 
     const post = calls.find((c) => c.url === '/api/v1/groups/42/invites' && c.method === 'POST');
     expect((post?.body as { role?: string })?.role).toBe('admin');
-    const row = await screen.findByTestId('session-invite-ABCD2345');
+    const row = await screen.findByTestId('group-invite-ABCD2345');
     expect(row.textContent).toContain('админ при вступлении');
   });
 
@@ -436,9 +460,9 @@ describe('GroupDetailScreen: инвайты', () => {
     renderScreen();
 
     const open_invite_el = await screen.findByTestId('open-invite');
-      await act(async () => {
-        fireEvent.click(open_invite_el);
-      });
+    await act(async () => {
+      fireEvent.click(open_invite_el);
+    });
     await act(async () => {
       fireEvent.click(screen.getByTestId('submit-invite'));
       await Promise.resolve();
@@ -448,9 +472,9 @@ describe('GroupDetailScreen: инвайты', () => {
     });
 
     const revoke_invite_ABCD2345_el = await screen.findByTestId('revoke-invite-ABCD2345');
-      await act(async () => {
-        fireEvent.click(revoke_invite_ABCD2345_el);
-      });
+    await act(async () => {
+      fireEvent.click(revoke_invite_ABCD2345_el);
+    });
     expect(screen.getByText('Отозвать инвайт-код?')).toBeTruthy();
 
     await act(async () => {
@@ -463,7 +487,7 @@ describe('GroupDetailScreen: инвайты', () => {
       ).toBe(true),
     );
     // Отозванный код исчезает из списка.
-    await waitFor(() => expect(screen.queryByTestId('session-invite-ABCD2345')).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId('group-invite-ABCD2345')).toBeNull());
   });
 });
 

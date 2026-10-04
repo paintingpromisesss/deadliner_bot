@@ -198,13 +198,8 @@ func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serv
 	groupsSvc.WithOptions(groups.Options{Slugs: slugProvider, Notifier: notifier, Users: r.Users})
 	// Инвайты с чекбоксом «Опубликовать в чат» уходят в привязанный чат
 	// группы с кнопкой на Main App direct-link (t.me/<bot>/app?startapp=<код>).
-	// Username бота — getMe по токену; сбой фатален: инвайт без кнопки
-	// свою задачу не выполняет.
-	botUsername, err := resolveBotUsername(context.Background(), client.API())
-	if err != nil {
-		return nil, err
-	}
-	groupsSvc.WithOptions(groups.Options{InvitePublisher: telegram.NewInvitePublisher(notifier, botUsername)})
+	// Username бота резолвится лениво через getMe; граф строится offline.
+	groupsSvc.WithOptions(groups.Options{InvitePublisher: telegram.NewInvitePublisherWithAPI(notifier, client.API())})
 	moderationSvc := newModerationService(r, cfg, clock, log)
 	authSvc := newAuthService(r, cfg, clock)
 	deadlinesSvc := newDeadlinesService(r, clock, log)

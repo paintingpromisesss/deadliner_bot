@@ -49,9 +49,9 @@ func (s *stubTelegram) start(t *testing.T) string {
 		s.fields[method] = append(s.fields[method], parsed)
 		s.mu.Unlock()
 
-		// Telegram отвергает menu button без типа — ровно так, как это было в
-		// проде ("MenuButton has unsupported type"). Заглушка воспроизводит
-		// проверку, иначе кривой тип проходит молча.
+		// Telegram отвергает menu button без типа ("MenuButton has unsupported
+		// type"). Заглушка воспроизводит проверку, иначе кривой тип проходит
+		// молча.
 		if method == "setChatMenuButton" {
 			var p struct {
 				Type string `json:"type"`
@@ -278,7 +278,7 @@ func TestNewBotWebhookRequiresSecret(t *testing.T) {
 	}
 }
 
-// F-3 (companion): в polling-режиме секрет не требуется.
+// В polling-режиме секрет не требуется.
 func TestNewBotPollingWithoutSecret(t *testing.T) {
 	if _, err := NewBot(BotConfig{Token: "42:TEST", Mode: ModePolling}, Deps{}, nil); err != nil {
 		t.Fatalf("NewBot(polling without secret) = %v, want success", err)

@@ -77,6 +77,7 @@ func New(d Deps) chi.Router {
 				r.Get("/groups/{id}", groupsCtl.Get)
 				r.Patch("/groups/{id}", groupsCtl.Update)
 				r.Delete("/groups/{id}", groupsCtl.Delete)
+				r.Get("/groups/{id}/invites", groupsCtl.ListInvites)
 				r.Post("/groups/{id}/invites", groupsCtl.CreateInvite)
 				r.Delete("/groups/{id}/invites/{code}", groupsCtl.RevokeInvite)
 				r.Get("/groups/{id}/members", groupsCtl.ListMembers)

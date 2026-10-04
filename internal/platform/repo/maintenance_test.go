@@ -150,12 +150,11 @@ func TestMaintenancePurgeCounters(t *testing.T) {
 	}
 }
 
-// Регрессия C-1: живое НЕДЕЛЬНОЕ окно (group_create_week, 168ч) обязано
-// выжить. Окно floor-ится методом Truncate(168h), поэтому его window_start
-// бывает почти 168ч от роду — retention 48ч удалял живую строку и
-// LIMIT_GROUP_CREATE_WEEK молча переставал срабатывать. Ретенция 192ч:
-// строка живого недельного окна остаётся, строка старше 192ч вычищается.
-// Обе таблицы счётчиков (user и chat) чистятся одинаково.
+// Живое НЕДЕЛЬНОЕ окно (group_create_week, 168ч) обязано выжить. Окно
+// floor-ится методом Truncate(168h), поэтому его window_start бывает почти
+// 168ч от роду — retention 48ч удалял живую строку и лимит переставал
+// срабатывать. Ретенция 192ч: живое окно остаётся, строка старше 192ч
+// вычищается. Обе таблицы счётчиков (user и chat) чистятся одинаково.
 func TestMaintenancePurgeCountersKeepsLiveWeekWindow(t *testing.T) {
 	pool := newTestDB(t)
 	ctx := context.Background()
@@ -224,8 +223,7 @@ func TestMaintenancePurgeCountersKeepsLiveWeekWindow(t *testing.T) {
 	}
 
 	// Граница ретенции — вне календарной зависимости: возраст 167ч (максимум
-	// для окна Truncate(168h)) выживает при 192ч и удаляется прежними 48ч;
-	// 193ч вычищается.
+	// для окна Truncate(168h)) выживает при 192ч; 193ч вычищается.
 	t.Run("retention boundary is calendar-independent", func(t *testing.T) {
 		boundaryUID := insertUser(t, pool, 7301)
 		liveMaxAge := now.Add(-167 * time.Hour).Truncate(time.Microsecond)
@@ -243,20 +241,17 @@ func TestMaintenancePurgeCountersKeepsLiveWeekWindow(t *testing.T) {
 		}
 		assertWindowSet(t, "192h cutoff", selectWindowStarts(t, ctx, pool, "user_action_counters", boundaryUID), liveMaxAge)
 
-		// Именно эта строка была жертвой C-1: живая недельная, на максимальном
-		// возрасте, прежняя ретенция 48ч её удаляла. Счётчик строк общий по
-		// таблице (строки внешнего теста тоже подпадают), поэтому проверяем
+		// Живая недельная строка на максимальном возрасте. Счётчик строк общий
+		// по таблице (строки внешнего теста тоже подпадают), поэтому проверяем
 		// выборку ИМЕННО этого пользователя.
 		if _, err := repo.PurgeCounters(ctx, now.Add(-48*time.Hour)); err != nil {
 			t.Fatalf("PurgeCounters(48h): %v", err)
 		}
-		assertWindowSet(t, "48h cutoff (C-1)", selectWindowStarts(t, ctx, pool, "user_action_counters", boundaryUID))
+		assertWindowSet(t, "48h cutoff", selectWindowStarts(t, ctx, pool, "user_action_counters", boundaryUID))
 	})
 
-	// Сама проверка выживания обязана быть нечувствительна к порядку строк:
-	// weekWindow и 150-часовая строка меняются местами относительно календаря
-	// (~17ч в неделю одна старше другой), и сравнение «по индексу» давало
-	// ложное падение, похожее на регрессию C-1.
+	// Проверка выживания нечувствительна к порядку строк: weekWindow и
+	// 150-часовая строка меняются местами относительно календаря.
 	t.Run("survival assertion is order-independent", func(t *testing.T) {
 		// Оба порядка — обе стороны календарной фазы, ни один не должен падать.
 		assertWindowSet(t, "week-first", []time.Time{weekWindow, oldWeekWindow}, weekWindow, oldWeekWindow)
@@ -289,11 +284,11 @@ func TestMaintenancePurgeCountersKeepsLiveWeekWindow(t *testing.T) {
 				got = []time.Time{old, week} // вторая сторона фазы
 			}
 			assertWindowSet(t, "phase", got, week, old)
-			// Прежняя (баговая) ретенция 48ч удаляет 150-часовую строку в любой
-			// фазе — именно это и ловится основным тестом.
+			// Ретенция 48ч удаляет 150-часовую строку в любой фазе — именно это
+			// и ловится основным тестом.
 			cut48 := at.Add(-48 * time.Hour)
 			if old.After(cut48) {
-				t.Fatalf("phase %v: the 150h window %v would survive a 48h purge — the C-1 demo has no teeth", phase, old)
+				t.Fatalf("phase %v: the 150h window %v would survive a 48h purge", phase, old)
 			}
 		}
 	})
@@ -334,9 +329,8 @@ func selectWindowStarts(t *testing.T, ctx context.Context, pool *pgxpool.Pool, t
 }
 
 // assertWindowSet проверяет выборку как МНОЖЕСТВО: ровно want строк и каждая
-// ожидаемая встречается. Порядок входа не важен — именно этого требует
-// C-1-проверка, где взаимное расположение окон зависит от календаря
-// (ложное падение ~17ч в неделю выглядело бы как регрессия).
+// ожидаемая встречается. Порядок входа не важен — взаимное расположение
+// окон зависит от календаря.
 func assertWindowSet(t *testing.T, label string, got []time.Time, want ...time.Time) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -348,7 +342,7 @@ func assertWindowSet(t *testing.T, label string, got []time.Time, want ...time.T
 	}
 	for _, w := range want {
 		if !seen[w.UnixMicro()] {
-			t.Errorf("%s: surviving windows = %v, missing %v (a 48h retention would have purged it — C-1)",
+			t.Errorf("%s: surviving windows = %v, missing %v (a 48h retention would have purged it)",
 				label, got, w)
 		}
 	}

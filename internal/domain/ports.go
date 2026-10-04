@@ -63,6 +63,7 @@ type GroupRepo interface {
 	Update(ctx context.Context, g *Group) error
 	SetStatus(ctx context.Context, id int64, status GroupStatus) error
 	SoftDelete(ctx context.Context, id int64) error
+	HardDelete(ctx context.Context, id int64) error
 	// ListMine returns non-deleted groups the user is a member of (via
 	// group_memberships), ordered by slug_norm.
 	ListMine(ctx context.Context, userID int64) ([]Group, error)

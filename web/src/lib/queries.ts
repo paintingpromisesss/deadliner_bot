@@ -23,6 +23,7 @@ import {
   createInvite,
   deleteGroup,
   fetchGroupDetail,
+  fetchGroupInvites,
   fetchInvitePreview,
   fetchGroups,
   fetchMembers,
@@ -34,6 +35,7 @@ import {
   revokeInvite,
   setMemberRole,
   type Group,
+  type GroupInvite,
   type InviteCreated,
   type InviteInput,
   type NotificationSettings,
@@ -331,12 +333,23 @@ export function useKickMember() {
   });
 }
 
-/** Создание инвайта: код возвращается один раз — кэшировать его нельзя. */
+/** Список инвайтов группы (GET /groups/{id}/invites). */
+export function useGroupInvites(groupID: number, enabled = true) {
+  return useQuery<{ invites: GroupInvite[] }, Error>({
+    queryKey: [GROUPS_KEY, groupID, 'invites'],
+    queryFn: () => fetchGroupInvites(groupID),
+    enabled: enabled && groupID > 0,
+  });
+}
+
+/** Создание инвайта. */
 export function useCreateInvite() {
+  const qc = useQueryClient();
   return useMutation<InviteCreated, Error, { groupID: number; input: InviteInput }>({
     mutationFn: (vars) => createInvite(vars.groupID, vars.input),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       hapticNotification('success');
+      void qc.invalidateQueries({ queryKey: [GROUPS_KEY, vars.groupID, 'invites'] });
     },
     onError: () => hapticNotification('error'),
   });
@@ -344,12 +357,14 @@ export function useCreateInvite() {
 
 /** Отзыв инвайта по plaintext-коду. */
 export function useRevokeInvite() {
+  const qc = useQueryClient();
   const invalidate = useInvalidateGroups();
   return useMutation({
     mutationFn: (vars: { groupID: number; code: string }) => revokeInvite(vars.groupID, vars.code),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       hapticNotification('success');
       void invalidate();
+      void qc.invalidateQueries({ queryKey: [GROUPS_KEY, vars.groupID, 'invites'] });
     },
     onError: () => hapticNotification('error'),
   });

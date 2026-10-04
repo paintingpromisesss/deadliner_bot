@@ -567,7 +567,7 @@ func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID 
 	}
 	inv := &domain.Invite{
 		GroupID:   groupID,
-		Code:      HashInviteCode(code),
+		Code:      code,
 		Role:      role,
 		MaxUses:   maxUses,
 		CreatedBy: actor.ID,
@@ -605,7 +605,7 @@ func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID 
 // лимит, списание — только по факту привязки.
 func (s *Service) RedeemInvite(ctx context.Context, actor *domain.User, code string) (*domain.Group, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
-	inv, err := s.invites.GetByCode(ctx, HashInviteCode(code))
+	inv, err := s.invites.GetByCode(ctx, code)
 	if err != nil {
 		return nil, err
 	}
@@ -651,7 +651,7 @@ func (s *Service) RedeemInvite(ctx context.Context, actor *domain.User, code str
 // только кнопкой «Вступить»). Неизвестный/отозванный/истёкший код → ErrNotFound.
 func (s *Service) InvitePreview(ctx context.Context, code string) (*domain.Group, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
-	inv, err := s.invites.GetByCode(ctx, HashInviteCode(code))
+	inv, err := s.invites.GetByCode(ctx, code)
 	if err != nil {
 		return nil, err
 	}
@@ -672,11 +672,19 @@ func (s *Service) RevokeInvite(ctx context.Context, actor *domain.User, groupID 
 		return err
 	}
 	code = strings.ToUpper(strings.TrimSpace(code))
-	if err := s.invites.Revoke(ctx, groupID, HashInviteCode(code)); err != nil {
+	if err := s.invites.Revoke(ctx, groupID, code); err != nil {
 		return err
 	}
 	s.writeAudit(ctx, actor.ID, "invite.revoke", "group", groupID, nil)
 	return nil
+}
+
+// ListInvites возвращает постоянный список инвайтов группы (admin).
+func (s *Service) ListInvites(ctx context.Context, actor *domain.User, groupID int64) ([]domain.Invite, error) {
+	if err := s.requireAdmin(ctx, actor, groupID); err != nil {
+		return nil, err
+	}
+	return s.invites.ListByGroup(ctx, groupID)
 }
 
 // BindChat привязывает чат (или топик форума) к группе по слагу (спека §6.1,
@@ -850,14 +858,23 @@ func (s *Service) RemoveMember(ctx context.Context, actor *domain.User, groupID,
 	return nil
 }
 
-// Leave — выход из группы. Выход админа идёт через RemoveIfNotLastAdmin:
-// последний админ выйти не может (ErrConflict + ErrLastAdmin), защита —
-// в условном SQL репо, конкурентные выходы безопасны.
 func (s *Service) Leave(ctx context.Context, actor *domain.User, groupID int64) error {
 	m, err := s.members.Get(ctx, groupID, actor.ID)
 	if err != nil {
 		return err
 	}
+	// Если группа ещё не привязана к чату, при выходе группа полностью удаляется из БД.
+	_, bindErr := s.bindings.GetByGroup(ctx, groupID)
+	if errors.Is(bindErr, domain.ErrNotFound) {
+		if err := s.groups.HardDelete(ctx, groupID); err != nil {
+			return err
+		}
+		s.writeAudit(ctx, actor.ID, "group.leave_unbound_deleted", "group", groupID, nil)
+		return nil
+	} else if bindErr != nil {
+		return bindErr
+	}
+
 	if m.Role == domain.RoleAdmin {
 		if err := s.removeGuarded(ctx, groupID, actor.ID); err != nil {
 			return err

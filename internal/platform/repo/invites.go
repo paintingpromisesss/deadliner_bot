@@ -25,29 +25,37 @@ var _ domain.InviteRepo = (*invitesRepo)(nil)
 
 func scanInvite(row pgx.Row) (*domain.Invite, error) {
 	var (
-		inv     domain.Invite
-		role    string
-		revoked *time.Time
+		inv       domain.Invite
+		role      string
+		expiresAt *time.Time
+		revoked   *time.Time
 	)
 	err := row.Scan(
 		&inv.ID, &inv.GroupID, &inv.Code, &role, &inv.MaxUses,
-		&inv.UsedCount, &inv.CreatedBy, &inv.ExpiresAt, &revoked,
+		&inv.UsedCount, &inv.CreatedBy, &expiresAt, &revoked,
 	)
 	if err != nil {
 		return nil, err
 	}
 	inv.Role = domain.Role(role)
+	if expiresAt != nil {
+		inv.ExpiresAt = *expiresAt
+	}
 	inv.RevokedAt = revoked
 	return &inv, nil
 }
 
 func (r *invitesRepo) Create(ctx context.Context, inv *domain.Invite) error {
+	var expiresAt *time.Time
+	if !inv.ExpiresAt.IsZero() {
+		expiresAt = &inv.ExpiresAt
+	}
 	row := r.pool.QueryRow(ctx,
 		`INSERT INTO invites (group_id, code, role, max_uses, used_count, created_by, expires_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id`,
 		inv.GroupID, inv.Code, string(inv.Role), inv.MaxUses, inv.UsedCount,
-		inv.CreatedBy, inv.ExpiresAt)
+		inv.CreatedBy, expiresAt)
 	if err := row.Scan(&inv.ID); err != nil {
 		return mapErr(err)
 	}

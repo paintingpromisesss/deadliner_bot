@@ -88,9 +88,8 @@ func TestRealCatalogLoads(t *testing.T) {
 	}
 
 	// Каждый ключ каталога рендерится без артефактов форматирования: число
-	// аргументов берётся из самого шаблона, поэтому многоаргументные шаблоны
-	// тоже проверяются (неверное число даёт «%!s(MISSING)» или
-	// «%!(EXTRA …)» — регрессия F-1).
+	// аргументов берётся из самого шаблона (неверное число даёт
+	// «%!s(MISSING)» или «%!(EXTRA …)»).
 	data, err := Locales.ReadFile("locales/ru.json")
 	if err != nil {
 		t.Fatalf("read ru.json: %v", err)
@@ -206,8 +205,7 @@ func countTopLevelKeys(data []byte) (int, error) {
 }
 
 // Каждый ключ каталога, содержащий один %s, рендерится с аргументом без
-// артефактов вида «%!(EXTRA …)»: именно так вылезла регрессия F-1 (шаблон без
-// verb'а при вызове с аргументом).
+// артефактов вида «%!(EXTRA …)» (шаблон без verb'а при вызове с аргументом).
 func TestCatalogArgsRenderCleanly(t *testing.T) {
 	if err := Load(Locales); err != nil {
 		t.Fatalf("Load(Locales): %v", err)

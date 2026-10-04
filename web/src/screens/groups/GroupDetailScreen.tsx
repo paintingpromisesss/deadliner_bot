@@ -8,7 +8,7 @@ import { useEffect, useState } from 'react';
 import { Button, Cell, List, Placeholder, Section, Spinner } from '../../components/ui';
 import { Screen } from '../../components/Screen';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
-import { InviteSheet, inviteSessionSubtitle } from '../../components/InviteSheet';
+import { InviteSheet } from '../../components/InviteSheet';
 import { MemberCell, memberName } from '../../components/MemberCell';
 import { RoleBadge, roleLabel } from '../../components/RoleBadge';
 import { SlugAvatar } from '../../components/SlugAvatar';
@@ -18,6 +18,7 @@ import {
   usePendingGroupDeadlines,
   useDeleteGroup,
   useGroupDetail,
+  useGroupInvites,
   useGroupMembers,
   useKickMember,
   useLeaveGroup,
@@ -30,7 +31,7 @@ import { memberActionErrorMessage, mutationErrorMessage } from '../../lib/errorT
 import { formatDue } from '../../lib/format';
 import { strings, tpl } from '../../lib/strings';
 import { hapticImpact, hapticNotification } from '../../lib/tma';
-import type { InviteCreated, Member } from '../../lib/groups';
+import type { GroupInvite, InviteCreated, Member } from '../../lib/groups';
 import type { Deadline } from '../../lib/deadlines';
 
 /** Статус группы в шапке. */
@@ -62,6 +63,8 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
   const members = useGroupMembers(groupID, canReadMembers);
   // Модерация: дедлайны группы в pending_approval видит только админ.
   const pending = usePendingGroupDeadlines(groupID, isAdmin);
+  // Сохранённые инвайты группы (админ).
+  const invites = useGroupInvites(groupID, isAdmin);
 
   const leave = useLeaveGroup();
   const removeGroup = useDeleteGroup();
@@ -77,25 +80,17 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmRevoke, setConfirmRevoke] = useState(false);
-  // Какой именно код отзываем: подтверждение одно, а кодов в сессии может быть
-  // несколько — «последний созданный» стёр бы не тот, на который нажали.
-  const [revokeTarget, setRevokeTarget] = useState<InviteCreated | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<{ code: string } | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   // Дедлайн на модерации, который подтверждаем/отклоняем.
   const [moderationTarget, setModerationTarget] = useState<Deadline | null>(null);
   const [moderationAction, setModerationAction] = useState<'approve' | 'reject'>('approve');
   const [notice, setNotice] = useState<string | null>(null);
-  // Сессионные инвайты: код живёт только здесь (сервер его не отдаёт повторно).
-  const [sessionInvites, setSessionInvites] = useState<
-    { invite: InviteCreated; role: 'admin' | 'member' }[]
-  >([]);
 
-  // Смена группы (переход из списка в другую) — чистое состояние: иначе чужие
-  // сессионные коды и открытые меню переехали бы на новый экран.
+  // Смена группы (переход из списка в другую) — чистое состояние.
   useEffect(() => {
     setActionError(null);
     setMenuFor(null);
-    setSessionInvites([]);
     setNotice(null);
   }, [groupID]);
 
@@ -188,7 +183,11 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
               data-testid="binding-status"
               subtitle={
                 binding.message_thread_id != null
-                  ? tpl(strings.groups.bindingTopic, binding.chat_title, binding.message_thread_id)
+                  ? tpl(
+                      strings.groups.bindingTopic,
+                      binding.chat_title,
+                      binding.topic_name || binding.message_thread_id,
+                    )
                   : tpl(strings.groups.bindingChat, binding.chat_title)
               }
             >
@@ -275,36 +274,65 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
               >
                 {strings.groups.inviteCreate}
               </Cell>
-              {/* В БД хранится только хэш кода, поэтому сервер не может
-                  показать уже выданные коды: список ведём в состоянии сессии
-                  и честно об этом пишем. */}
-              <Cell multiline data-testid="invites-session-note">
-                {strings.groups.inviteSessionOnly}
-              </Cell>
-              {sessionInvites.map(({ invite, role: inviteRole }) => (
+              {invites.isLoading ? (
+                <div className="dl-centered">
+                  <Spinner size="s" />
+                </div>
+              ) : (invites.data?.invites ?? []).length === 0 ? (
+                <Cell multiline data-testid="invites-empty">
+                  {strings.groups.inviteEmpty}
+                </Cell>
+              ) : (
+                (invites.data?.invites ?? []).map((inv) => (
                   <Cell
-                    key={invite.code}
+                    key={inv.id}
                     multiline
-                    data-testid={`session-invite-${invite.code}`}
-                    subtitle={inviteSessionSubtitle(invite, inviteRole, tz)}
+                    data-testid={`group-invite-${inv.code}`}
+                    subtitle={
+                      `${inv.role === 'admin' ? strings.groups.inviteRoleAdmin : strings.groups.inviteRoleMember} · ` +
+                      `${inv.status === 'active' ? strings.groups.inviteStatusActive : inv.status === 'expired' ? strings.groups.inviteStatusExpired : inv.status === 'revoked' ? strings.groups.inviteStatusRevoked : strings.groups.inviteStatusExhausted} · ` +
+                      `${inv.max_uses === -1 ? strings.groups.inviteUsesUnlimited : tpl(strings.groups.inviteUsesRemaining, Math.max(0, inv.max_uses - inv.used_count), inv.max_uses)} · ` +
+                      `${inv.expires_at ? tpl(strings.groups.inviteExpiresAt, formatDue(inv.expires_at, tz)) : strings.groups.inviteExpiresNever}`
+                    }
                     after={
-                      <button
-                        type="button"
-                        className="dl-action dl-danger"
-                        aria-label={strings.groups.inviteRevoke}
-                        data-testid={`revoke-invite-${invite.code}`}
-                        onClick={() => {
-                          setRevokeTarget(invite);
-                          setConfirmRevoke(true);
-                        }}
-                      >
-                        ✕
-                      </button>
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          className="dl-action"
+                          aria-label={strings.groups.inviteCopy}
+                          data-testid={`copy-invite-${inv.code}`}
+                          onClick={async () => {
+                            hapticImpact('light');
+                            try {
+                              await navigator.clipboard.writeText(inv.code);
+                              setNotice(strings.groups.inviteCopied);
+                              setTimeout(() => setNotice(null), 2000);
+                            } catch {}
+                          }}
+                        >
+                          📋
+                        </button>
+                        {inv.status === 'active' ? (
+                          <button
+                            type="button"
+                            className="dl-action dl-danger"
+                            aria-label={strings.groups.inviteRevoke}
+                            data-testid={`revoke-invite-${inv.code}`}
+                            onClick={() => {
+                              setRevokeTarget(inv);
+                              setConfirmRevoke(true);
+                            }}
+                          >
+                            ✕
+                          </button>
+                        ) : null}
+                      </div>
                     }
                   >
-                    <span className="dl-code">{invite.code}</span>
+                    <span className="dl-code">{inv.code}</span>
                   </Cell>
-                ))}
+                ))
+              )}
             </Section>
 
             {/* Модерация дедлайнов: заявки участников (pending_approval).
@@ -421,15 +449,17 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
         groupID={groupID}
         tz={tz}
         hasBinding={binding !== null}
-        onCreated={(invite, inviteRole) =>
-          setSessionInvites((prev) => [...prev, { invite, role: inviteRole }])
-        }
+        onCreated={() => {
+          void invites.refetch();
+        }}
       />
 
       <ConfirmDialog
         open={confirmLeave}
         title={strings.groups.leaveConfirm}
-        description={strings.groups.leaveConfirmHint}
+        description={
+          binding ? strings.groups.leaveConfirmHint : strings.groups.leaveConfirmUnboundHint
+        }
         confirmLabel={strings.groups.leave}
         confirmTestId="confirm-leave"
         onConfirm={() => {
@@ -471,7 +501,7 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
           if (!target) return;
           void run(async () => {
             await revokeInvite.mutateAsync({ groupID, code: target.code });
-            setSessionInvites((prev) => prev.filter((x) => x.invite.code !== target.code));
+            void invites.refetch();
           }, mutationErrorMessage);
         }}
         onCancel={() => {

@@ -7,10 +7,8 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
-  Button,
   Caption,
   Cell,
-  Input,
   List,
   Section,
   Select,
@@ -53,7 +51,6 @@ function browserTZ(): string | null {
 export function SettingsScreen() {
   const user = useAuthStore((s) => s.user);
   const patchMe = useAuthStore((s) => s.patchMe);
-  const logout = useAuthStore((s) => s.logout);
   const queryClient = useQueryClient();
 
   const settings = useNotificationSettings();
@@ -61,8 +58,6 @@ export function SettingsScreen() {
 
   const [tz, setTZ] = useState(user?.tz ?? '');
   const [dm, setDm] = useState(user?.dm_notify_default ?? true);
-  const [saving, setSaving] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
   const [groupError, setGroupError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -81,26 +76,16 @@ export function SettingsScreen() {
   }
 
   const suggested = browserTZ();
-  const serverTZ = user.tz;
-  const dirty = tz !== serverTZ || dm !== user.dm_notify_default;
 
-  async function save() {
-    setSaving(true);
-    setNote(null);
+  async function updateProfile(newTZ: string, newDm: boolean) {
+    setTZ(newTZ);
+    setDm(newDm);
     try {
-      await patchMe({ tz, dm_notify_default: dm });
-      // Общий дефолт — источник эффективного значения для групп, которые его
-      // наследуют (спека §5.2: COALESCE(membership, users.dm_notify_default)).
-      // Без инвалидации строки групп показывали бы прежнее значение до
-      // перезахода на экран, то есть переключатель врал бы о состоянии.
+      await patchMe({ tz: newTZ, dm_notify_default: newDm });
       await queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_QUERY_KEY });
       hapticNotification('success');
-      setNote(strings.settings.saved);
-    } catch (e) {
+    } catch {
       hapticNotification('error');
-      setNote(e instanceof Error ? e.message : strings.settings.saveFailed);
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -114,7 +99,7 @@ export function SettingsScreen() {
       });
   }
 
-  /** «Наследовать»: dm_notify: null снимает переопределение (backend §5.2). */
+  /** «Сбросить к общему»: dm_notify: null снимает переопределение (backend §5.2). */
   function inheritGroup(item: NotificationGroup) {
     setGroupError(null);
     void patchSettings.mutateAsync({ group_id: item.group_id, dm_notify: null }).catch((e: unknown) => {
@@ -142,7 +127,7 @@ export function SettingsScreen() {
           <Cell multiline>
             <Select
               value={tz}
-              onChange={(e) => setTZ(e.target.value)}
+              onChange={(e) => void updateProfile(e.target.value, dm)}
               aria-label={strings.settings.tzHeader}
             >
               {!TIMEZONES.includes(tz) && tz ? <option value={tz}>{tz}</option> : null}
@@ -152,13 +137,14 @@ export function SettingsScreen() {
                 </option>
               ))}
             </Select>
-          </Cell>          {suggested && suggested !== tz ? (
+          </Cell>
+          {suggested && suggested !== tz ? (
             <Cell
               Component="button"
               type="button"
               className="dl-cell-button"
               subtitle={tpl(strings.settings.tzDeviceHint, suggested)}
-              onClick={() => setTZ(suggested)}
+              onClick={() => void updateProfile(suggested, dm)}
             >
               {strings.settings.tzUseDevice}
             </Cell>
@@ -170,7 +156,7 @@ export function SettingsScreen() {
             Component="label"
             multiline
             subtitle={strings.settings.dmDefaultHint}
-            after={<Switch checked={dm} onChange={(e) => setDm(e.target.checked)} />}
+            after={<Switch checked={dm} onChange={(e) => void updateProfile(tz, e.target.checked)} />}
           >
             {strings.settings.dmDefault}
           </Cell>
@@ -206,16 +192,42 @@ export function SettingsScreen() {
             </div>
           ) : (
             groupSettings.map((item) => (
-              // Переключатель и «Наследовать» — соседние ячейки, а не вложенные
-              // друг в друга: <button> внутри <label> невалиден и клик по нему
-              // переключал бы сам Switch (двойное действие по одному тапу).
               <div key={item.group_id} data-testid={`group-notify-${item.group_id}`}>
                 <Cell
                   Component="label"
                   multiline
-                  subtitle={`${item.slug} · ${
-                    item.override ? strings.settings.groupOverride : strings.settings.groupInherited
-                  }`}
+                  subtitle={
+                    <span>
+                      {`${item.slug} · ${item.override ? strings.settings.groupOverride : strings.settings.groupInherited}`}
+                      {item.override ? (
+                        <>
+                          {' · '}
+                          <button
+                            type="button"
+                            className="dl-link-btn"
+                            style={{
+                              background: 'none',
+                              border: 0,
+                              padding: 0,
+                              color: 'var(--tg-theme-link-color, var(--tg-theme-button-color, #2481cc))',
+                              fontSize: 'inherit',
+                              textDecoration: 'underline',
+                              cursor: 'pointer',
+                            }}
+                            data-testid={`group-inherit-${item.group_id}`}
+                            disabled={patchSettings.isPending}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              inheritGroup(item);
+                            }}
+                          >
+                            {strings.settings.groupInherit}
+                          </button>
+                        </>
+                      ) : null}
+                    </span>
+                  }
                   after={
                     <Switch
                       checked={item.dm_notify}
@@ -227,18 +239,6 @@ export function SettingsScreen() {
                 >
                   {item.title || item.slug}
                 </Cell>
-                {item.override ? (
-                  <Cell
-                    Component="button"
-                    type="button"
-                    className="dl-cell-button"
-                    data-testid={`group-inherit-${item.group_id}`}
-                    disabled={patchSettings.isPending}
-                    onClick={() => inheritGroup(item)}
-                  >
-                    {strings.settings.groupInherit}
-                  </Cell>
-                ) : null}
               </div>
             ))
           )}
@@ -247,30 +247,6 @@ export function SettingsScreen() {
               {groupError}
             </div>
           ) : null}
-        </Section>
-
-        <Section>
-          <div className="dl-row">
-            <Button size="l" stretched loading={saving} disabled={!dirty} onClick={save}>
-              {strings.settings.save}
-            </Button>
-          </div>
-          <Cell multiline>
-            <Input header={strings.settings.telegramID} value={String(user.telegram_id)} readOnly />
-          </Cell>
-        </Section>
-
-        <Section footer={note ?? undefined}>
-          <Cell
-            Component="button"
-            className="dl-danger"
-            onClick={() => {
-              hapticNotification('warning');
-              void logout();
-            }}
-          >
-            {strings.settings.logout}
-          </Cell>
         </Section>
       </List>
     </Screen>

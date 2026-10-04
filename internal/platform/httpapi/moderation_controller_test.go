@@ -217,19 +217,19 @@ func TestCleanupExpiredPendingEndToEnd(t *testing.T) {
 		t.Errorf("report.Groups = %d, want 1 (only the unbound group)", report.Groups)
 	}
 
-	var deletedDoomed, deletedBound *time.Time
+	var doomedExists, boundExists bool
 	if err := testPool.QueryRow(t.Context(),
-		`SELECT deleted_at FROM groups WHERE id = $1`, doomed).Scan(&deletedDoomed); err != nil {
+		`SELECT EXISTS(SELECT 1 FROM groups WHERE id = $1)`, doomed).Scan(&doomedExists); err != nil {
 		t.Fatalf("select doomed: %v", err)
 	}
 	if err := testPool.QueryRow(t.Context(),
-		`SELECT deleted_at FROM groups WHERE id = $1`, bound).Scan(&deletedBound); err != nil {
+		`SELECT EXISTS(SELECT 1 FROM groups WHERE id = $1)`, bound).Scan(&boundExists); err != nil {
 		t.Fatalf("select bound: %v", err)
 	}
-	if deletedDoomed == nil {
+	if doomedExists {
 		t.Error("expired unbound pending group was not deleted")
 	}
-	if deletedBound != nil {
+	if !boundExists {
 		t.Error("expired pending group with a chat binding was deleted")
 	}
 

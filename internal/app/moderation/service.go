@@ -113,13 +113,11 @@ func (s *Service) CleanupExpiredPending(ctx context.Context) (CleanupReport, err
 
 	for i := range candidates {
 		g := candidates[i]
-		keep, err := s.hasBindingOrAdmin(ctx, g.ID)
-		if err != nil {
-			s.log.Warn("cleanup: group inspection failed",
-				slog.Int64("group_id", g.ID), slog.String("error", err.Error()))
+		if _, err := s.deps.Bindings.GetByGroup(ctx, g.ID); err == nil {
 			continue
-		}
-		if keep {
+		} else if !errors.Is(err, domain.ErrNotFound) {
+			s.log.Warn("cleanup: group binding inspection failed",
+				slog.Int64("group_id", g.ID), slog.String("error", err.Error()))
 			continue
 		}
 
@@ -129,17 +127,14 @@ func (s *Service) CleanupExpiredPending(ctx context.Context) (CleanupReport, err
 				slog.Int64("group_id", g.ID), slog.String("error", err.Error()))
 			continue
 		}
-		if err := s.deps.Groups.SoftDelete(ctx, g.ID); err != nil {
-			s.log.Warn("cleanup: soft delete failed",
+		if err := s.deps.Groups.HardDelete(ctx, g.ID); err != nil {
+			s.log.Warn("cleanup: hard delete failed",
 				slog.Int64("group_id", g.ID), slog.String("error", err.Error()))
 			continue
 		}
 		report.Groups++
-		// Reminders — число pending-напоминаний, увиденных перед гашением
-		// (справочно: при гонке с воркером может быть на единицу больше
-		// фактически погашенных).
 		report.Reminders += cancelled
-		s.log.Info("cleanup: pending group deleted",
+		s.log.Info("cleanup: pending group hard deleted",
 			slog.Int64("group_id", g.ID), slog.String("slug", g.Slug))
 	}
 

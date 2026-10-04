@@ -373,6 +373,71 @@ func (c *groupsController) RevokeInvite(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type inviteDTO struct {
+	ID        int64      `json:"id"`
+	GroupID   int64      `json:"group_id"`
+	Code      string     `json:"code"`
+	Role      string     `json:"role"`
+	MaxUses   int        `json:"max_uses"`
+	UsedCount int        `json:"used_count"`
+	CreatedBy int64      `json:"created_by"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	Status    string     `json:"status"`
+}
+
+func inviteStatus(inv domain.Invite, now time.Time) string {
+	if inv.RevokedAt != nil {
+		return "revoked"
+	}
+	if !inv.ExpiresAt.IsZero() && inv.ExpiresAt.Before(now) {
+		return "expired"
+	}
+	if inv.MaxUses >= 0 && inv.UsedCount >= inv.MaxUses {
+		return "exhausted"
+	}
+	return "active"
+}
+
+// ListInvites — GET /api/v1/groups/{id}/invites → 200 {invites: []}.
+func (c *groupsController) ListInvites(w http.ResponseWriter, r *http.Request) {
+	actor := middleware.UserFrom(r.Context())
+	if actor == nil {
+		httpjson.WriteUnauthorized(w)
+		return
+	}
+	id, ok := pathGroupID(w, r)
+	if !ok {
+		return
+	}
+	invs, err := c.svc.ListInvites(r.Context(), actor, id)
+	if err != nil {
+		writeGroupsError(w, err)
+		return
+	}
+	now := time.Now().UTC()
+	out := make([]inviteDTO, 0, len(invs))
+	for _, inv := range invs {
+		var exp *time.Time
+		if !inv.ExpiresAt.IsZero() {
+			exp = &inv.ExpiresAt
+		}
+		out = append(out, inviteDTO{
+			ID:        inv.ID,
+			GroupID:   inv.GroupID,
+			Code:      inv.Code,
+			Role:      string(inv.Role),
+			MaxUses:   inv.MaxUses,
+			UsedCount: inv.UsedCount,
+			CreatedBy: inv.CreatedBy,
+			ExpiresAt: exp,
+			RevokedAt: inv.RevokedAt,
+			Status:    inviteStatus(inv, now),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invites": out})
+}
+
 // memberDTO — участник в списке группы.
 type memberDTO struct {
 	UserID    int64     `json:"user_id"`

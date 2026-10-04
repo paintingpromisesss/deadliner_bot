@@ -61,7 +61,7 @@ func TestMigrateUpDown(t *testing.T) {
 
 	wantTables := []string{
 		"users", "groups", "chat_bindings", "group_memberships",
-		"deadlines", "reminders", "invites", "claim_codes",
+		"deadlines", "reminders", "invites",
 		"user_action_counters", "sessions", "outbox_messages", "audit_log",
 	}
 	for _, table := range wantTables {

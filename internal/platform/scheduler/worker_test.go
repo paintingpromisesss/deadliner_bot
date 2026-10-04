@@ -78,7 +78,7 @@ func truncate(t *testing.T) *pgxpool.Pool {
 	defer cancel()
 	_, err := schedPool.Exec(ctx, `TRUNCATE
 		users, groups, chat_bindings, group_memberships, deadlines, reminders,
-		invites, claim_codes, user_action_counters, sessions, outbox_messages,
+		invites, user_action_counters, sessions, outbox_messages,
 		audit_log CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
@@ -153,7 +153,7 @@ func (n *fakeNotifier) Calls() []notifyCall {
 var discardLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // recordingUserRepo оборачивает реальный UserRepo и запоминает вызовы
-// MarkBotBlocked (I-1: воркер обязан фиксировать 403 в users.bot_blocked).
+// MarkBotBlocked: воркер обязан фиксировать 403 в users.bot_blocked.
 type recordingUserRepo struct {
 	domain.UserRepo
 	mu      sync.Mutex
@@ -184,7 +184,7 @@ func (r *recordingUserRepo) MarkedBlocked() []blockedCall {
 }
 
 // failingCommitTx — pgx.Tx, чей Commit падает на заданном по счёту коммите
-// (I-4: сбой коммита fan-out не должен приводить к повторной отправке в чат).
+// Сбой коммита fan-out не должен приводить к повторной отправке в чат.
 // Тик делает два коммита: FetchDue (должен пройти) и fan-out (ломаем второй).
 type failingCommitTx struct {
 	pgx.Tx
@@ -585,7 +585,7 @@ func TestWorkerMarkSentRaceSuppressesDoubleSend(t *testing.T) {
 	}
 }
 
-// I-4: сбой Commit fan-out'а не должен приводить к повторной отправке в чат —
+// Сбой Commit fan-out не должен приводить к повторной отправке в чат —
 // срабатывает fallback-плейн-MarkSent, строка остаётся sent (без детей).
 func TestWorkerFanoutCommitFailureKeepsNoDuplicateInvariant(t *testing.T) {
 	env := newEnv(t)
@@ -620,7 +620,7 @@ func TestWorkerFanoutCommitFailureKeepsNoDuplicateInvariant(t *testing.T) {
 	}
 }
 
-// I-2: отмена ctx во время отправки не должна рвать фиксацию результата —
+// Отмена ctx во время отправки не должна рвать фиксацию результата —
 // иначе строка остаётся locked и после ReleaseStale чат получает дубль.
 func TestWorkerShutdownFinalizesInFlightSend(t *testing.T) {
 	env := newEnv(t)
@@ -721,7 +721,7 @@ func TestWorkerRateLimited429(t *testing.T) {
 }
 
 // BlockedError → карантин на 7 дней, last_error содержит blocked,
-// users.bot_blocked зафиксирован (I-1).
+// users.bot_blocked зафиксирован.
 func TestWorkerBotBlockedQuarantine(t *testing.T) {
 	env := newEnv(t)
 	ctx := context.Background()
@@ -749,7 +749,7 @@ func TestWorkerBotBlockedQuarantine(t *testing.T) {
 		t.Errorf("attempts = %d, want 1", attempts)
 	}
 
-	// I-1: флаг записан в БД (иначе ListDMTargets никогда не отфильтрует).
+	// Флаг записан в БД (иначе ListDMTargets никогда не отфильтрует).
 	marked := env.users.MarkedBlocked()
 	if len(marked) != 1 || marked[0].telegramID != missingTelegramID || !marked[0].blocked {
 		t.Fatalf("MarkBotBlocked calls = %+v, want [{telegram_id=%d blocked=true}]", marked, missingTelegramID)
@@ -764,7 +764,7 @@ func TestWorkerBotBlockedQuarantine(t *testing.T) {
 	}
 }
 
-// I-1 (продолжение): получив 403, воркер фиксирует флаг, и СЛЕДУЮЩИЙ fan-out
+// Получив 403, воркер фиксирует флаг, и СЛЕДУЮЩИЙ fan-out
 // этого участника уже не выбирает (ListDMTargets → NOT bot_blocked).
 func TestWorkerBotBlockedExcludedFromLaterFanout(t *testing.T) {
 	env := newEnv(t)
@@ -949,9 +949,9 @@ func dmDupChildIDs(t *testing.T, env *testEnv, deadlineID int64) []int64 {
 	return out
 }
 
-// I-3: дедлайн с ДВУМЯ пресетами → каждый fan-out создаёт своего ребёнка и
-// участник получает ДВА ЛС. Прежний unique (deadline_id, target_user_id)
-// молча съедал второй дубль; новый (…, fire_at) этого не допускает.
+// Дедлайн с ДВУМЯ пресетами → каждый fan-out создаёт своего ребёнка и
+// участник получает ДВА ЛС. Unique (deadline_id, target_user_id, fire_at)
+// допускает оба.
 func TestWorkerDMDupMultipleFanoutsPerDeadline(t *testing.T) {
 	env := newEnv(t)
 	ctx := context.Background()

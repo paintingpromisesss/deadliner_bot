@@ -185,6 +185,17 @@ func (r *groupsRepo) SoftDelete(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (r *groupsRepo) HardDelete(ctx context.Context, id int64) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM groups WHERE id = $1`, id)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: group id=%d", domain.ErrNotFound, id)
+	}
+	return nil
+}
+
 // ListMine returns non-deleted groups the user belongs to, ordered by slug_norm.
 func (r *groupsRepo) ListMine(ctx context.Context, userID int64) ([]domain.Group, error) {
 	rows, err := r.pool.Query(ctx,

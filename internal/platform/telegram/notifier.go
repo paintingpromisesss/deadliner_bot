@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/go-telegram/bot/models"
 	"github.com/sauron/deadliner/internal/domain"
 	"github.com/sauron/deadliner/internal/i18n"
 	"github.com/sauron/deadliner/internal/platform/scheduler"
@@ -157,9 +159,15 @@ func (n *Notifier) SendToChatWithButton(ctx context.Context, chatID, threadID in
 
 // InvitePublisher — публикация инвайта в чат группы: призыв «Присоединяйтесь»
 // и inline-кнопка, открывающая Mini App как Main App.
+type BotUsernameSource interface {
+	GetMe(ctx context.Context) (*models.User, error)
+}
+
 type InvitePublisher struct {
 	notifier    *Notifier
+	api         BotUsernameSource
 	botUsername string
+	mu          sync.Mutex
 }
 
 // NewInvitePublisher собирает публикатор: botUsername (без «@») идёт в
@@ -168,9 +176,24 @@ func NewInvitePublisher(notifier *Notifier, botUsername string) *InvitePublisher
 	return &InvitePublisher{notifier: notifier, botUsername: strings.TrimPrefix(botUsername, "@")}
 }
 
+// NewInvitePublisherWithAPI собирает публикатор с ленивым получением username
+// через getMe при первой отправке (граф строится offline).
+func NewInvitePublisherWithAPI(notifier *Notifier, api BotUsernameSource) *InvitePublisher {
+	return &InvitePublisher{notifier: notifier, api: api}
+}
+
 // PublishInvite отправляет инвайт-сообщение в чат группы; кнопка — direct-link
 // на Main App (startapp = plaintext-код инвайта).
 func (p *InvitePublisher) PublishInvite(ctx context.Context, chatID, threadID int64, text, inviteCode string) error {
+	if p.botUsername == "" && p.api != nil {
+		p.mu.Lock()
+		if p.botUsername == "" {
+			if me, err := p.api.GetMe(ctx); err == nil && me != nil {
+				p.botUsername = strings.TrimPrefix(me.Username, "@")
+			}
+		}
+		p.mu.Unlock()
+	}
 	if p.botUsername == "" || inviteCode == "" {
 		// Без username или кода direct-link не собрать: уходим текстом.
 		_, err := p.notifier.SendToChatID(ctx, chatID, threadID, text)

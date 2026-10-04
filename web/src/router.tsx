@@ -83,6 +83,17 @@ export function navigate(path: string): void {
   if (window.location.hash !== next) window.location.hash = next;
 }
 
+/** Навигация назад по внутреннему стеку истории (5.1). */
+export function routerBack(): void {
+  if (typeof window !== 'undefined') {
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      navigate('/');
+    }
+  }
+}
+
 /** Текущий маршрут с подпиской на hashchange. */
 export function useRoute(): Route {
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));

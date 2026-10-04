@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sauron/deadliner/internal/domain"
@@ -39,8 +40,12 @@ type DB struct {
 }
 
 type Bot struct {
-	Token         string
-	APIBase       string
+	Token   string
+	APIBase string
+	// Username — BOT_USERNAME: username бота без «@» для Main App direct-
+	// ссылок (https://t.me/<username>/app?startapp=…) в инвайт-кнопках групп.
+	// Пусто — публикация инвайта в чат уходит без кнопки (только текст).
+	Username      string
 	PollingMode   string
 	WebhookURL    string
 	WebhookSecret string
@@ -158,6 +163,7 @@ func Load() (*Config, error) {
 		Bot: Bot{
 			Token:         os.Getenv("BOT_TOKEN"),
 			APIBase:       os.Getenv("BOT_API_BASE"),
+			Username:      strings.TrimPrefix(os.Getenv("BOT_USERNAME"), "@"),
 			PollingMode:   l.string("POLLING_MODE", "long_polling"),
 			WebhookURL:    os.Getenv("WEBHOOK_URL"),
 			WebhookSecret: os.Getenv("WEBHOOK_SECRET"),

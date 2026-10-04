@@ -577,7 +577,7 @@ func TestCreate_SlugConflictPassthrough(t *testing.T) {
 	}
 }
 
-func TestCreate_CreatorGetsMemberRoleNotAdmin(t *testing.T) {
+func TestCreate_CreatorBecomesAdmin(t *testing.T) {
 	f := newFixture(Config{})
 	ctx := context.Background()
 
@@ -589,8 +589,8 @@ func TestCreate_CreatorGetsMemberRoleNotAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("membership not created: %v", err)
 	}
-	if m.Role != domain.RoleMember {
-		t.Errorf("creator role = %q, want member (spec §3.1: создатель НЕ админ)", m.Role)
+	if m.Role != domain.RoleAdmin {
+		t.Errorf("creator role = %q, want admin (создатель — админ сразу, клейм-кодов нет)", m.Role)
 	}
 }
 
@@ -721,7 +721,8 @@ func TestCreateInvite_CodeStoredAsHash(t *testing.T) {
 	ctx := context.Background()
 	g := seedGroupWithAdmin(t, f, 1, "А-111")
 
-	code, inv, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 5, 0)
+	// ttl = -1 → дефолт конфига (7 дней): обратная совместимость «без TTL».
+	code, inv, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 5, -1, false)
 	if err != nil {
 		t.Fatalf("CreateInvite: %v", err)
 	}
@@ -752,7 +753,7 @@ func TestCreateInvite_NonAdminForbidden(t *testing.T) {
 	if err := f.members.Upsert(ctx, &domain.Membership{GroupID: g.ID, UserID: 2, Role: domain.RoleMember}); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := f.svc.CreateInvite(ctx, user(2, false), g.ID, domain.RoleMember, 1, time.Hour)
+	_, _, err := f.svc.CreateInvite(ctx, user(2, false), g.ID, domain.RoleMember, 1, time.Hour, false)
 	if !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("err = %v, want ErrForbidden", err)
 	}
@@ -762,7 +763,7 @@ func TestCreateInvite_BadRole(t *testing.T) {
 	f := newFixture(Config{})
 	ctx := context.Background()
 	g := seedGroupWithAdmin(t, f, 1, "А-111")
-	_, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.Role("owner"), 1, time.Hour)
+	_, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.Role("owner"), 1, time.Hour, false)
 	if !errors.Is(err, domain.ErrValidation) {
 		t.Fatalf("err = %v, want ErrValidation", err)
 	}
@@ -772,7 +773,7 @@ func TestRedeemInvite_HappyPath(t *testing.T) {
 	f := newFixture(Config{})
 	ctx := context.Background()
 	g := seedGroupWithAdmin(t, f, 1, "А-111")
-	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleAdmin, 3, 24*time.Hour)
+	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleAdmin, 3, 24*time.Hour, false)
 	if err != nil {
 		t.Fatalf("CreateInvite: %v", err)
 	}
@@ -801,7 +802,7 @@ func TestRedeemInvite_ExpiredNotFound(t *testing.T) {
 	f := newFixture(Config{})
 	ctx := context.Background()
 	g := seedGroupWithAdmin(t, f, 1, "А-111")
-	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour)
+	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour, false)
 	if err != nil {
 		t.Fatalf("CreateInvite: %v", err)
 	}
@@ -817,7 +818,7 @@ func TestRedeemInvite_RevokedNotFound(t *testing.T) {
 	f := newFixture(Config{})
 	ctx := context.Background()
 	g := seedGroupWithAdmin(t, f, 1, "А-111")
-	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour)
+	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour, false)
 	if err != nil {
 		t.Fatalf("CreateInvite: %v", err)
 	}
@@ -834,7 +835,7 @@ func TestRedeemInvite_MaxUsesConflict(t *testing.T) {
 	f := newFixture(Config{})
 	ctx := context.Background()
 	g := seedGroupWithAdmin(t, f, 1, "А-111")
-	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour)
+	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour, false)
 	if err != nil {
 		t.Fatalf("CreateInvite: %v", err)
 	}
@@ -851,7 +852,7 @@ func TestRedeemInvite_MemberIdempotent(t *testing.T) {
 	f := newFixture(Config{})
 	ctx := context.Background()
 	g := seedGroupWithAdmin(t, f, 1, "А-111")
-	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 5, time.Hour)
+	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 5, time.Hour, false)
 	if err != nil {
 		t.Fatalf("CreateInvite: %v", err)
 	}
@@ -879,7 +880,7 @@ func TestRedeemInvite_ExhaustedAtRepoLevel(t *testing.T) {
 	f := newFixture(Config{})
 	ctx := context.Background()
 	g := seedGroupWithAdmin(t, f, 1, "А-111")
-	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour)
+	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour, false)
 	if err != nil {
 		t.Fatalf("CreateInvite: %v", err)
 	}
@@ -913,7 +914,7 @@ func TestRedeemInvite_PendingGroupNotFound(t *testing.T) {
 	if err := f.members.SetRole(ctx, g.ID, 1, domain.RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
-	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour)
+	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, time.Hour, false)
 	if err != nil {
 		t.Fatalf("CreateInvite: %v", err)
 	}
@@ -938,16 +939,16 @@ func TestCreateInvite_Bounds(t *testing.T) {
 	g := seedGroupWithAdmin(t, f, 1, "А-111")
 
 	for _, maxUses := range []int{0, -2} {
-		_, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, maxUses, time.Hour)
+		_, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, maxUses, time.Hour, false)
 		if !errors.Is(err, domain.ErrValidation) {
 			t.Errorf("max_uses=%d err = %v, want ErrValidation", maxUses, err)
 		}
 	}
 	// -1 = без лимита — валидно.
-	if _, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, -1, time.Hour); err != nil {
+	if _, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, -1, time.Hour, false); err != nil {
 		t.Errorf("max_uses=-1 err = %v, want nil (unlimited)", err)
 	}
-	if _, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, 91*24*time.Hour); !errors.Is(err, domain.ErrValidation) {
+	if _, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, 1, 91*24*time.Hour, false); !errors.Is(err, domain.ErrValidation) {
 		t.Errorf("ttl=91d err = %v, want ErrValidation", err)
 	}
 }
@@ -956,7 +957,7 @@ func TestRedeemInvite_UnlimitedUses(t *testing.T) {
 	f := newFixture(Config{})
 	ctx := context.Background()
 	g := seedGroupWithAdmin(t, f, 1, "А-111")
-	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, -1, time.Hour)
+	code, _, err := f.svc.CreateInvite(ctx, user(1, false), g.ID, domain.RoleMember, -1, time.Hour, false)
 	if err != nil {
 		t.Fatalf("CreateInvite: %v", err)
 	}
@@ -1097,8 +1098,8 @@ func TestGet_PendingVisibleOnlyToCreator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get by creator: %v", err)
 	}
-	if view.Role != domain.RoleMember {
-		t.Errorf("role = %q, want member", view.Role)
+	if view.Role != domain.RoleAdmin {
+		t.Errorf("role = %q, want admin", view.Role)
 	}
 	if view.MembersCount != 1 {
 		t.Errorf("members_count = %d, want 1", view.MembersCount)
@@ -1213,8 +1214,8 @@ func TestBindChat_Success(t *testing.T) {
 	if bound.ID != g.ID {
 		t.Errorf("returned group = %d, want %d", bound.ID, g.ID)
 	}
-	if bound.Status != domain.GroupStatusPending {
-		t.Errorf("status = %q, want pending (активирует только claim)", bound.Status)
+	if bound.Status != domain.GroupStatusActive {
+		t.Errorf("status = %q, want active (привязка чата активирует группу)", bound.Status)
 	}
 	b, err := f.bindings.GetByGroup(ctx, g.ID)
 	if err != nil {
@@ -1384,12 +1385,12 @@ func TestUnbindChat_RequiresAdmin(t *testing.T) {
 	if _, err := f.svc.BindChat(ctx, user(1, false), -100500, nil, "ИКБО-33-21", "Чат"); err != nil {
 		t.Fatal(err)
 	}
-	// Создатель — member (спека §3.1): отказ, привязка на месте.
-	if _, err := f.svc.UnbindChat(ctx, user(1, false), -100500, nil); !errors.Is(err, domain.ErrForbidden) {
-		t.Fatalf("UnbindChat(member) = %v, want ErrForbidden", err)
+	// Создатель — админ: unbind проходит.
+	if _, err := f.svc.UnbindChat(ctx, user(1, false), -100500, nil); err != nil {
+		t.Fatalf("UnbindChat(admin-creator) = %v, want nil", err)
 	}
-	if _, err := f.bindings.GetByGroup(ctx, 1); err != nil {
-		t.Errorf("binding must survive a forbidden unbind: %v", err)
+	if _, err := f.bindings.GetByGroup(ctx, 1); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("binding must be removed: %v", err)
 	}
 }
 

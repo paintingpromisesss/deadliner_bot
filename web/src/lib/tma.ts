@@ -23,6 +23,7 @@ export type NotifyType = 'error' | 'success' | 'warning';
 type LaunchParamsCamel = {
   tgWebAppPlatform?: string;
   tgWebAppData?: unknown;
+  tgWebAppStartParam?: string;
 };
 
 /** Платформа из launch params: iOS-клиент → 'ios', всё остальное → 'base'. */
@@ -70,6 +71,22 @@ export function getInitData(): string | undefined {
   if (!isTMA()) return undefined;
   try {
     return initData.raw();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * startapp-параметр (tgWebAppStartParam) — передаётся боту в Main App-кнопке
+ * инвайта: код инвайта, по которому Mini App открывает экран подтверждения
+ * «Вступить в группу?». undefined вне Telegram или без параметра.
+ */
+export function getStartParam(): string | undefined {
+  if (!isTMA()) return undefined;
+  try {
+    const lp = retrieveLaunchParams(true) as LaunchParamsCamel;
+    const v = lp.tgWebAppStartParam;
+    return typeof v === 'string' && v.length > 0 ? v : undefined;
   } catch {
     return undefined;
   }

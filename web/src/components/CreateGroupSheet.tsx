@@ -9,7 +9,7 @@ import { useEffect, useState } from 'react';
 import { Button, Input, Modal } from './ui';
 import { SheetHeader } from './SheetHeader';
 import { useCreateGroup } from '../lib/queries';
-import { checkSlug } from '../lib/slug';
+import { checkSlug, normalizeSlug } from '../lib/slug';
 import { groupCreateErrorMessage, groupTitleErrorMessage, slugErrorMessage } from '../lib/errorText';
 import { strings } from '../lib/strings';
 import { hapticImpact } from '../lib/tma';
@@ -25,6 +25,8 @@ export function CreateGroupSheet({ open, onOpenChange, onCreated }: CreateGroupS
   const create = useCreateGroup();
   const [slug, setSlug] = useState('');
   const [title, setTitle] = useState('');
+  // Пользователь правил название руками: автоподстановка из слага отключается.
+  const [titleTouched, setTitleTouched] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
@@ -34,9 +36,18 @@ export function CreateGroupSheet({ open, onOpenChange, onCreated }: CreateGroupS
     if (!open) return;
     setSlug('');
     setTitle('');
+    setTitleTouched(false);
     setAttempted(false);
     setApiError(null);
   }, [open]);
+
+  // Автозаполнение: введённый слаг подставляется в название, пока
+  // пользователь не начал редактировать название сам. Ручные правки не
+  // перетираются — автоподстановка отключается после первого ввода.
+  function onSlugChange(value: string) {
+    setSlug(value);
+    if (!titleTouched) setTitle(normalizeSlug(value));
+  }
 
   const slugCheck = checkSlug(slug);
   const titleError = title.trim() === '' ? 'title_required' : null;
@@ -70,7 +81,7 @@ export function CreateGroupSheet({ open, onOpenChange, onCreated }: CreateGroupS
           value={slug}
           maxLength={24}
           status={showSlugError ? 'error' : 'default'}
-          onChange={(e) => setSlug(e.target.value)}
+          onChange={(e) => onSlugChange(e.target.value)}
           onBlur={() => setAttempted(true)}
           data-testid="field-slug"
         />
@@ -87,6 +98,9 @@ export function CreateGroupSheet({ open, onOpenChange, onCreated }: CreateGroupS
           value={title}
           maxLength={200}
           onChange={(e) => setTitle(e.target.value)}
+          // Событие ДО изменения (beforeinput): отличает ручной ввод
+          // от программной подстановки — onChange их не различает.
+          onBeforeInput={() => setTitleTouched(true)}
           onBlur={() => setAttempted(true)}
           data-testid="field-group-title"
         />

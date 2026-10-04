@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"testing"
 	"time"
 
@@ -132,11 +131,10 @@ func TestBanRevokesSessions(t *testing.T) {
 	}
 }
 
-// Забаненный не создаёт группу и не начинает claim: запрос падает на
+// Забаненный не создаёт группу: запрос падает на
 // middleware (403) до контроллера, побочных эффектов в БД нет.
-func TestBanBlocksGroupCreationAndClaim(t *testing.T) {
-	nfy := &captureNotifier{}
-	r := newTestClaimsRouter(t, nfy, claimsDefaultConfig())
+func TestBanBlocksGroupCreation(t *testing.T) {
+	r := newTestGroupsRouterDefault(t)
 	tok, _ := login(t, r, 803)
 
 	resp := doJSON(r, http.MethodPost, "/api/v1/groups", tok,
@@ -169,14 +167,6 @@ func TestBanBlocksGroupCreationAndClaim(t *testing.T) {
 		t.Error("banned user's group was created")
 	}
 
-	resp = doJSON(r, http.MethodPost,
-		"/api/v1/groups/"+strconv.FormatInt(created.Group.ID, 10)+"/claim/start", tok, nil)
-	if resp.Code != http.StatusForbidden {
-		t.Errorf("claim after ban = %d, want 403; body: %s", resp.Code, resp.Body)
-	}
-	if len(nfy.chatSends) != 0 {
-		t.Errorf("claim code posted for a banned user: %+v", nfy.chatSends)
-	}
 }
 
 // cleanup pending-групп через use case (спека §3.3) — сквозная проверка

@@ -267,7 +267,8 @@ func parseListQuery(w http.ResponseWriter, r *http.Request) (from, to *time.Time
 	if v := q.Get("status"); v != "" {
 		st := domain.DeadlineStatus(v)
 		switch st {
-		case domain.DeadlineStatusActive, domain.DeadlineStatusDone, domain.DeadlineStatusArchived:
+		case domain.DeadlineStatusActive, domain.DeadlineStatusDone, domain.DeadlineStatusArchived,
+			domain.DeadlineStatusPendingApproval, domain.DeadlineStatusRejected:
 			status = &st
 		default:
 			httpjson.WriteError(w, http.StatusBadRequest, "validation", i18n.T("api.error.deadline_bad_status"))
@@ -275,6 +276,67 @@ func parseListQuery(w http.ResponseWriter, r *http.Request) (from, to *time.Time
 		}
 	}
 	return from, to, status, true
+}
+
+// Approve — POST /api/v1/deadlines/{id}/approve → 200 {deadline, reminders}:
+// pending_approval → active (только админ группы/superadmin), напоминания
+// планируются, группе рассылаются уведомления.
+func (c *deadlinesController) Approve(w http.ResponseWriter, r *http.Request) {
+	actor := middleware.UserFrom(r.Context())
+	if actor == nil {
+		httpjson.WriteUnauthorized(w)
+		return
+	}
+	id, ok := pathDeadlineID(w, r)
+	if !ok {
+		return
+	}
+	view, err := c.svc.Approve(r.Context(), actor, id)
+	if err != nil {
+		httpjson.WriteDomainError(w, err)
+		return
+	}
+	writeView(w, http.StatusOK, view)
+}
+
+// Reject — POST /api/v1/deadlines/{id}/reject → 200 {deadline, reminders}:
+// pending_approval → rejected (только админ группы/superadmin).
+func (c *deadlinesController) Reject(w http.ResponseWriter, r *http.Request) {
+	actor := middleware.UserFrom(r.Context())
+	if actor == nil {
+		httpjson.WriteUnauthorized(w)
+		return
+	}
+	id, ok := pathDeadlineID(w, r)
+	if !ok {
+		return
+	}
+	view, err := c.svc.Reject(r.Context(), actor, id)
+	if err != nil {
+		httpjson.WriteDomainError(w, err)
+		return
+	}
+	writeView(w, http.StatusOK, view)
+}
+
+// ListPending — GET /api/v1/groups/{id}/deadlines/pending → 200 [deadline]:
+// дедлайны группы в pending_approval (админский список модерации).
+func (c *deadlinesController) ListPending(w http.ResponseWriter, r *http.Request) {
+	actor := middleware.UserFrom(r.Context())
+	if actor == nil {
+		httpjson.WriteUnauthorized(w)
+		return
+	}
+	id, ok := pathGroupID(w, r)
+	if !ok {
+		return
+	}
+	list, err := c.svc.ListPendingGroup(r.Context(), actor, id)
+	if err != nil {
+		httpjson.WriteDomainError(w, err)
+		return
+	}
+	writeDeadlineList(w, list)
 }
 
 // ListGroup — GET /api/v1/groups/{id}/deadlines?from=&to=&status= → 200 [deadline].

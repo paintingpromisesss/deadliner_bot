@@ -38,6 +38,7 @@ import {
 import { formatDue, tzAbbr } from '../lib/format';
 import type { Deadline, Reminder } from '../lib/deadlines';
 import {
+  memberGroups,
   adminGroups,
   useCompleteDeadline,
   useCreateDeadline,
@@ -105,14 +106,17 @@ export function DeadlineSheet({
 }: DeadlineSheetProps) {
   const isEdit = deadline !== null;
   const groups = useMyGroups();
-  const writable = useMemo(() => adminGroups(groups.data), [groups.data]);
+  // Селектор группы — всем участникам: дедлайн участника уйдёт на модерацию.
+  const writable = useMemo(() => memberGroups(groups.data), [groups.data]);
+  // Права записи считаются по АДМИНСКИМ группам, а не по memberGroups.
+  const adminList = useMemo(() => adminGroups(groups.data), [groups.data]);
   const isSuperadmin = useAuthStore((s) => s.user?.is_superadmin ?? false);
   const me = useAuthStore((s) => s.user?.id);
   // «Выполнить»/«удалить» — запись: backend проверяет её requireWrite (автор
   // дедлайна, админ группы или супер-админ — спека §5.2 «автор/admin»).
   // Предикат общий с экраном списка (lib/deadlineGroups.canWriteDeadline): если
   // бы они расходились, кнопка появлялась бы/исчезала при открытии карточки.
-  const adminGroupIDs = useMemo(() => new Set(writable.map((g) => g.group.id)), [writable]);
+  const adminGroupIDs = useMemo(() => new Set(adminList.map((g) => g.group.id)), [adminList]);
   const canAct =
     !deadline ||
     canWriteDeadline(deadline, { me, isSuperadmin, adminGroupIDs });
@@ -321,7 +325,9 @@ export function DeadlineSheet({
         </Select>
         {writable.length === 0 ? (
           <div className="dl-hint">{strings.sheet.noGroups}</div>
-        ) : null}
+        ) : (
+          <div className="dl-hint">{strings.sheet.groupModerationHint}</div>
+        )}
 
         <div className="dl-due-row">
           <Input

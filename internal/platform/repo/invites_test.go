@@ -140,6 +140,19 @@ func TestInvitesIncrementUsedConditional(t *testing.T) {
 		}
 	}
 
+	// Бессрочный инвайт (expires_at NULL): тратится, пока не отозван/не
+	// исчерпан — «no expiration» из инвайт-формы.
+	permanent := &domain.Invite{
+		GroupID: g.ID, Code: "PRMN2345", Role: domain.RoleMember,
+		MaxUses: 3, CreatedBy: owner,
+	}
+	if err := invites.Create(ctx, permanent); err != nil {
+		t.Fatalf("Create permanent invite: %v", err)
+	}
+	if err := invites.IncrementUsed(ctx, permanent.ID); err != nil {
+		t.Fatalf("IncrementUsed permanent: %v", err)
+	}
+
 	// Несуществующий id → ErrConflict (нулевое число строк неотличимо от условий).
 	if err := invites.IncrementUsed(ctx, 999999); !errors.Is(err, domain.ErrConflict) {
 		t.Errorf("IncrementUsed missing = %v, want ErrConflict", err)

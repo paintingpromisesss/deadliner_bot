@@ -11,7 +11,6 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/sauron/deadliner/internal/app/auth"
-	"github.com/sauron/deadliner/internal/app/claims"
 	"github.com/sauron/deadliner/internal/app/deadlines"
 	"github.com/sauron/deadliner/internal/app/groups"
 	"github.com/sauron/deadliner/internal/app/notifications"
@@ -26,7 +25,6 @@ type Deps struct {
 	Auth          *auth.Service
 	Groups        *groups.Service
 	Deadlines     *deadlines.Service
-	Claims        *claims.Service
 	Notifications *notifications.Service
 	Users         domain.UserRepo
 	Sessions      domain.SessionRepo
@@ -86,6 +84,7 @@ func New(d Deps) chi.Router {
 				r.Delete("/groups/{id}/members/{user_id}", groupsCtl.KickMember)
 				r.Delete("/groups/{id}/me", groupsCtl.Leave)
 				r.Post("/invites/redeem", groupsCtl.RedeemInvite)
+				r.Get("/invites/{code}", groupsCtl.InvitePreview)
 			}
 
 			if d.Deadlines != nil {
@@ -95,15 +94,11 @@ func New(d Deps) chi.Router {
 				r.Patch("/deadlines/{id}", deadlinesCtl.Update)
 				r.Delete("/deadlines/{id}", deadlinesCtl.Delete)
 				r.Post("/deadlines/{id}/complete", deadlinesCtl.Complete)
+				r.Post("/deadlines/{id}/approve", deadlinesCtl.Approve)
+				r.Post("/deadlines/{id}/reject", deadlinesCtl.Reject)
 				r.Get("/groups/{id}/deadlines", deadlinesCtl.ListGroup)
+				r.Get("/groups/{id}/deadlines/pending", deadlinesCtl.ListPending)
 				r.Get("/me/deadlines", deadlinesCtl.ListMine)
-			}
-
-			if d.Claims != nil {
-				claimsCtl := newClaimsController(d.Claims)
-				r.Post("/groups/{id}/claim/start", claimsCtl.Start)
-				r.Post("/groups/{id}/claim/confirm", claimsCtl.Confirm)
-				r.Post("/groups/{id}/claim/revoke", claimsCtl.Revoke)
 			}
 
 			if d.Notifications != nil {

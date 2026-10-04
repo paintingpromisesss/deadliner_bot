@@ -1,6 +1,6 @@
 // Package groups — use cases групп (спека §3, §5.2, §6.4): создание с
 // нормализацией и валидацией слага, антиспам-лимиты (3/сутки, 5/неделю),
-// поиск, membership-операции и инвайт-коды. Claim — отдельная задача (Task 10).
+// поиск, membership-операции и инвайт-коды.
 package groups
 
 import (
@@ -35,6 +35,12 @@ var (
 	ErrNotMember = errors.New("actor is not a member of the group")
 	// ErrBindingNotFound — у чата нет привязки (/unbind нечего снимать).
 	ErrBindingNotFound = errors.New("chat is not bound to any group")
+	// ErrNoBinding — у группы нет привязанного чата: инвайт публиковать
+	// некуда (чекбокс «Опубликовать в чат» недоступен до /bind_group).
+	ErrNoBinding = errors.New("group has no bound chat")
+	// ErrPublishFailed — инвайт создан, но сообщение в чат не доставлено
+	// (бот кикнут/нет прав/лимит Telegram).
+	ErrPublishFailed = errors.New("invite publish failed")
 )
 
 // Config — лимиты и TTL из env (спека §8).
@@ -71,9 +77,12 @@ type Service struct {
 	notifier UserNotifier
 	// users — адресаты жалоб (ListSuperadmins). nil отключает /report_slug.
 	users domain.UserRepo
-	cfg   Config
-	clock domain.Clock
-	log   *slog.Logger
+	// invitePublisher — публикация инвайтов в чат группы. nil → CreateInvite
+	// с publish=true отвечает ошибкой (нет транспорта).
+	invitePublisher ChatPublisher
+	cfg             Config
+	clock           domain.Clock
+	log             *slog.Logger
 }
 
 func NewService(
@@ -104,6 +113,16 @@ type UserNotifier interface {
 	SendToUser(ctx context.Context, userID int64, text string) error
 }
 
+// ChatPublisher — публикация инвайт-сообщения в привязанный чат группы
+// (кнопка «Опубликовать в чат» при создании инвайта). Реализуется
+// telegram.InvitePublisher; интерфейс объявлен здесь, чтобы app не зависел
+// от platform.
+type ChatPublisher interface {
+	// inviteCode — plaintext-код инвайта: нужен для Main App direct-link
+	// (startapp-параметр) на кнопке сообщения.
+	PublishInvite(ctx context.Context, chatID, threadID int64, text, inviteCode string) error
+}
+
 // Options — необязательные зависимости сервиса: часть сборок (unit-тесты use
 // case) обходится без провайдера слага и без нотификатора, поэтому они не
 // входят в конструктор. serve задаёт обе.
@@ -117,6 +136,9 @@ type Options struct {
 	// Users — источник адресатов жалобы (ListSuperadmins). nil → жалоба
 	// недоступна.
 	Users domain.UserRepo
+	// InvitePublisher — публикация инвайт-сообщений в чат группы. nil →
+	// CreateInvite отвергает publish=true (нет транспорта).
+	InvitePublisher ChatPublisher
 }
 
 // WithOptions подключает необязательные зависимости. Отдельный шаг сборки, а
@@ -126,6 +148,7 @@ func (s *Service) WithOptions(o Options) *Service {
 	s.slugs = o.Slugs
 	s.notifier = o.Notifier
 	s.users = o.Users
+	s.invitePublisher = o.InvitePublisher
 	return s
 }
 
@@ -164,9 +187,10 @@ type MyGroup struct {
 	Role  domain.Role
 }
 
-// Create создаёт pending-группу (спека §3.1: создатель НЕ админ — роль
-// выдаётся через claim) с антиспам-лимитами §3.3. Порядок: нормализация →
-// валидация слага → лимиты → группа → membership создателя (member) → аудит.
+// Create создаёт pending-группу с антиспам-лимитами §3.3. Создатель
+// становится АДМИНОМ группы сразу (клейм-коды удалены): активация группы —
+// привязка чата (/bind_group). Порядок: нормализация → валидация слага →
+// лимиты → группа → membership создателя (admin) → аудит.
 //
 // Валидация идёт через domain.SlugProvider (спека §2.2): SLUG_REGEX из
 // конфига отвечает за charset, провайдер добавляет правила Deadliner
@@ -205,7 +229,7 @@ func (s *Service) Create(ctx context.Context, actor *domain.User, slugRaw, title
 		return nil, err // ErrConflict (слаг занят) проходит насквозь
 	}
 
-	m := &domain.Membership{GroupID: g.ID, UserID: actor.ID, Role: domain.RoleMember}
+	m := &domain.Membership{GroupID: g.ID, UserID: actor.ID, Role: domain.RoleAdmin}
 	if err := s.members.Upsert(ctx, m); err != nil {
 		return nil, fmt.Errorf("groups: creator membership: %w", err)
 	}
@@ -505,31 +529,64 @@ func (s *Service) ListMembers(ctx context.Context, actor *domain.User, groupID i
 	return s.members.ListByGroupDetailed(ctx, groupID)
 }
 
-// maxInviteTTL — верхняя граница TTL инвайта (90 дней).
+// maxInviteTTL — верхняя граница TTL инвайта (90 дней). TTL ≤ 0 — бессрочный
+// инвайт (expires_at IS NULL: действует, пока не отозван и не исчерпан лимит).
 const maxInviteTTL = 90 * 24 * time.Hour
 
 // CreateInvite генерирует инвайт-код (admin). maxUses: -1 = без лимита,
-// ≥1 — число использований; 0 и < -1 — ErrValidation. ttl ≤ 0 → дефолт из
-// конфига; ttl > 90 дней — ErrValidation. Возвращает plaintext-код
-// (показывается один раз) и сохранённый инвайт с хэшем.
-func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID int64, role domain.Role, maxUses int, ttl time.Duration) (string, *domain.Invite, error) {
+// ≥1 — число использований; 0 и < -1 — ErrValidation. ttl == 0 → бессрочный
+// (expires_at IS NULL); ttl < 0 → дефолт из конфига; ttl > 90 дней —
+// ErrValidation. publish=true отправляет сообщение в привязанный чат группы
+// (без чата — ErrConflict с точной подсказкой; публикация — best-effort
+// ПОСЛЕ сохранения кода: сбой отправки не отменяет инвайт, но возвращает
+// ошибку, чтобы вызывающий не считал чат оповещённым). Возвращает
+// plaintext-код (показывается один раз) и сохранённый инвайт с хэшем.
+func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID int64, role domain.Role, maxUses int, ttl time.Duration, publish bool) (string, *domain.Invite, error) {
 	if role != domain.RoleAdmin && role != domain.RoleMember {
 		return "", nil, &domain.ValidationError{Field: "role", Msg: "must be admin or member"}
-	}
-	if err := s.requireAdmin(ctx, actor, groupID); err != nil {
-		return "", nil, err
 	}
 	if maxUses == 0 || maxUses < -1 {
 		return "", nil, &domain.ValidationError{Field: "max_uses", Msg: "must be -1 (unlimited) or >= 1"}
 	}
-	if ttl < 0 || ttl > maxInviteTTL {
+	if ttl > maxInviteTTL {
 		return "", nil, &domain.ValidationError{Field: "ttl_hours", Msg: "must be within 0..2160 hours"}
 	}
-	if ttl == 0 {
+
+	var binding *domain.ChatBinding
+	if publish {
+		if err := s.requireAdmin(ctx, actor, groupID); err != nil {
+			return "", nil, err
+		}
+		b, err := s.bindings.GetByGroup(ctx, groupID)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				return "", nil, fmt.Errorf("%w: %w", domain.ErrConflict, ErrNoBinding)
+			}
+			return "", nil, err
+		}
+		binding = b
+	} else if err := s.requireAdmin(ctx, actor, groupID); err != nil {
+		return "", nil, err
+	}
+
+	// ttl < 0 — «дефолт из конфига» для обратной совместимости вызовов
+	// без явного TTL; ttl == 0 — бессрочный инвайт.
+	var expiresAt time.Time
+	switch {
+	case ttl < 0:
 		ttl = s.cfg.InviteDefaultTTL
+		expiresAt = s.clock.Now().Add(ttl)
+	case ttl == 0:
+		expiresAt = time.Time{} // NULL в БД
+	default:
+		expiresAt = s.clock.Now().Add(ttl)
 	}
 
 	code, err := generateInviteCode()
+	if err != nil {
+		return "", nil, err
+	}
+	g, err := s.groups.GetByID(ctx, groupID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -539,22 +596,41 @@ func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID 
 		Role:      role,
 		MaxUses:   maxUses,
 		CreatedBy: actor.ID,
-		ExpiresAt: s.clock.Now().Add(ttl),
+		ExpiresAt: expiresAt,
 	}
 	if err := s.invites.Create(ctx, inv); err != nil {
 		return "", nil, err
 	}
 	s.writeAudit(ctx, actor.ID, "invite.create", "group", groupID,
 		map[string]any{"invite_id": inv.ID, "role": string(role), "max_uses": maxUses})
+
+	if publish && binding != nil {
+		var threadID int64
+		if binding.MessageThreadID != nil {
+			threadID = *binding.MessageThreadID
+		}
+		text := i18n.T("invite.chat_message", i18n.EscapeHTML(g.Title))
+		if err := s.invitePublisher.PublishInvite(ctx, binding.ChatID, threadID, text, code); err != nil {
+			// Код уже сохранён и действующ: сбой публикации не отменяет его,
+			// но вызывающий должен знать, что чат не оповещён.
+			s.log.Warn("groups: invite publish failed",
+				slog.Int64("group_id", groupID),
+				slog.Int64("chat_id", binding.ChatID),
+				slog.String("error", err.Error()))
+			return code, inv, fmt.Errorf("%w: %w: %w", domain.ErrConflict, ErrPublishFailed, err)
+		}
+	}
 	return code, inv, nil
 }
 
 // RedeemInvite — вступление по коду. Отозванный/истёкший код неотличим от
 // несуществующего (ErrNotFound — не раскрываем существование); исчерпанный
 // max_uses → ErrConflict; повторный redeem действующего участника идемпотентен
-// (без инкремента used_count). Расход использования — атомарный
-// IncrementUsed (условие max_uses в SQL), поэтому параллельные redeem не
-// превышают лимит.
+// (без инкремента used_count). Бессрочный код (expires_at NULL) истекает
+// только по отзыву/лимиту. Расход использования — атомарный IncrementUsed
+// (условие max_uses в SQL), поэтому параллельные redeem не превышают лимит.
+// Списание строго по факту успешной привязки: «Отмена»/закрытие окна
+// лимит не тратит.
 func (s *Service) RedeemInvite(ctx context.Context, actor *domain.User, code string) (*domain.Group, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	inv, err := s.invites.GetByCode(ctx, HashInviteCode(code))
@@ -562,7 +638,7 @@ func (s *Service) RedeemInvite(ctx context.Context, actor *domain.User, code str
 		return nil, err
 	}
 	now := s.clock.Now()
-	if inv.RevokedAt != nil || !inv.ExpiresAt.After(now) {
+	if inv.RevokedAt != nil || !inv.ExpiresAtValid(now) {
 		return nil, fmt.Errorf("%w: invite expired or revoked", domain.ErrNotFound)
 	}
 
@@ -598,6 +674,27 @@ func (s *Service) RedeemInvite(ctx context.Context, actor *domain.User, code str
 	return g, nil
 }
 
+// InvitePreview — данные экрана подтверждения «Вступить в группу?» при
+// открытии Mini App по startapp-параметру: название группы и её слаг, БЕЗ
+// расхода лимита (использование тратится только кнопкой «Вступить»).
+// Неизвестный/отозванный/истёкший код → ErrNotFound (без раскрытия деталей).
+func (s *Service) InvitePreview(ctx context.Context, code string) (*domain.Group, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	inv, err := s.invites.GetByCode(ctx, HashInviteCode(code))
+	if err != nil {
+		return nil, err
+	}
+	now := s.clock.Now()
+	if inv.RevokedAt != nil || !inv.ExpiresAtValid(now) {
+		return nil, fmt.Errorf("%w: invite expired or revoked", domain.ErrNotFound)
+	}
+	g, err := s.groups.GetByID(ctx, inv.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
 // RevokeInvite отзывает инвайт (admin). code — plaintext, как он был выдан.
 func (s *Service) RevokeInvite(ctx context.Context, actor *domain.User, groupID int64, code string) error {
 	if err := s.requireAdmin(ctx, actor, groupID); err != nil {
@@ -619,7 +716,9 @@ func (s *Service) RevokeInvite(ctx context.Context, actor *domain.User, groupID 
 // через Telegram API (ChatAdminChecker) и сюда не входит: use case не знает
 // про Telegram.
 //
-// Группа НЕ активируется: статус переводит claim (спека §3.1).
+// Привязка чата АКТИВИРУЕТ pending-группу: создатель уже админ (роль выдаётся
+// при Create), клейм-кодов больше нет. Повторная привязка активной группы
+// статус не меняет.
 func (s *Service) BindChat(ctx context.Context, actor *domain.User, chatID int64, threadID *int64, slug, chatTitle string) (*domain.Group, error) {
 	g, err := s.groups.GetBySlugNorm(ctx, domain.Normalize(slug))
 	if err != nil {
@@ -642,6 +741,13 @@ func (s *Service) BindChat(ctx context.Context, actor *domain.User, chatID int64
 			return nil, s.classifyBindConflict(ctx, g.ID, chatID, threadID)
 		}
 		return nil, err
+	}
+
+	if g.Status == domain.GroupStatusPending {
+		if err := s.groups.SetStatus(ctx, g.ID, domain.GroupStatusActive); err != nil {
+			return nil, err
+		}
+		g.Status = domain.GroupStatusActive
 	}
 
 	s.writeAudit(ctx, actor.ID, "chat.bind", "group", g.ID,

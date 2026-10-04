@@ -4,9 +4,9 @@
 //
 // Проверяется ровно то, что не видно из юнит-тестов: стыки между слоями.
 // Сценарий повторяет путь пользователя целиком — вход по initData → создание
-// группы → привязка чата → claim (код в чат) → роль admin → групповой дедлайн
-// с кастомным напоминанием → отправка напоминания воркером (чат + дубли в ЛС)
-// → завершение дедлайна → cleanup не трогает живую группу.
+// группы (создатель — админ сразу) → привязка чата (группа active) →
+// групповой дедлайн с кастомным напоминанием → отправка напоминания воркером
+// (чат + дубли в ЛС) → завершение дедлайна → cleanup не трогает живую группу.
 package integration
 
 import (
@@ -22,7 +22,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,7 +36,6 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/sauron/deadliner/internal/app/auth"
-	"github.com/sauron/deadliner/internal/app/claims"
 	"github.com/sauron/deadliner/internal/app/deadlines"
 	"github.com/sauron/deadliner/internal/app/groups"
 	"github.com/sauron/deadliner/internal/app/moderation"
@@ -57,7 +55,7 @@ const (
 	testChatID   = int64(-1001234567890)
 	testSlug     = "ИКБО-33-21"
 
-	tgCreator = int64(1001) // создатель группы → админ через claim
+	tgCreator = int64(1001) // создатель группы → админ сразу (клейм-кодов нет)
 	tgMember  = int64(1002) // участник с включённым дублем в ЛС
 	tgQuiet   = int64(1003) // участник с выключенными уведомлениями
 
@@ -223,21 +221,6 @@ func (n *fakeNotifier) SendToUser(_ context.Context, userID int64, text string) 
 	return nil
 }
 
-// fakeClaimsNotifier — подмена claims.Notifier: код публикуется в чат и его
-// message_id возвращается вызывающему (в проде — telegram.ClaimsSender).
-type fakeClaimsNotifier struct {
-	rec *recorder
-}
-
-func (n *fakeClaimsNotifier) SendToChat(_ context.Context, chatID, threadID int64, text string) (int64, error) {
-	return n.rec.addChat(chatID, threadPtr(threadID), recorded{text: text, button: "chat"}), nil
-}
-
-func (n *fakeClaimsNotifier) SendToUser(_ context.Context, userID int64, text string) error {
-	n.rec.addUser(userID, recorded{text: text})
-	return nil
-}
-
 func threadPtr(id int64) *int64 {
 	if id == 0 {
 		return nil
@@ -285,7 +268,6 @@ type env struct {
 
 	users         domain.UserRepo
 	groups        *groups.Service
-	claims        *claims.Service
 	deadlines     *deadlines.Service
 	notifications *notifications.Service
 	moderation    *moderation.Service
@@ -303,7 +285,7 @@ func newEnv(t *testing.T) *env {
 
 	if _, err := testPool.Exec(ctx, `TRUNCATE
 		users, groups, chat_bindings, group_memberships, deadlines, reminders,
-		invites, claim_codes, user_action_counters, chat_action_counters, sessions,
+		invites, user_action_counters, chat_action_counters, sessions,
 		outbox_messages, audit_log CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -318,10 +300,8 @@ func newEnv(t *testing.T) *env {
 	members := repo.NewMemberships(testPool)
 	deadlinesRepo := repo.NewDeadlines(testPool)
 	reminders := repo.NewReminders(testPool)
-	claimsRepo := repo.NewClaims(testPool)
 	invites := repo.NewInvites(testPool)
 	counters := repo.NewCounters(testPool)
-	chatCounters := repo.NewChatCounters(testPool)
 	bindings := repo.NewBindings(testPool)
 	audit := repo.NewAudit(testPool)
 	maintenance := repo.NewMaintenance(testPool)
@@ -334,16 +314,7 @@ func newEnv(t *testing.T) *env {
 			InviteDefaultTTL: 7 * 24 * time.Hour,
 		}, clock, log)
 
-	claimsSvc := claims.NewService(groupsRepo, members, bindings, claimsRepo,
-		counters, chatCounters, users, audit, &fakeClaimsNotifier{rec: rec},
-		claims.Config{
-			CodeTTL:          10 * time.Minute,
-			RequestHourLimit: 3,
-			Cooldown:         time.Minute,
-			ConfirmFailLimit: 10,
-		}, clock, log)
-
-	deadlinesSvc := deadlines.NewService(deadlinesRepo, reminders, groupsRepo, members, audit, clock, log)
+	deadlinesSvc := deadlines.NewService(deadlinesRepo, reminders, groupsRepo, members, bindings, users, audit, clock, log)
 	notificationsSvc := notifications.NewService(users, members, groupsRepo)
 
 	moderationSvc := moderation.NewService(moderation.Deps{
@@ -366,7 +337,6 @@ func newEnv(t *testing.T) *env {
 		Auth:          authSvc,
 		Groups:        groupsSvc,
 		Deadlines:     deadlinesSvc,
-		Claims:        claimsSvc,
 		Notifications: notificationsSvc,
 		Users:         users,
 		Sessions:      sessions,
@@ -413,7 +383,7 @@ func newEnv(t *testing.T) *env {
 
 	return &env{
 		pool: testPool, clock: clock, rec: rec, log: log,
-		users: users, groups: groupsSvc, claims: claimsSvc,
+		users: users, groups: groupsSvc,
 		deadlines: deadlinesSvc, notifications: notificationsSvc,
 		moderation: moderationSvc, worker: worker, router: router,
 		handlers: handlers, adminChecker: adminChecker,
@@ -538,10 +508,6 @@ func reminderStatuses(t *testing.T, e *env, deadlineID int64) map[string][]strin
 	return out
 }
 
-// claimCodeRe — одноразовый код claim'а: ровно 6 цифр отдельным словом (в
-// тексте каталога других чисел с такой длиной нет).
-var claimCodeRe = regexp.MustCompile(`\b\d{6}\b`)
-
 // firstChatText — текст первого сообщения, ушедшего в чат.
 func firstChatText(t *testing.T, recs []recorded) string {
 	t.Helper()
@@ -632,44 +598,32 @@ func TestE2E_DeadlineLifecycle(t *testing.T) {
 			got, fmt.Sprintf("%d/%d", testChatID, testBotUserID))
 	}
 
-	// --- claim: код публикуется в чат ---
+	// --- создатель уже админ, группа активна привязкой ---
 	// Считаем сообщения ПОСЛЕ привязки: ответ /bind_group в чате уже есть, и
 	// привязка к его количеству сделала бы тест хрупким.
 	afterBind := len(e.rec.inChat(testChatID))
 
-	t.Log(step, "4: claim start — код уходит в чат")
-	resp = doJSON(e.router, http.MethodPost,
-		fmt.Sprintf("/api/v1/groups/%d/claim/start", groupID), creatorToken, nil)
+	t.Log(step, "4: детали группы — создатель admin, статус active")
+	resp = doJSON(e.router, http.MethodGet,
+		fmt.Sprintf("/api/v1/groups/%d", groupID), creatorToken, nil)
 	if resp.Code != http.StatusOK {
-		t.Fatalf("POST claim/start = %d, want 200; body: %s", resp.Code, resp.Body)
+		t.Fatalf("GET group = %d, want 200; body: %s", resp.Code, resp.Body)
 	}
-	chatMsgs := e.rec.inChat(testChatID)
-	if len(chatMsgs) != afterBind+1 {
-		t.Fatalf("chat messages after claim start = %d, want %d (only the code message added)",
-			len(chatMsgs), afterBind+1)
-	}
-	codeMsg := chatMsgs[len(chatMsgs)-1]
-	code := claimCodeRe.FindString(codeMsg.text)
-	if code == "" {
-		t.Fatalf("no 6-digit claim code in chat message: %q", codeMsg.text)
-	}
-
-	t.Log(step, "5: claim confirm — роль admin, группа active")
-	resp = doJSON(e.router, http.MethodPost,
-		fmt.Sprintf("/api/v1/groups/%d/claim/confirm", groupID), creatorToken,
-		map[string]string{"code": code})
-	if resp.Code != http.StatusOK {
-		t.Fatalf("POST claim/confirm = %d, want 200; body: %s", resp.Code, resp.Body)
-	}
-	var confirmed struct {
+	var groupView struct {
 		Role   string `json:"role"`
 		Status string `json:"status"`
+		Group  struct {
+			Status string `json:"status"`
+		} `json:"group"`
 	}
-	if err := json.Unmarshal(resp.Body.Bytes(), &confirmed); err != nil {
-		t.Fatalf("decode confirm: %v (%s)", err, resp.Body)
+	if err := json.Unmarshal(resp.Body.Bytes(), &groupView); err != nil {
+		t.Fatalf("decode group view: %v (%s)", err, resp.Body)
 	}
-	if confirmed.Role != string(domain.RoleAdmin) || confirmed.Status != string(domain.GroupStatusActive) {
-		t.Fatalf("confirm = %+v, want role=admin status=active", confirmed)
+	if groupView.Role != string(domain.RoleAdmin) {
+		t.Fatalf("creator role = %q, want admin (роль выдаётся при Create)", groupView.Role)
+	}
+	if groupView.Group.Status != string(domain.GroupStatusActive) {
+		t.Fatalf("group status = %q, want active (привязка чата активирует)", groupView.Group.Status)
 	}
 
 	// --- участники через инвайт ---
@@ -756,10 +710,10 @@ func TestE2E_DeadlineLifecycle(t *testing.T) {
 		t.Fatalf("worker.Tick #1: %v", err)
 	}
 
-	chatMsgs = e.rec.inChat(testChatID)
-	if len(chatMsgs) != afterBind+2 { // ответ /bind_group + код claim'а + напоминание
-		t.Fatalf("chat messages = %d, want %d (bind reply + claim code + reminder)",
-			len(chatMsgs), afterBind+2)
+	chatMsgs := e.rec.inChat(testChatID)
+	if len(chatMsgs) != afterBind+1 { // ответ /bind_group + напоминание
+		t.Fatalf("chat messages = %d, want %d (bind reply + reminder)",
+			len(chatMsgs), afterBind+1)
 	}
 	text := lastChatText(t, chatMsgs)
 	// Текст собирается из i18n-шаблона: проверяем и разметку, и экранирование.

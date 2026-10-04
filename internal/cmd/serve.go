@@ -164,7 +164,7 @@ type serveGraph struct {
 // клиент Telegram создаётся с WithSkipGetMe, id бота берётся из самого токена.
 //
 // Порядок сборки задан зависимостями: транспорт (BotSender) нужен нотификатору,
-// нотификатор — claim-сервису (код публикуется в чат), а хендлеры бота — тем же
+// нотификатор — сервису инвайтов (публикация в чат), а хендлеры бота — тем же
 // сервисам, что и REST API. Поэтому клиент и диспетчер собираются двумя шагами:
 // NewClient → сервисы → NewBot с готовым Deps.API.
 func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serveGraph, error) {
@@ -187,7 +187,7 @@ func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serv
 	}
 
 	// Notifier поверх того же транспорта: один лимитер (§7.4) на все исходящие
-	// сообщения процесса — и напоминания воркера, и код claim'а.
+	// сообщения процесса — и напоминания воркера, и публикации инвайтов.
 	notifier := telegram.New(client.Sender(), cfg.Bot.RateGlobal, cfg.Bot.RatePerChat).WithLogger(log)
 
 	groupsSvc := newGroupsService(r, cfg, clock, log)
@@ -198,12 +198,20 @@ func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serv
 	// Жалоба на слаг (/report_slug, спека §3.3) ходит в ЛС супер-админам через
 	// тот же нотификатор, что и напоминания: один лимитер на процесс (§7.4).
 	groupsSvc.WithOptions(groups.Options{Slugs: slugProvider, Notifier: notifier, Users: r.Users})
+	// Инвайты с чекбоксом «Опубликовать в чат» уходят в привязанный чат
+	// группы с кнопкой на Main App direct-link (t.me/<bot>/app?startapp=<код>):
+	// Telegram открывает её нативно как Mini App, без внешнего браузера.
+	// Без BOT_USERNAME кнопки не будет — предупреждаем оператора на старте.
+	if cfg.Bot.Username == "" {
+		log.Warn("serve: BOT_USERNAME is empty: invite chat publish will send text without the Main App button")
+	}
+	groupsSvc.WithOptions(groups.Options{InvitePublisher: telegram.NewInvitePublisher(notifier, cfg.Bot.Username)})
 	moderationSvc := newModerationService(r, cfg, clock, log)
 	authSvc := newAuthService(r, cfg, clock)
 	deadlinesSvc := newDeadlinesService(r, clock, log)
+	// Модерация дедлайнов: уведомления админам и announce в чат группы.
+	deadlinesSvc.WithNotifier(notifier)
 	notificationsSvc := newNotificationsService(r)
-	claimsSvc := newClaimsService(r, cfg,
-		telegram.NewClaimsSender(notifier, cfg.App.PublicURL), clock, log)
 
 	bot, err := telegram.NewBot(botCfg, telegram.Deps{
 		Users:      r.Users,
@@ -221,7 +229,6 @@ func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serv
 		Auth:          authSvc,
 		Groups:        groupsSvc,
 		Deadlines:     deadlinesSvc,
-		Claims:        claimsSvc,
 		Notifications: notificationsSvc,
 		Users:         r.Users,
 		Sessions:      r.Sessions,

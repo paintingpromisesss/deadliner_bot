@@ -1,6 +1,6 @@
-// Типизированный слой API групп, участников, инвайтов и claim-флоу
-// (спека §5.2). Поля — ровно те, что отдают контроллеры backend
-// (internal/platform/httpapi/groups_controller.go, claims_controller.go).
+// Типизированный слой API групп, участников и инвайтов (спека §5.2). Поля —
+// ровно те, что отдают контроллеры backend
+// (internal/platform/httpapi/groups_controller.go).
 import { apiFetch, type ApiError } from './api';
 import type { GroupSummary } from './deadlines';
 
@@ -52,31 +52,21 @@ export interface Member {
 /** Ответ POST /groups/{id}/invites → 201 {code, expires_at}; код — один раз. */
 export interface InviteCreated {
   code: string;
-  /** RFC3339, UTC. */
-  expires_at: string;
+  /** RFC3339, UTC; null — бессрочный инвайт (no expiration). */
+  expires_at: string | null;
+  /** true — приглашение опубликовано в чат группы. */
+  published?: boolean;
 }
 
-/** Ответ POST /groups/{id}/claim/start → 200 {expires_at, chat_id}. */
-export interface ClaimStarted {
-  /** RFC3339, UTC — момент, когда код в чате перестанет приниматься. */
-  expires_at: string;
-  chat_id: number;
-}
-
-/** Ответ POST /groups/{id}/claim/confirm → 200 {role:"admin", group, status}. */
-export interface ClaimConfirmed {
-  role: 'admin';
-  group: Group;
-  status: string;
-}
-
-/** Тело создания инвайта: max_uses -1 — без лимита, ttl_hours 0 — дефолт. */
+/** Тело создания инвайта: max_uses -1 — без лимита, ttl_hours -1 — бессрочный. */
 export interface InviteInput {
   role: 'admin' | 'member';
   /** -1 — без лимита; ≥1 — число использований. */
   max_uses: number;
-  /** 0 — дефолт конфига (7 дней); максимум 2160 (90 дней). */
+  /** -1 — бессрочный (no expiration); ≥1 — часы; максимум 2160 (90 дней). */
   ttl_hours: number;
+  /** true — бот опубликует приглашение в привязанный чат группы. */
+  publish_to_chat?: boolean;
 }
 
 /** GET /groups (без q) → мои группы; GET /groups?q= → подсказки слагов. */
@@ -144,22 +134,10 @@ export function redeemInvite(code: string): Promise<{ group: Group }> {
   return apiFetch<{ group: Group }>('/invites/redeem', { method: 'POST', body: { code } });
 }
 
-/** POST /groups/{id}/claim/start → 200 {expires_at, chat_id}. */
-export function startClaim(groupID: number): Promise<ClaimStarted> {
-  return apiFetch<ClaimStarted>(`/groups/${groupID}/claim/start`, { method: 'POST' });
-}
-
-/** POST /groups/{id}/claim/confirm {code} → 200 {role:"admin", …}. */
-export function confirmClaim(groupID: number, code: string): Promise<ClaimConfirmed> {
-  return apiFetch<ClaimConfirmed>(`/groups/${groupID}/claim/confirm`, {
-    method: 'POST',
-    body: { code },
-  });
-}
-
-/** POST /groups/{id}/claim/revoke → 204 (гасит активный код; только admin). */
-export function revokeClaim(groupID: number): Promise<void> {
-  return apiFetch<void>(`/groups/${groupID}/claim/revoke`, { method: 'POST' });
+/** GET /invites/{code} → {group}: превью для экрана «Вступить в группу?».
+ * Лимит использования не расходуется. */
+export function fetchInvitePreview(code: string): Promise<{ group: Group }> {
+  return apiFetch<{ group: Group }>(`/invites/${encodeURIComponent(code)}`);
 }
 
 /** Настройка одной группы: effective-значение + признак переопределения. */

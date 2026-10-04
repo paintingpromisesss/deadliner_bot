@@ -95,16 +95,13 @@ export function mutationErrorMessage(err: unknown): string {
   return strings.groups.errGroupGeneric;
 }
 
-/** Текст ошибки claim-флоу по коду/статусу ответа (спека §3.1). */
-export function claimErrorMessage(err: unknown): string {
+/** Текст ошибки инвайт-публикации (чекбокс «Опубликовать в чат»). */
+export function invitePublishErrorMessage(err: unknown): string {
   const code = errorCode(err);
   const status = errorStatus(err);
-  if (code === 'no_chat_binding') return strings.groups.errClaimNoBinding;
-  if (code === 'claim_code_send_failed') return strings.groups.errClaimSendFailed;
-  if (code === 'claim_bad_code') return strings.groups.errClaimBadCode;
-  if (code === 'claim_code_not_found' || status === 404) return strings.groups.errClaimCodeExpired;
+  if (code === 'no_chat_binding') return strings.groups.invitePublishNoBinding;
+  if (code === 'invite_publish_failed') return strings.groups.errInvitePublishFailed;
   if (status === 429) return rateLimitMessage(errorRetryAfterMs(err));
-  if (code === 'validation' || status === 400) return strings.groups.errClaimFormat;
   if (code === 'last_admin') return strings.groups.errLastAdmin;
   if (err instanceof Error && err.message) return err.message;
   return strings.common.actionFailed;

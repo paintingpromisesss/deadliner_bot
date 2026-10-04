@@ -328,6 +328,7 @@ export function DeadlineSheet({
             type="date"
             header={strings.sheet.fieldDate}
             value={form.date}
+            placeholder={strings.sheet.datePlaceholder}
             status={showErrors && validation.errors.due ? 'error' : 'default'}
             onChange={(e) => {
               setTouched(true);
@@ -432,6 +433,7 @@ export function DeadlineSheet({
                       type="date"
                       header={strings.sheet.fieldDate}
                       value={item.date}
+                      placeholder={strings.sheet.datePlaceholder}
                       onChange={(e) => updateCustom(item.id, { date: e.target.value })}
                     />
                     <Input

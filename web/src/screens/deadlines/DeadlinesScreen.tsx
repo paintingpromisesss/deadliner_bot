@@ -139,11 +139,6 @@ export function DeadlinesScreen() {
             <Placeholder
               header={strings.deadlines.emptyAll}
               description={strings.deadlines.emptyAllHint}
-              action={
-                <Button size="m" onClick={openCreate}>
-                  {strings.deadlines.addButton}
-                </Button>
-              }
             />
           ) : (
             <>

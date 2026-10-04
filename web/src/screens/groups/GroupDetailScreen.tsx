@@ -46,6 +46,32 @@ function statusText(status: string): string {
   }
 }
 
+function IconCopy({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function IconClose({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+function IconCheck({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
 interface GroupDetailScreenProps {
   groupID: number;
 }
@@ -65,6 +91,9 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
   const pending = usePendingGroupDeadlines(groupID, isAdmin);
   // Сохранённые инвайты группы (админ).
   const invites = useGroupInvites(groupID, isAdmin);
+  const activeInvites = (invites.data?.invites ?? []).filter(
+    (inv) => inv.status !== 'revoked' && !inv.revoked_at,
+  );
 
   const leave = useLeaveGroup();
   const removeGroup = useDeleteGroup();
@@ -86,12 +115,14 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
   const [moderationTarget, setModerationTarget] = useState<Deadline | null>(null);
   const [moderationAction, setModerationAction] = useState<'approve' | 'reject'>('approve');
   const [notice, setNotice] = useState<string | null>(null);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
   // Смена группы (переход из списка в другую) — чистое состояние.
   useEffect(() => {
     setActionError(null);
     setMenuFor(null);
     setNotice(null);
+    setCopiedCode(null);
   }, [groupID]);
 
   const expiresAt = detail.data?.group.claim_expires_at ?? null;
@@ -265,8 +296,6 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
                 type="button"
                 className="dl-cell-button"
                 data-testid="open-invite"
-                multiline
-                subtitle={strings.groups.invitesHint}
                 onClick={() => {
                   hapticImpact('light');
                   setInviteOpen(true);
@@ -278,44 +307,46 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
                 <div className="dl-centered">
                   <Spinner size="s" />
                 </div>
-              ) : (invites.data?.invites ?? []).length === 0 ? (
-                <Cell multiline data-testid="invites-empty">
+              ) : activeInvites.length === 0 ? (
+                <div className="dl-cell-empty" data-testid="invites-empty">
                   {strings.groups.inviteEmpty}
-                </Cell>
+                </div>
               ) : (
-                (invites.data?.invites ?? []).map((inv) => (
+                activeInvites.map((inv) => (
                   <Cell
                     key={inv.id}
                     multiline
                     data-testid={`group-invite-${inv.code}`}
                     subtitle={
                       `${inv.role === 'admin' ? strings.groups.inviteRoleAdmin : strings.groups.inviteRoleMember} · ` +
-                      `${inv.status === 'active' ? strings.groups.inviteStatusActive : inv.status === 'expired' ? strings.groups.inviteStatusExpired : inv.status === 'revoked' ? strings.groups.inviteStatusRevoked : strings.groups.inviteStatusExhausted} · ` +
+                      `${inv.status === 'active' ? strings.groups.inviteStatusActive : inv.status === 'expired' ? strings.groups.inviteStatusExpired : strings.groups.inviteStatusExhausted} · ` +
                       `${inv.max_uses === -1 ? strings.groups.inviteUsesUnlimited : tpl(strings.groups.inviteUsesRemaining, Math.max(0, inv.max_uses - inv.used_count), inv.max_uses)} · ` +
                       `${inv.expires_at ? tpl(strings.groups.inviteExpiresAt, formatDue(inv.expires_at, tz)) : strings.groups.inviteExpiresNever}`
                     }
                     after={
-                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                         <button
                           type="button"
-                          className="dl-action"
-                          aria-label={strings.groups.inviteCopy}
+                          className={`dl-action dl-action--icon ${copiedCode === inv.code ? 'dl-action--copied' : ''}`}
+                          aria-label={copiedCode === inv.code ? strings.groups.inviteCopied : strings.groups.inviteCopy}
                           data-testid={`copy-invite-${inv.code}`}
                           onClick={async () => {
                             hapticImpact('light');
                             try {
                               await navigator.clipboard.writeText(inv.code);
-                              setNotice(strings.groups.inviteCopied);
-                              setTimeout(() => setNotice(null), 2000);
+                              setCopiedCode(inv.code);
+                              setTimeout(() => {
+                                setCopiedCode((cur) => (cur === inv.code ? null : cur));
+                              }, 2000);
                             } catch {}
                           }}
                         >
-                          📋
+                          {copiedCode === inv.code ? <IconCheck /> : <IconCopy />}
                         </button>
                         {inv.status === 'active' ? (
                           <button
                             type="button"
-                            className="dl-action dl-danger"
+                            className="dl-action dl-action--icon"
                             aria-label={strings.groups.inviteRevoke}
                             data-testid={`revoke-invite-${inv.code}`}
                             onClick={() => {
@@ -323,7 +354,7 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
                               setConfirmRevoke(true);
                             }}
                           >
-                            ✕
+                            <IconClose />
                           </button>
                         ) : null}
                       </div>

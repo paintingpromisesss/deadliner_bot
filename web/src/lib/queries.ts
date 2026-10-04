@@ -3,12 +3,15 @@
 // инвалидацию и haptic-отклик мутаций.
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  approveDeadline,
   completeDeadline,
   createDeadline,
   deleteDeadline,
   fetchDeadline,
   fetchDeadlines,
   fetchMyGroups,
+  fetchPendingGroupDeadlines,
+  rejectDeadline,
   updateDeadline,
   type Deadline,
   type DeadlineCreateInput,
@@ -16,11 +19,11 @@ import {
   type GroupSummary,
 } from './deadlines';
 import {
-  confirmClaim,
   createGroup,
   createInvite,
   deleteGroup,
   fetchGroupDetail,
+  fetchInvitePreview,
   fetchGroups,
   fetchMembers,
   fetchNotificationSettings,
@@ -28,10 +31,9 @@ import {
   leaveGroup,
   patchNotificationSettings,
   redeemInvite,
-  revokeClaim,
   revokeInvite,
   setMemberRole,
-  startClaim,
+  type Group,
   type InviteCreated,
   type InviteInput,
   type NotificationSettings,
@@ -89,6 +91,16 @@ export function useDeadlineDetail(id: number | null) {
   });
 }
 
+/** GET /groups/{id}/deadlines/pending — дедлайны на модерации (админ). */
+export function usePendingGroupDeadlines(groupID: number, enabled: boolean) {
+  return useQuery<Deadline[]>({
+    queryKey: [DEADLINES_KEY, 'pending', groupID],
+    queryFn: () => fetchPendingGroupDeadlines(groupID),
+    enabled,
+    staleTime: 10_000,
+  });
+}
+
 /** id группы → её слаг; нужен для подписи «М8О-401Б-23» в списках дедлайнов. */
 export function groupSlugMap(groups: GroupSummary[] | undefined): Map<number, string> {
   const map = new Map<number, string>();
@@ -96,7 +108,16 @@ export function groupSlugMap(groups: GroupSummary[] | undefined): Map<number, st
   return map;
 }
 
-/** Группы, в которых пользователь может писать групповые дедлайны (роль admin). */
+/**
+ * Группы, доступные в селекторе группового дедлайна: членство (любая роль).
+ * Дедлайн админа публикуется сразу (active), дедлайн участника уходит на
+ * модерацию (pending_approval) — backend решает по роли, селектор один.
+ */
+export function memberGroups(groups: GroupSummary[] | undefined): GroupSummary[] {
+  return (groups ?? []).filter((g) => g.role !== '' && g.group.status !== 'archived');
+}
+
+/** Группы, где пользователь — админ (действия модерации, инвайты и т.п.). */
 export function adminGroups(groups: GroupSummary[] | undefined): GroupSummary[] {
   return (groups ?? []).filter((g) => g.role === 'admin' && g.group.status !== 'archived');
 }
@@ -246,6 +267,17 @@ export function useRedeemInvite() {
   });
 }
 
+/** Превью инвайта (GET /invites/{code}): название группы для экрана
+ * подтверждения. Лимит использования НЕ расходуется. */
+export function useInvitePreview(code: string, enabled: boolean) {
+  return useQuery<{ group: Group }>({
+    queryKey: [GROUPS_KEY, 'invite-preview', code],
+    queryFn: () => fetchInvitePreview(code),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
 /** Выход из группы: DELETE /groups/{id}/me. */
 export function useLeaveGroup() {
   const invalidate = useInvalidateGroups();
@@ -324,21 +356,11 @@ export function useRevokeInvite() {
   });
 }
 
-/** Старт claim-флоу: бот постит код в привязанный чат. */
-export function useStartClaim() {
+/** Подтверждение админом группового дедлайна участника (pending_approval → active). */
+export function useApproveDeadline() {
+  const invalidate = useInvalidateDeadlines();
   return useMutation({
-    mutationFn: (groupID: number) => startClaim(groupID),
-    // Успех отмечает отдельный шаг (подтверждение): haptic на «код отправлен»
-    // дублировал бы отклик подтверждения — здесь только ошибка.
-    onError: () => hapticNotification('error'),
-  });
-}
-
-/** Подтверждение claim-кода: роль admin и (для pending) статус active. */
-export function useConfirmClaim() {
-  const invalidate = useInvalidateGroups();
-  return useMutation({
-    mutationFn: (vars: { groupID: number; code: string }) => confirmClaim(vars.groupID, vars.code),
+    mutationFn: (id: number) => approveDeadline(id),
     onSuccess: () => {
       hapticNotification('success');
       void invalidate();
@@ -347,11 +369,11 @@ export function useConfirmClaim() {
   });
 }
 
-/** Отзыв активного claim-кода (admin). */
-export function useRevokeClaim() {
-  const invalidate = useInvalidateGroups();
+/** Отклонение админом группового дедлайна участника (pending_approval → rejected). */
+export function useRejectDeadline() {
+  const invalidate = useInvalidateDeadlines();
   return useMutation({
-    mutationFn: (groupID: number) => revokeClaim(groupID),
+    mutationFn: (id: number) => rejectDeadline(id),
     onSuccess: () => {
       hapticNotification('success');
       void invalidate();

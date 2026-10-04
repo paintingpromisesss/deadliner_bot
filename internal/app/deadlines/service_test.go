@@ -352,9 +352,71 @@ type testEnv struct {
 	reminders *fakeReminderRepo
 	groups    *fakeGroupRepo
 	members   *fakeMembershipRepo
+	bindings  *fakeBindingRepo
+	users     *fakeUserRepo
 	audit     *fakeAuditRepo
 	clock     *fakeClock
 	logs      *bytes.Buffer
+}
+
+// fakeBindingRepo — привязки чатов (для announceGroup при апруве).
+type fakeBindingRepo struct {
+	byGroup map[int64]*domain.ChatBinding
+}
+
+func newFakeBindingRepo() *fakeBindingRepo {
+	return &fakeBindingRepo{byGroup: map[int64]*domain.ChatBinding{}}
+}
+
+func (r *fakeBindingRepo) Create(ctx context.Context, b *domain.ChatBinding) error { return nil }
+func (r *fakeBindingRepo) GetByGroup(ctx context.Context, groupID int64) (*domain.ChatBinding, error) {
+	b, ok := r.byGroup[groupID]
+	if !ok {
+		return nil, fmt.Errorf("%w: binding group=%d", domain.ErrNotFound, groupID)
+	}
+	cp := *b
+	return &cp, nil
+}
+func (r *fakeBindingRepo) GetByChat(ctx context.Context, chatID int64, threadID *int64) (*domain.ChatBinding, error) {
+	return nil, domain.ErrNotFound
+}
+func (r *fakeBindingRepo) Delete(ctx context.Context, groupID int64) error { return nil }
+
+// fakeUserRepo — ровно то, что читает notifyAdminsPending (GetByID).
+type fakeUserRepo struct {
+	users map[int64]*domain.User
+}
+
+func newFakeUserRepo() *fakeUserRepo {
+	return &fakeUserRepo{users: map[int64]*domain.User{}}
+}
+
+func (r *fakeUserRepo) GetByID(ctx context.Context, id int64) (*domain.User, error) {
+	u, ok := r.users[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: user id=%d", domain.ErrNotFound, id)
+	}
+	cp := *u
+	return &cp, nil
+}
+
+func (r *fakeUserRepo) GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error) {
+	return nil, domain.ErrNotFound
+}
+func (r *fakeUserRepo) UpsertByTelegram(ctx context.Context, u *domain.User) error { return nil }
+func (r *fakeUserRepo) UpdateSettings(ctx context.Context, id int64, tz string, dm bool) error {
+	return nil
+}
+func (r *fakeUserRepo) UpdateProfile(ctx context.Context, id int64, firstName string) error {
+	return nil
+}
+func (r *fakeUserRepo) SetBanned(ctx context.Context, id int64, banned bool) error { return nil }
+func (r *fakeUserRepo) SetSuperadmin(ctx context.Context, id int64, sa bool) error { return nil }
+func (r *fakeUserRepo) MarkBotBlocked(ctx context.Context, telegramID int64, b bool) error {
+	return nil
+}
+func (r *fakeUserRepo) ListSuperadmins(ctx context.Context) ([]domain.User, error) {
+	return nil, nil
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -372,11 +434,13 @@ func newTestEnv(t *testing.T) *testEnv {
 		reminders: rr,
 		groups:    newFakeGroupRepo(),
 		members:   newFakeMembershipRepo(),
+		bindings:  newFakeBindingRepo(),
+		users:     newFakeUserRepo(),
 		audit:     &fakeAuditRepo{},
 		clock:     &fakeClock{now: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)},
 		logs:      &bytes.Buffer{},
 	}
-	env.svc = NewService(dr, rr, env.groups, env.members, env.audit, env.clock,
+	env.svc = NewService(dr, rr, env.groups, env.members, env.bindings, env.users, env.audit, env.clock,
 		slog.New(slog.NewTextHandler(env.logs, &slog.HandlerOptions{Level: slog.LevelError})))
 	return env
 }
@@ -476,9 +540,16 @@ func TestCreatePermissionsMatrix(t *testing.T) {
 	due := env.clock.now.Add(72 * time.Hour)
 	in := CreateInput{GroupID: i64Ptr(10), Title: "T", DueAt: due}
 
-	// member не может создать групповой дедлайн.
-	if _, err := env.svc.Create(t.Context(), member, in); !errors.Is(err, domain.ErrForbidden) {
-		t.Errorf("member create = %v, want ErrForbidden", err)
+	// member создаёт групповой дедлайн в pending_approval (модерация).
+	view, err := env.svc.Create(t.Context(), member, in)
+	if err != nil {
+		t.Fatalf("member create = %v, want nil", err)
+	}
+	if view.Deadline.Status != domain.DeadlineStatusPendingApproval {
+		t.Errorf("member deadline status = %q, want pending_approval", view.Deadline.Status)
+	}
+	if len(view.Reminders) != 0 {
+		t.Errorf("member deadline reminders = %d, want 0 (напоминания — после апрува)", len(view.Reminders))
 	}
 	// не-участник тоже.
 	if _, err := env.svc.Create(t.Context(), outsider, in); !errors.Is(err, domain.ErrForbidden) {

@@ -129,6 +129,21 @@ export function completeDeadline(id: number): Promise<DeadlineView> {
   return apiFetch<DeadlineView>(`/deadlines/${id}/complete`, { method: 'POST' });
 }
 
+/** POST /deadlines/{id}/approve → active (модерация админом группы). */
+export function approveDeadline(id: number): Promise<DeadlineView> {
+  return apiFetch<DeadlineView>(`/deadlines/${id}/approve`, { method: 'POST' });
+}
+
+/** POST /deadlines/{id}/reject → rejected (модерация админом группы). */
+export function rejectDeadline(id: number): Promise<DeadlineView> {
+  return apiFetch<DeadlineView>(`/deadlines/${id}/reject`, { method: 'POST' });
+}
+
+/** GET /groups/{id}/deadlines/pending → дедлайны на модерации. */
+export function fetchPendingGroupDeadlines(groupID: number): Promise<Deadline[]> {
+  return apiFetch<Deadline[]>(`/groups/${groupID}/deadlines/pending`);
+}
+
 /** Группа в ответе GET /groups ({group, role}) — для селектора типа дедлайна. */
 export interface GroupSummary {
   group: {

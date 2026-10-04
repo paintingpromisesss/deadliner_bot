@@ -116,7 +116,8 @@ func (r *deadlinesRepo) Update(ctx context.Context, id int64, patch domain.Deadl
 
 func (r *deadlinesRepo) SetStatus(ctx context.Context, id int64, status domain.DeadlineStatus) error {
 	switch status {
-	case domain.DeadlineStatusActive, domain.DeadlineStatusDone, domain.DeadlineStatusArchived:
+	case domain.DeadlineStatusActive, domain.DeadlineStatusDone, domain.DeadlineStatusArchived,
+		domain.DeadlineStatusPendingApproval, domain.DeadlineStatusRejected:
 	default:
 		return fmt.Errorf("%w: deadline status %q", domain.ErrValidation, status)
 	}

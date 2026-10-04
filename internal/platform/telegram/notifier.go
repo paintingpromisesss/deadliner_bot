@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sauron/deadliner/internal/app/claims"
 	"github.com/sauron/deadliner/internal/domain"
 	"github.com/sauron/deadliner/internal/i18n"
 	"github.com/sauron/deadliner/internal/platform/scheduler"
@@ -156,28 +155,23 @@ func (n *Notifier) SendToChatWithButton(ctx context.Context, chatID, threadID in
 	})
 }
 
-// ClaimsSender — адаптер нотификатора под claims.Notifier: код уходит в чат с
-// кнопкой TMA, message_id возвращается вызывающему (пишется в
-// claim_codes.message_id).
-type ClaimsSender struct {
+// InvitePublisher — публикация инвайта в чат группы: призыв «Присоединяйтесь»
+// и Main App-кнопка (startapp = plaintext-код инвайта). Реализует интерфейс
+// httpapi.InvitePublisher.
+type InvitePublisher struct {
 	notifier *Notifier
 	appURL   string
 }
 
-// Компиляционная проверка: serve передаёт ClaimsSender в claims.NewService.
-var _ claims.Notifier = (*ClaimsSender)(nil)
-
-func NewClaimsSender(notifier *Notifier, appURL string) *ClaimsSender {
-	return &ClaimsSender{notifier: notifier, appURL: appURL}
+func NewInvitePublisher(notifier *Notifier, appURL string) *InvitePublisher {
+	return &InvitePublisher{notifier: notifier, appURL: appURL}
 }
 
-// SendToChat публикует код в чате группы вместе с кнопкой «Открыть Deadliner».
-func (c *ClaimsSender) SendToChat(ctx context.Context, chatID, threadID int64, text string) (int64, error) {
-	return c.notifier.SendToChatWithButton(ctx, chatID, threadID, text,
-		i18n.T("bot.button.open_app"), c.appURL)
-}
-
-// SendToUser — ЛС-уведомление действующим админам о смене старосты (спека §3.1).
-func (c *ClaimsSender) SendToUser(ctx context.Context, userID int64, text string) error {
-	return c.notifier.SendToUser(ctx, userID, text)
+// PublishInvite отправляет инвайт-сообщение в чат группы. Кнопка открывает
+// Mini App как Main App: startapp-параметр несёт plaintext-код инвайта
+// (ссылок во внешний браузер нет — приложение открывается нативно в Telegram).
+func (p *InvitePublisher) PublishInvite(ctx context.Context, chatID, threadID int64, text string) error {
+	_, err := p.notifier.SendToChatWithButton(ctx, chatID, threadID, text,
+		i18n.T("bot.button.join_group"), p.appURL)
+	return err
 }

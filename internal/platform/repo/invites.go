@@ -70,7 +70,8 @@ func (r *invitesRepo) GetByCode(ctx context.Context, code string) (*domain.Invit
 func (r *invitesRepo) IncrementUsed(ctx context.Context, id int64) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE invites SET used_count = used_count + 1
-		 WHERE id = $1 AND revoked_at IS NULL AND expires_at > now()
+		 WHERE id = $1 AND revoked_at IS NULL
+		   AND (expires_at IS NULL OR expires_at > now())
 		   AND (max_uses < 0 OR used_count < max_uses)`, id)
 	if err != nil {
 		return mapErr(err)

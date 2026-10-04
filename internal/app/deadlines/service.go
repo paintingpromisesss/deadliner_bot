@@ -1,7 +1,8 @@
 // Package deadlines — use cases дедлайнов (спека §3, §5.2, §7.1): CRUD
 // с генерацией reminders в одной транзакции, регенерация при смене due_at,
 // права (персональный — owner; групповой пишут автор дедлайна и admin, читает
-// любой участник).
+// любой участник) и модерация: дедлайн участника создаётся
+// pending_approval и становится active только после подтверждения админом.
 package deadlines
 
 import (
@@ -15,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sauron/deadliner/internal/domain"
+	"github.com/sauron/deadliner/internal/i18n"
 )
 
 // Границы DTO-валидации (спека §5.2).
@@ -74,9 +76,14 @@ type Service struct {
 	reminders domain.ReminderRepo
 	groups    domain.GroupRepo
 	members   domain.MembershipRepo
+	bindings  domain.ChatBindingRepo
+	users     domain.UserRepo
 	audit     domain.AuditRepo
-	clock     domain.Clock
-	log       *slog.Logger
+	// notifier — ЛС админам группы о новых pending_approval-дедлайнах и
+	// в чат группы при активации. nil — уведомления отключены (тесты).
+	notifier domain.Notifier
+	clock    domain.Clock
+	log      *slog.Logger
 }
 
 func NewService(
@@ -84,6 +91,8 @@ func NewService(
 	reminders domain.ReminderRepo,
 	groups domain.GroupRepo,
 	members domain.MembershipRepo,
+	bindings domain.ChatBindingRepo,
+	users domain.UserRepo,
 	audit domain.AuditRepo,
 	clock domain.Clock,
 	log *slog.Logger,
@@ -93,14 +102,25 @@ func NewService(
 	}
 	return &Service{
 		deadlines: deadlines, reminders: reminders, groups: groups,
-		members: members, audit: audit, clock: clock, log: log,
+		bindings: bindings, users: users, members: members, audit: audit,
+		clock: clock, log: log,
 	}
 }
 
+// WithNotifier подключает доставку уведомлений о модерации дедлайнов.
+// Отдельный шаг (как groups.WithOptions): большинству тестовых сборок
+// транспорт не нужен.
+func (s *Service) WithNotifier(n domain.Notifier) *Service {
+	s.notifier = n
+	return s
+}
+
 // Create создаёт дедлайн и его reminders одной транзакцией репо (спека §7.1).
-// Групповой дедлайн — только admin группы (или superadmin); если reminders не
-// переданы, используются default_presets группы. Персональный — только явно
-// переданные напоминания. fire_at в прошлом молча не создаётся.
+// Групповой дедлайн от АДМИНА — сразу active с рассылкой уведомлений в чат;
+// от обычного участника — pending_approval (группе не виден, уведомления не
+// идут) до подтверждения админом (Approve). Если reminders не переданы,
+// используются default_presets группы. Персональный — только явно переданные
+// напоминания. fire_at в прошлом молча не создаётся.
 func (s *Service) Create(ctx context.Context, actor *domain.User, in CreateInput) (*View, error) {
 	now := s.clock.Now()
 
@@ -140,11 +160,30 @@ func (s *Service) Create(ctx context.Context, actor *domain.User, in CreateInput
 
 	var presets []time.Duration
 	if in.GroupID != nil {
-		if err := s.requireGroupAdmin(ctx, actor, *in.GroupID); err != nil {
+		member, err := s.members.Get(ctx, *in.GroupID, actor.ID)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
 			return nil, err
 		}
+		isAdmin := actor.IsSuperadmin || (member != nil && member.Role == domain.RoleAdmin)
+		if !isAdmin {
+			// Участник без роли admin (и не участник вовсе) должен быть
+			// участником группы: посторонним создавать групповые дедлайны
+			// нельзя. Не-участник → 403 как раньше.
+			if member == nil && !actor.IsSuperadmin {
+				if _, err := s.groups.GetByID(ctx, *in.GroupID); err != nil {
+					return nil, err
+				}
+				return nil, fmt.Errorf("%w: not a member of group id=%d", domain.ErrForbidden, *in.GroupID)
+			}
+			if member == nil {
+				return nil, fmt.Errorf("%w: not a member of group id=%d", domain.ErrForbidden, *in.GroupID)
+			}
+			d.Status = domain.DeadlineStatusPendingApproval
+		}
 		d.OwnerUserID = nil
-		if len(in.Reminders) == 0 {
+		if len(in.Reminders) == 0 && isAdmin {
+			// Пресеты группы подставляются только активному дедлайну:
+			// до апрува напоминания не планируются вовсе.
 			g, err := s.groups.GetByID(ctx, *in.GroupID)
 			if err != nil {
 				return nil, err
@@ -168,8 +207,167 @@ func (s *Service) Create(ctx context.Context, actor *domain.User, in CreateInput
 		return nil, err
 	}
 	s.writeAudit(ctx, actor.ID, "deadline.create", "deadline", d.ID,
-		map[string]any{"group_id": in.GroupID, "due_at": d.DueAt})
+		map[string]any{"group_id": in.GroupID, "due_at": d.DueAt, "status": string(d.Status)})
+
+	if d.Status == domain.DeadlineStatusPendingApproval && in.GroupID != nil {
+		s.notifyAdminsPending(ctx, *in.GroupID, d)
+	}
 	return &View{Deadline: d, Reminders: planned}, nil
+}
+
+// Approve — подтверждение админом группового дедлайна в статусе
+// pending_approval: переводит его в active, планирует напоминания (пресеты
+// группы, если автор не задал свои) и рассылает групповые уведомления.
+// Идемпотентность опущена намеренно: повторный approve неактивного
+// дедлайна → ErrConflict (состояние уже изменено, тихий успех врал бы).
+func (s *Service) Approve(ctx context.Context, actor *domain.User, id int64) (*View, error) {
+	d, err := s.deadlines.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if d.GroupID == nil {
+		return nil, fmt.Errorf("%w: deadline id=%d is not a group deadline", domain.ErrValidation, id)
+	}
+	if err := s.requireGroupAdmin(ctx, actor, *d.GroupID); err != nil {
+		return nil, err
+	}
+	if d.Status != domain.DeadlineStatusPendingApproval {
+		return nil, fmt.Errorf("%w: deadline id=%d is not pending approval", domain.ErrConflict, id)
+	}
+
+	if err := s.deadlines.SetStatus(ctx, id, domain.DeadlineStatusActive); err != nil {
+		return nil, err
+	}
+	d.Status = domain.DeadlineStatusActive
+
+	// Напоминания: если автор задал свои — регенерируем их от due_at;
+	// иначе подставляем пресеты группы (как при создании админом).
+	planned, err := s.replan(ctx, d, s.clock.Now())
+	if err != nil {
+		return nil, err
+	}
+	if len(planned) == 0 {
+		g, err := s.groups.GetByID(ctx, *d.GroupID)
+		if err != nil {
+			return nil, err
+		}
+		presets := g.DefaultPresets
+		if len(presets) == 0 {
+			presets = defaultPresets
+		}
+		planned = domain.PlanReminders(*d, presets, s.clock.Now())
+	}
+	if len(planned) > 0 {
+		if _, err := s.reminders.Regenerate(ctx, id, planned); err != nil {
+			return nil, err
+		}
+	}
+
+	s.writeAudit(ctx, actor.ID, "deadline.approve", "deadline", id,
+		map[string]any{"group_id": d.GroupID})
+	s.announceGroup(ctx, *d.GroupID, d, "deadline.approved")
+	return s.Get(ctx, actor, id)
+}
+
+// Reject — отклонение админом группового дедлайна в pending_approval:
+// статус rejected, напоминания (планировались бы при апруве) не создаются.
+func (s *Service) Reject(ctx context.Context, actor *domain.User, id int64) (*View, error) {
+	d, err := s.deadlines.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if d.GroupID == nil {
+		return nil, fmt.Errorf("%w: deadline id=%d is not a group deadline", domain.ErrValidation, id)
+	}
+	if err := s.requireGroupAdmin(ctx, actor, *d.GroupID); err != nil {
+		return nil, err
+	}
+	if d.Status != domain.DeadlineStatusPendingApproval {
+		return nil, fmt.Errorf("%w: deadline id=%d is not pending approval", domain.ErrConflict, id)
+	}
+	if err := s.deadlines.SetStatus(ctx, id, domain.DeadlineStatusRejected); err != nil {
+		return nil, err
+	}
+	d.Status = domain.DeadlineStatusRejected
+	s.writeAudit(ctx, actor.ID, "deadline.reject", "deadline", id,
+		map[string]any{"group_id": d.GroupID})
+	return &View{Deadline: d}, nil
+}
+
+// ListPendingGroup — дедлайны группы в pending_approval (админский список
+// модерации).
+func (s *Service) ListPendingGroup(ctx context.Context, actor *domain.User, groupID int64) ([]domain.Deadline, error) {
+	if err := s.requireGroupAdmin(ctx, actor, groupID); err != nil {
+		return nil, err
+	}
+	status := domain.DeadlineStatusPendingApproval
+	return s.deadlines.ListByGroup(ctx, groupID, nil, nil, &status)
+}
+
+// notifyAdminsPending — best-effort ЛС админам группы о новом дедлайне,
+// ждущем апрува (кроме автора: он и так знает).
+func (s *Service) notifyAdminsPending(ctx context.Context, groupID int64, d *domain.Deadline) {
+	if s.notifier == nil {
+		return
+	}
+	mems, err := s.members.ListByGroup(ctx, groupID)
+	if err != nil {
+		s.log.Warn("deadlines: list members for notify failed", slog.String("error", err.Error()))
+		return
+	}
+	for _, m := range mems {
+		if m.Role != domain.RoleAdmin || m.UserID == d.CreatedBy {
+			continue
+		}
+		u, err := s.users.GetByID(ctx, m.UserID)
+		if err != nil {
+			continue
+		}
+		if u.BotBlocked || u.IsBanned {
+			continue
+		}
+		g, err := s.groups.GetByID(ctx, groupID)
+		if err != nil {
+			return
+		}
+		text := i18n.T("deadline.pending_notify",
+			i18n.EscapeHTML(g.Title), i18n.EscapeHTML(d.Title))
+		if err := s.notifier.SendToUser(ctx, u.TelegramID, text); err != nil {
+			s.log.Warn("deadlines: admin notify failed",
+				slog.Int64("user_id", m.UserID), slog.String("error", err.Error()))
+		}
+	}
+}
+
+// announceGroup — сообщение в привязанный чат группы об активации дедлайна
+// (approve): рассылка групповых уведомлений начинается только с этого момента.
+func (s *Service) announceGroup(ctx context.Context, groupID int64, d *domain.Deadline, event string) {
+	if s.notifier == nil {
+		return
+	}
+	b, err := s.bindings.GetByGroup(ctx, groupID)
+	if err != nil {
+		if !errors.Is(err, domain.ErrNotFound) {
+			s.log.Warn("deadlines: binding load failed", slog.String("error", err.Error()))
+		}
+		return
+	}
+	g, err := s.groups.GetByID(ctx, groupID)
+	if err != nil {
+		return
+	}
+	var threadID int64
+	if b.MessageThreadID != nil {
+		threadID = *b.MessageThreadID
+	}
+	text := i18n.T("deadline.approved_announce",
+		i18n.EscapeHTML(d.Title), i18n.EscapeHTML(g.Slug))
+	if err := s.notifier.SendToChat(ctx, b.ChatID, threadID, text); err != nil {
+		s.log.Warn("deadlines: group announce failed",
+			slog.String("event", event),
+			slog.Int64("group_id", groupID),
+			slog.String("error", err.Error()))
+	}
 }
 
 // buildReminders собирает доменные reminders из явных спеков и пресетов:

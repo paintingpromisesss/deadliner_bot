@@ -66,9 +66,10 @@ func TestRealCatalogLoads(t *testing.T) {
 		"bot.new_deadline", "bot.button.add_deadline", "bot.cmd.new_deadline",
 		"bot.forbidden",
 		"reminder.group.title", "reminder.group.body", "reminder.personal.title", "reminder.dm_dup.title",
-		"claim.code_message", "claim.success", "claim.revoked",
-		"claim.admin_change_started", "claim.admin_replaced",
-		"invite.created", "invite.redeemed", "invite.expired",
+		"invite.created", "invite.redeemed", "invite.expired", "invite.chat_message",
+		"bot.button.join_group",
+		"deadline.pending_notify", "deadline.approved_announce",
+		"api.error.invite_no_binding", "api.error.invite_publish_failed",
 		"api.error.not_found", "api.error.conflict", "api.error.forbidden", "api.error.rate_limit", "api.error.validation",
 		"cleanup.group_deleted",
 		"superadmin.only", "superadmin.promoted", "superadmin.banned", "superadmin.unbanned",
@@ -87,9 +88,9 @@ func TestRealCatalogLoads(t *testing.T) {
 	}
 
 	// Каждый ключ каталога рендерится без артефактов форматирования: число
-	// аргументов берётся из самого шаблона, поэтому двухаргументный
-	// claim.admin_replaced тоже проверяется (неверное число даёт «%!s(MISSING)»
-	// или «%!(EXTRA …)» — регрессия F-1).
+	// аргументов берётся из самого шаблона, поэтому многоаргументные шаблоны
+	// тоже проверяются (неверное число даёт «%!s(MISSING)» или
+	// «%!(EXTRA …)» — регрессия F-1).
 	data, err := Locales.ReadFile("locales/ru.json")
 	if err != nil {
 		t.Fatalf("read ru.json: %v", err)
@@ -98,7 +99,7 @@ func TestRealCatalogLoads(t *testing.T) {
 	if err := json.Unmarshal(data, &all); err != nil {
 		t.Fatalf("decode ru.json: %v", err)
 	}
-	for _, k := range []string{"bot.unbind.ok", "bot.bind.ok", "claim.admin_replaced", "claim.success"} {
+	for _, k := range []string{"bot.unbind.ok", "bot.bind.ok", "deadline.pending_notify", "invite.chat_message"} {
 		tmpl, ok := all[k]
 		if !ok {
 			t.Errorf("key %q missing from ru.json", k)

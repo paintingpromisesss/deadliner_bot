@@ -879,22 +879,22 @@ func TestNotifierSendToChatID(t *testing.T) {
 	}
 }
 
-// ClaimsSender: при MessageSender-транспорте кнопка уходит, message_id
-// возвращается; при минимальном Sender — деградация до обычного SendMessage.
-func TestClaimsSenderDecorations(t *testing.T) {
+// InvitePublisher: при MessageSender-транспорте кнопка «Вступить в группу»
+// уходит; при минимальном Sender — деградация до обычного SendMessage.
+func TestInvitePublisherPublish(t *testing.T) {
 	t.Run("with MessageSender", func(t *testing.T) {
 		fs := &fakeMsgSender{}
 		n := New(fs, 1000, 1000)
-		cs := NewClaimsSender(n, "https://example/app")
-		id, err := cs.SendToChat(context.Background(), -100500, 0, "код")
+		ip := NewInvitePublisher(n, "https://example/app")
+		err := ip.PublishInvite(context.Background(), -100500, 0, "привет")
 		if err != nil {
-			t.Fatalf("SendToChat: %v", err)
+			t.Fatalf("PublishInvite: %v", err)
 		}
-		if id == 0 || len(fs.sent) != 1 || fs.sent[0].button != "Открыть Deadliner" {
-			t.Errorf("sent = %+v (id=%d), want one message with a button", fs.sent, id)
+		if len(fs.sent) != 1 || fs.sent[0].button != "Вступить в группу" {
+			t.Errorf("sent = %+v, want one message with a join button", fs.sent)
 		}
-		if fs.sent[0].chatID != -100500 || fs.sent[0].text != "код" {
-			t.Errorf("sent = %+v, want chat -100500 with the code text", fs.sent[0])
+		if fs.sent[0].chatID != -100500 || fs.sent[0].text != "привет" {
+			t.Errorf("sent = %+v, want chat -100500 with the invite text", fs.sent[0])
 		}
 	})
 	t.Run("minimal Sender", func(t *testing.T) {
@@ -902,23 +902,12 @@ func TestClaimsSenderDecorations(t *testing.T) {
 		// остаётся достаточным контрактом (расширять его было запрещено).
 		fs := &minimalSender{}
 		n := New(fs, 1000, 1000)
-		cs := NewClaimsSender(n, "https://example/app")
-		if _, err := cs.SendToChat(context.Background(), -100500, 0, "код"); err != nil {
-			t.Fatalf("SendToChat: %v", err)
+		ip := NewInvitePublisher(n, "https://example/app")
+		if err := ip.PublishInvite(context.Background(), -100500, 0, "привет"); err != nil {
+			t.Fatalf("PublishInvite: %v", err)
 		}
 		if fs.calls != 1 {
 			t.Errorf("calls = %d, want 1", fs.calls)
-		}
-	})
-	t.Run("SendToUser", func(t *testing.T) {
-		fs := &minimalSender{}
-		n := New(fs, 1000, 1000)
-		cs := NewClaimsSender(n, "")
-		if err := cs.SendToUser(context.Background(), 7, "внимание"); err != nil {
-			t.Fatalf("SendToUser: %v", err)
-		}
-		if fs.calls != 1 || fs.lastChat != 7 {
-			t.Errorf("calls=%d lastChat=%d, want 1/7", fs.calls, fs.lastChat)
 		}
 	})
 }

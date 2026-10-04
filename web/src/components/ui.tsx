@@ -290,6 +290,9 @@ interface FieldBase {
 interface InputProps extends FieldBase {
   value: string;
   onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  /** Событие ДО ввода (beforeinput): отличает ручной ввод от программной
+   * подстановки значения — onChange не различает их. */
+  onBeforeInput?: React.FormEventHandler<HTMLInputElement>;
   onBlur?: () => void;
   placeholder?: string;
   type?: string;

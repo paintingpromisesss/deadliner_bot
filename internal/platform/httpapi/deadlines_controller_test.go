@@ -41,7 +41,8 @@ func newTestDeadlinesRouter(t *testing.T) http.Handler {
 			}, domain.SystemClock{}, log),
 		Deadlines: deadlines.NewService(
 			repo.NewDeadlines(pool), repo.NewReminders(pool), repo.NewGroups(pool),
-			repo.NewMemberships(pool), repo.NewAudit(pool), domain.SystemClock{}, log),
+			repo.NewMemberships(pool), repo.NewBindings(pool), repo.NewUsers(pool),
+			repo.NewAudit(pool), domain.SystemClock{}, log),
 		Users:      repo.NewUsers(pool),
 		Sessions:   repo.NewSessions(pool),
 		Log:        log,

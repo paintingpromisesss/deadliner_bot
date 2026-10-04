@@ -1,9 +1,10 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppRoot, List, Placeholder, Section, Spinner } from './components/ui';
 
 import { hasInitData } from './lib/tma';
+import { getStartParam } from './lib/tma';
 import { useAuthStore } from './stores/auth';
 import { routeGroupID, routeName, useRoute } from './router';
 import { TabBar } from './components/TabBar';
@@ -11,6 +12,8 @@ import { CalendarScreen } from './screens/calendar/CalendarScreen';
 import { DeadlinesScreen } from './screens/deadlines/DeadlinesScreen';
 import { GroupsScreen } from './screens/groups/GroupsScreen';
 import { GroupDetailScreen } from './screens/groups/GroupDetailScreen';
+import { JoinGroupSheet } from './components/JoinGroupSheet';
+import { navigate } from './router';
 import { SettingsScreen } from './screens/SettingsScreen';
 
 const queryClient = new QueryClient({
@@ -39,6 +42,30 @@ function Routes() {
     default:
       return <DeadlinesScreen />;
   }
+}
+
+/**
+ * Обработка startapp-параметра (Main App flow): Mini App, открытое кнопкой
+ * приглашения из чата группы, получает код инвайта и показывает экран
+ * подтверждения «Вступить в группу?». Лимит инвайта тратится только кнопкой
+ * «Вступить»; закрытие окна или «Отмена» ничего не списывают.
+ *
+ * Параметр читается ОДИН раз при монтировании: повторная реакция на тот же
+ * код при ре-рендере снова открывала бы модалку после отмены.
+ */
+function InviteJoinGate() {
+  const [startParam] = useState(() => getStartParam());
+  const [open, setOpen] = useState(startParam !== undefined);
+
+  if (startParam === undefined) return null;
+  return (
+    <JoinGroupSheet
+      open={open}
+      onOpenChange={setOpen}
+      code={startParam}
+      onJoined={(group) => navigate(`/groups/${group.id}`)}
+    />
+  );
 }
 
 /** Гейт авторизации: спиннер на bootstrap, экран ошибки при провале входа. */
@@ -124,6 +151,7 @@ export function App() {
           <main className="dl-main">
             <Routes />
           </main>
+          <InviteJoinGate />
           <TabBar />
         </AuthGate>
       </QueryClientProvider>

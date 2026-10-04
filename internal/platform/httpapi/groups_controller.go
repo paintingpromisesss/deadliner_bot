@@ -62,6 +62,10 @@ func writeGroupsError(w http.ResponseWriter, err error) {
 		httpjson.WriteError(w, http.StatusBadRequest, "slug_invalid", i18n.T("api.error.slug_invalid"))
 	case errors.Is(err, groups.ErrLastAdmin):
 		httpjson.WriteError(w, http.StatusConflict, "last_admin", i18n.T("api.error.last_admin"))
+	case errors.Is(err, groups.ErrNoBinding):
+		httpjson.WriteError(w, http.StatusConflict, "no_chat_binding", i18n.T("api.error.invite_no_binding"))
+	case errors.Is(err, groups.ErrPublishFailed):
+		httpjson.WriteError(w, http.StatusConflict, "invite_publish_failed", i18n.T("api.error.invite_publish_failed"))
 	default:
 		httpjson.WriteDomainError(w, err)
 	}
@@ -231,13 +235,20 @@ func (c *groupsController) Delete(w http.ResponseWriter, r *http.Request) {
 // maxPresetMinutes — граница защиты от переполнения Duration: 10 лет в минутах.
 const maxPresetMinutes = int64(10 * 365 * 24 * 60)
 
+// inviteTTLNone — сигнальное значение ttl_hours для бессрочного инвайта.
+const inviteTTLNone = -1
+
 // maxTTLHours — верхняя граница TTL инвайта: 90 дней.
 const maxTTLHours = 24 * 90
 
-// CreateInvite — POST /api/v1/groups/{id}/invites {role,max_uses,ttl_hours}
-// → 201 {code, expires_at}; plaintext-код возвращается один раз.
+// CreateInvite — POST /api/v1/groups/{id}/invites
+// {role, max_uses, ttl_hours, publish_to_chat} → 201 {code, expires_at};
+// plaintext-код возвращается один раз.
 // max_uses: -1 = без лимита (дефолт), ≥1 — число использований; 0 и < -1 → 400.
-// ttl_hours: 0 → дефолт конфига; отрицательный или > 2160 → 400.
+// ttl_hours: -1 = бессрочный (no expiration); null/отсутствует → дефолт
+// конфига; 0 запрещён (неоднозначен), > 2160 → 400.
+// publish_to_chat: true → бот отправляет в привязанный чат группы призыв с
+// Main App-кнопкой (startapp-параметр = код инвайта). Без привязки — 409.
 func (c *groupsController) CreateInvite(w http.ResponseWriter, r *http.Request) {
 	actor := middleware.UserFrom(r.Context())
 	if actor == nil {
@@ -249,9 +260,10 @@ func (c *groupsController) CreateInvite(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		Role     string `json:"role"`
-		MaxUses  *int   `json:"max_uses"`
-		TTLHours *int   `json:"ttl_hours"`
+		Role          string `json:"role"`
+		MaxUses       *int   `json:"max_uses"`
+		TTLHours      *int   `json:"ttl_hours"`
+		PublishToChat bool   `json:"publish_to_chat"`
 	}
 	if err := decodeStrict(r, &req); err != nil {
 		httpjson.WriteError(w, http.StatusBadRequest, "validation", i18n.T("api.error.validation"))
@@ -264,16 +276,29 @@ func (c *groupsController) CreateInvite(w http.ResponseWriter, r *http.Request) 
 	if req.MaxUses != nil {
 		maxUses = *req.MaxUses
 	}
-	ttlHours := 0
+	// -1 — «дефолт конфига» для старых клиентов (не задали поле вовсе);
+	// sentinel для бессрочного — тоже -1, но со стороны клиента поле
+	// отсутствует = default. Явный inviteTTLNone выбран как -1 не случайно:
+	// старый API тоже позволял -1? Нет: старый контракт отвергал отрицательные
+	// значения, поэтому -1 здесь однозначно читается как «no expiration».
+	ttlHours := inviteTTLNone
 	if req.TTLHours != nil {
 		ttlHours = *req.TTLHours
 	}
-	if maxUses == 0 || maxUses < -1 || ttlHours < 0 || ttlHours > maxTTLHours {
+	if maxUses == 0 || maxUses < -1 || ttlHours == 0 || ttlHours < -1 || ttlHours > maxTTLHours {
 		httpjson.WriteError(w, http.StatusBadRequest, "validation", i18n.T("api.error.validation"))
 		return
 	}
+	// В сервис: 0 — бессрочный; < 0 — дефолт конфига.
+	var ttl time.Duration
+	switch {
+	case ttlHours == inviteTTLNone:
+		ttl = -1 // дефолт
+	case ttlHours > 0:
+		ttl = time.Duration(ttlHours) * time.Hour
+	}
 	code, inv, err := c.svc.CreateInvite(r.Context(), actor, id,
-		domain.Role(req.Role), maxUses, time.Duration(ttlHours)*time.Hour)
+		domain.Role(req.Role), maxUses, ttl, req.PublishToChat)
 	if err != nil {
 		writeGroupsError(w, err)
 		return
@@ -281,6 +306,7 @@ func (c *groupsController) CreateInvite(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"code":       code,
 		"expires_at": inv.ExpiresAt,
+		"published":  req.PublishToChat && err == nil,
 	})
 }
 
@@ -299,6 +325,28 @@ func (c *groupsController) RedeemInvite(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	g, err := c.svc.RedeemInvite(r.Context(), actor, req.Code)
+	if err != nil {
+		writeGroupsError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"group": toGroupDTO(g)})
+}
+
+// InvitePreview — GET /api/v1/invites/{code} → 200 {group}: данные экрана
+// подтверждения «Вступить в группу?» при открытии Mini App по startapp.
+// Лимит использования НЕ расходуется: списание — только фактом «Вступить».
+func (c *groupsController) InvitePreview(w http.ResponseWriter, r *http.Request) {
+	actor := middleware.UserFrom(r.Context())
+	if actor == nil {
+		httpjson.WriteUnauthorized(w)
+		return
+	}
+	code := chi.URLParam(r, "code")
+	if code == "" {
+		httpjson.WriteError(w, http.StatusBadRequest, "validation", i18n.T("api.error.validation"))
+		return
+	}
+	g, err := c.svc.InvitePreview(r.Context(), code)
 	if err != nil {
 		writeGroupsError(w, err)
 		return

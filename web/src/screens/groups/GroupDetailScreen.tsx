@@ -1,5 +1,6 @@
 // Экран группы (спека §9, экраны 5 и 7): шапка со статусом, привязка чата,
-// участники, роли и админ-панель (участники, инвайты, claim, danger zone).
+// участники, роли и админ-панель (участники, инвайты, модерация дедлайнов,
+// danger zone).
 //
 // Гейт по роли — не украшение: участнику backend отдаст 403 на изменяющие
 // вызовы (requireAdmin), поэтому админ-панель ему не рендерится вовсе, а
@@ -14,7 +15,6 @@ import { useEffect, useState } from 'react';
 import { Button, Cell, List, Placeholder, Section, Spinner } from '../../components/ui';
 import { Screen } from '../../components/Screen';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
-import { ClaimSheet, RevokeClaimDialog } from '../../components/ClaimSheet';
 import { InviteSheet, inviteSessionSubtitle } from '../../components/InviteSheet';
 import { MemberCell, memberName } from '../../components/MemberCell';
 import { RoleBadge, roleLabel } from '../../components/RoleBadge';
@@ -22,20 +22,23 @@ import { SlugAvatar } from '../../components/SlugAvatar';
 import { navigate } from '../../router';
 import { useAuthStore } from '../../stores/auth';
 import {
+  usePendingGroupDeadlines,
   useDeleteGroup,
   useGroupDetail,
   useGroupMembers,
   useKickMember,
   useLeaveGroup,
-  useRevokeClaim,
   useRevokeInvite,
   useSetMemberRole,
+  useApproveDeadline,
+  useRejectDeadline,
 } from '../../lib/queries';
 import { memberActionErrorMessage, mutationErrorMessage } from '../../lib/errorText';
 import { formatDue } from '../../lib/format';
 import { strings, tpl } from '../../lib/strings';
 import { hapticImpact, hapticNotification } from '../../lib/tma';
 import type { InviteCreated, Member } from '../../lib/groups';
+import type { Deadline } from '../../lib/deadlines';
 
 /** Статус группы в шапке. */
 function statusText(status: string): string {
@@ -64,13 +67,16 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
   // известна и это либо админ, либо член группы.
   const canReadMembers = detail.data != null && detail.data.role !== '';
   const members = useGroupMembers(groupID, canReadMembers);
+  // Модерация: дедлайны группы в pending_approval видит только админ.
+  const pending = usePendingGroupDeadlines(groupID, isAdmin);
 
   const leave = useLeaveGroup();
   const removeGroup = useDeleteGroup();
   const setRole = useSetMemberRole();
   const kick = useKickMember();
   const revokeInvite = useRevokeInvite();
-  const revokeClaim = useRevokeClaim();
+  const approveDeadline = useApproveDeadline();
+  const rejectDeadline = useRejectDeadline();
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [menuFor, setMenuFor] = useState<number | null>(null);
@@ -81,12 +87,10 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
   // Какой именно код отзываем: подтверждение одно, а кодов в сессии может быть
   // несколько — «последний созданный» стёр бы не тот, на который нажали.
   const [revokeTarget, setRevokeTarget] = useState<InviteCreated | null>(null);
-  const [confirmClaimRevoke, setConfirmClaimRevoke] = useState(false);
-  const [claimOpen, setClaimOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
-  // Подтверждение claim: шит закрывается сразу после успеха, поэтому роль
-  // «admin» надо отметить в интерфейсе — иначе единственным следствием
-  // действия остаётся перерисованное меню роли.
+  // Дедлайн на модерации, который подтверждаем/отклоняем.
+  const [moderationTarget, setModerationTarget] = useState<Deadline | null>(null);
+  const [moderationAction, setModerationAction] = useState<'approve' | 'reject'>('approve');
   const [notice, setNotice] = useState<string | null>(null);
   // Сессионные инвайты: код живёт только здесь (сервер его не отдаёт повторно).
   const [sessionInvites, setSessionInvites] = useState<
@@ -115,6 +119,7 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
   }
 
   const memberList: Member[] = members.data ?? [];
+  const pendingDeadlines: Deadline[] = pending.data ?? [];
 
   if (detail.isLoading) {
     return (
@@ -221,33 +226,6 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
           </div>
         ) : null}
 
-        {/* Claim: участнику и админу-без-роли в pending-группе; админ видит
-            блок отзыва, если чужой код уже мог быть опубликован. */}
-        {!isAdmin && inGroup ? (
-          <Section header={strings.groups.claimStart} data-testid="claim-section">
-            {binding ? (
-              <Cell
-                Component="button"
-                type="button"
-                className="dl-cell-button"
-                data-testid="open-claim"
-                subtitle={strings.groups.claimHint}
-                multiline
-                onClick={() => {
-                  hapticImpact('light');
-                  setClaimOpen(true);
-                }}
-              >
-                {strings.groups.claimStart}
-              </Cell>
-            ) : (
-              <Cell multiline data-testid="claim-no-binding">
-                {tpl(strings.groups.claimNoBindingHint, group.slug)}
-              </Cell>
-            )}
-          </Section>
-        ) : null}
-
         {isAdmin ? (
           <>
             <Section header={strings.groups.membersHeader} data-testid="members-section">
@@ -336,24 +314,51 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
                 ))}
             </Section>
 
-            <Section header={strings.groups.claimRevoke} data-testid="claim-admin-section">
-              <Cell
-                Component="button"
-                type="button"
-                className="dl-cell-button"
-                data-testid="open-claim-revoke"
-                multiline
-                subtitle={strings.groups.claimAdminHint}
-                onClick={() => {
-                  // Отзыв кода — потенциально конфликтное действие (кто-то
-                  // мог запросить смену старосты): предупреждающий отклик.
-                  hapticNotification('warning');
-                  setConfirmClaimRevoke(true);
-                }}
-              >
-                {strings.groups.claimRevoke}
-              </Cell>
-            </Section>
+            {/* Модерация дедлайнов: заявки участников (pending_approval).
+                Пустая секция не рендерится вовсе — админ без заявок не
+                должен видеть «пустую модерацию». */}
+            {pendingDeadlines.length > 0 ? (
+              <Section header={strings.groups.moderationHeader} data-testid="moderation-section">
+                {pendingDeadlines.map((d) => (
+                  <Cell
+                    key={d.id}
+                    multiline
+                    data-testid={`pending-deadline-${d.id}`}
+                    subtitle={tpl(strings.groups.moderationDue, formatDue(d.due_at, tz))}
+                    after={
+                      <span className="dl-row dl-row--tight">
+                        <button
+                          type="button"
+                          className="dl-action"
+                          data-testid={`approve-deadline-${d.id}`}
+                          onClick={() => {
+                            hapticImpact('light');
+                            setModerationTarget(d);
+                            setModerationAction('approve');
+                          }}
+                        >
+                          {strings.groups.moderationApprove}
+                        </button>
+                        <button
+                          type="button"
+                          className="dl-action dl-danger"
+                          data-testid={`reject-deadline-${d.id}`}
+                          onClick={() => {
+                            hapticNotification('warning');
+                            setModerationTarget(d);
+                            setModerationAction('reject');
+                          }}
+                        >
+                          {strings.groups.moderationReject}
+                        </button>
+                      </span>
+                    }
+                  >
+                    {d.title}
+                  </Cell>
+                ))}
+              </Section>
+            ) : null}
 
             <Section header={strings.groups.dangerHeader} data-testid="danger-section">
               <Cell
@@ -417,23 +422,12 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
         ) : null}
       </List>
 
-      <ClaimSheet
-        open={claimOpen}
-        onOpenChange={setClaimOpen}
-        groupID={groupID}
-        slug={group.slug}
-        hasBinding={binding !== null}
-        onConfirmed={() => {
-          setNotice(tpl(strings.groups.claimSuccess, group.slug));
-          void detail.refetch();
-        }}
-      />
-
       <InviteSheet
         open={inviteOpen}
         onOpenChange={setInviteOpen}
         groupID={groupID}
         tz={tz}
+        hasBinding={binding !== null}
         onCreated={(invite, inviteRole) =>
           setSessionInvites((prev) => [...prev, { invite, role: inviteRole }])
         }
@@ -510,13 +504,44 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
         onCancel={() => setPendingKick(null)}
       />
 
-      <RevokeClaimDialog
-        open={confirmClaimRevoke}
+      <ConfirmDialog
+        open={moderationTarget !== null}
+        title={
+          moderationTarget
+            ? tpl(
+                moderationAction === 'approve'
+                  ? strings.groups.moderationApproveConfirm
+                  : strings.groups.moderationRejectConfirm,
+                moderationTarget.title,
+              )
+            : strings.groups.moderationApproveConfirm.replace('%s', '')
+        }
+        description={
+          moderationAction === 'approve'
+            ? strings.groups.moderationApproveHint
+            : strings.groups.moderationRejectHint
+        }
+        confirmLabel={
+          moderationAction === 'approve'
+            ? strings.groups.moderationApprove
+            : strings.groups.moderationReject
+        }
+        confirmTestId={`confirm-${moderationAction}-deadline`}
         onConfirm={() => {
-          setConfirmClaimRevoke(false);
-          void run(() => revokeClaim.mutateAsync(groupID), mutationErrorMessage);
+          const target = moderationTarget;
+          setModerationTarget(null);
+          if (!target) return;
+          void run(async () => {
+            if (moderationAction === 'approve') {
+              await approveDeadline.mutateAsync(target.id);
+              setNotice(tpl(strings.groups.moderationApprovedNotice, target.title));
+            } else {
+              await rejectDeadline.mutateAsync(target.id);
+            }
+            void pending.refetch();
+          }, mutationErrorMessage);
         }}
-        onCancel={() => setConfirmClaimRevoke(false)}
+        onCancel={() => setModerationTarget(null)}
       />
     </Screen>
   );

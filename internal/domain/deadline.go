@@ -11,6 +11,11 @@ const (
 	DeadlineStatusActive   DeadlineStatus = "active"
 	DeadlineStatusDone     DeadlineStatus = "done"
 	DeadlineStatusArchived DeadlineStatus = "archived"
+	// PendingApproval — групповой дедлайн от обычного участника: ждёт
+	// подтверждения админа; группе не виден, напоминания не рассылаются.
+	DeadlineStatusPendingApproval DeadlineStatus = "pending_approval"
+	// Rejected — админ отклонил групповой дедлайн участника.
+	DeadlineStatusRejected DeadlineStatus = "rejected"
 )
 
 type Deadline struct {

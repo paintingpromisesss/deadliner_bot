@@ -7,7 +7,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sauron/deadliner/internal/app/auth"
-	"github.com/sauron/deadliner/internal/app/claims"
 	"github.com/sauron/deadliner/internal/app/deadlines"
 	"github.com/sauron/deadliner/internal/app/groups"
 	"github.com/sauron/deadliner/internal/app/moderation"
@@ -15,14 +14,6 @@ import (
 	"github.com/sauron/deadliner/internal/config"
 	"github.com/sauron/deadliner/internal/domain"
 	"github.com/sauron/deadliner/internal/platform/repo"
-)
-
-// Значения, не вынесенные в env (спека §8 переменных для них не даёт). Они
-// совпадают с дефолтами, которые сервисы применяют при нулевом конфиге;
-// здесь продублированы явно, чтобы граф зависимостей serve читался целиком.
-const (
-	claimCooldown         = time.Minute
-	claimConfirmFailLimit = 10
 )
 
 // repos — все репозитории одного пула: граф зависимостей подрежимов serve и
@@ -35,7 +26,6 @@ type repos struct {
 	Memberships  domain.MembershipRepo
 	Deadlines    domain.DeadlineRepo
 	Reminders    domain.ReminderRepo
-	Claims       domain.ClaimRepo
 	Invites      domain.InviteRepo
 	Counters     domain.CounterRepo
 	ChatCounters domain.ChatCounterRepo
@@ -53,7 +43,6 @@ func newRepos(pool *pgxpool.Pool) repos {
 		Memberships:  repo.NewMemberships(pool),
 		Deadlines:    repo.NewDeadlines(pool),
 		Reminders:    repo.NewReminders(pool),
-		Claims:       repo.NewClaims(pool),
 		Invites:      repo.NewInvites(pool),
 		Counters:     repo.NewCounters(pool),
 		ChatCounters: repo.NewChatCounters(pool),
@@ -96,25 +85,10 @@ func newGroupsService(r repos, cfg *config.Config, clock domain.Clock, log *slog
 	)
 }
 
-// newClaimsService — claim-флоу (спека §3.1). notifier — транспорт доставки
-// кода в чат: в serve это telegram.ClaimsSender, в тестах — фейк.
-func newClaimsService(r repos, cfg *config.Config, notifier claims.Notifier, clock domain.Clock, log *slog.Logger) *claims.Service {
-	return claims.NewService(
-		r.Groups, r.Memberships, r.Bindings, r.Claims,
-		r.Counters, r.ChatCounters, r.Users, r.Audit, notifier,
-		claims.Config{
-			CodeTTL:          cfg.Limits.ClaimCodeTTL,
-			RequestHourLimit: cfg.Limits.ClaimPerChatHour,
-			Cooldown:         claimCooldown,
-			ConfirmFailLimit: claimConfirmFailLimit,
-		},
-		clock, log,
-	)
-}
-
 // newDeadlinesService — дедлайны и генерация reminders (спека §7.1).
 func newDeadlinesService(r repos, clock domain.Clock, log *slog.Logger) *deadlines.Service {
-	return deadlines.NewService(r.Deadlines, r.Reminders, r.Groups, r.Memberships, r.Audit, clock, log)
+	return deadlines.NewService(r.Deadlines, r.Reminders, r.Groups, r.Memberships,
+		r.Bindings, r.Users, r.Audit, clock, log)
 }
 
 // newNotificationsService — настройки уведомлений (спека §5.2).

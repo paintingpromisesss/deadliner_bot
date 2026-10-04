@@ -1,6 +1,6 @@
 // Экранный тест группы и админ-панели (спека §9, экраны 5 и 7): гейт по роли
 // (участник не видит админ-панель), статус привязки чата, состав участников с
-// promote/demote/kick, инвайты с кодом «один раз», claim-флоу и danger zone.
+// promote/demote/kick, инвайты с кодом «один раз», модерация дедлайнов и danger zone.
 //
 // Гейт — не косметика: backend отвергает админские вызовы 403, и показанная
 // участнику кнопка означала бы гарантированный отказ. Поэтому проверяем именно
@@ -50,9 +50,8 @@ interface Handlers {
   role?: string;
   binding?: unknown;
   members?: unknown[];
-  /** Ответ на claim/start и claim/confirm: [status, body, headers]. */
-  claimStart?: [number, unknown, Record<string, string>?];
-  claimConfirm?: [number, unknown];
+  /** Дедлайны на модерации (GET /groups/42/deadlines/pending). */
+  pendingDeadlines?: unknown[];
   memberRole?: [number, unknown];
   kick?: number;
   invite?: [number, unknown];
@@ -95,18 +94,9 @@ function stubFetch() {
         return json(status, status >= 400 ? { error: { code: 'validation', message: 'Неверно' } } : payload);
       }
       if (url.startsWith('/api/v1/groups/42/invites/') && method === 'DELETE') return json(204, null);
-      if (url === '/api/v1/groups/42/claim/start') {
-        const [status, payload, headers] = handlers.claimStart ?? [200, { expires_at: '2026-10-01T12:10:00Z', chat_id: -100 }];
-        return new Response(status === 204 ? null : JSON.stringify(payload), {
-          status,
-          headers: { 'Content-Type': 'application/json', ...(headers ?? {}) },
-        });
-      }
-      if (url === '/api/v1/groups/42/claim/confirm') {
-        const [status, payload] = handlers.claimConfirm ?? [200, { role: 'admin', group, status: 'active' }];
-        return json(status, payload);
-      }
-      if (url === '/api/v1/groups/42/claim/revoke') return json(204, null);
+      if (url === '/api/v1/groups/42/deadlines/pending') return json(200, handlers.pendingDeadlines ?? []);
+      if (url === '/api/v1/deadlines/7/approve') return json(200, { deadline: { id: 7, status: 'active' }, reminders: [] });
+      if (url === '/api/v1/deadlines/7/reject') return json(200, { deadline: { id: 7, status: 'rejected' }, reminders: [] });
       return json(200, []);
     }),
   );
@@ -209,7 +199,7 @@ describe('GroupDetailScreen: гейт по роли', () => {
     // Участнику доступен только состав (без действий) и выход из группы.
     expect(screen.queryByTestId('invites-section')).toBeNull();
     expect(screen.queryByTestId('danger-section')).toBeNull();
-    expect(screen.queryByTestId('claim-admin-section')).toBeNull();
+    expect(screen.queryByTestId('moderation-section')).toBeNull();
     expect(screen.queryByTestId('open-invite')).toBeNull();
     expect(screen.getByTestId('leave-section')).toBeTruthy();
   });
@@ -299,17 +289,16 @@ describe('GroupDetailScreen: гейт по роли', () => {
 
     expect(await screen.findByTestId('members-section')).toBeTruthy();
     expect(screen.getByTestId('invites-section')).toBeTruthy();
-    expect(screen.getByTestId('claim-admin-section')).toBeTruthy();
+    expect(screen.queryByTestId('moderation-section')).toBeNull(); // пустая модерация не рендерится
     expect(screen.getByTestId('danger-section')).toBeTruthy();
   });
 
-  it('админ не видит кнопки claim (он уже админ) и кнопки выхода', async () => {
+  it('участник не видит панели модерации', async () => {
     handlers.role = 'admin';
     renderScreen();
 
     await screen.findByTestId('members-section');
-    expect(screen.queryByTestId('open-claim')).toBeNull();
-    expect(screen.queryByTestId('claim-section')).toBeNull();
+    expect(screen.queryByTestId('moderation-section')).toBeNull();
   });
 });
 
@@ -417,7 +406,7 @@ describe('GroupDetailScreen: инвайты', () => {
     expect(await screen.findByTestId('session-invite-ABCD2345')).toBeTruthy();
     expect(screen.getByTestId('revoke-invite-ABCD2345')).toBeTruthy();
     const post = calls.find((c) => c.url === '/api/v1/groups/42/invites' && c.method === 'POST');
-    expect(post?.body).toEqual({ role: 'member', max_uses: -1, ttl_hours: 168 });
+    expect(post?.body).toEqual({ role: 'member', max_uses: -1, ttl_hours: 168, publish_to_chat: false });
   });
 
   it('выбранная роль попадает и в запрос, и в подпись сессионного кода', async () => {
@@ -481,214 +470,79 @@ describe('GroupDetailScreen: инвайты', () => {
   });
 });
 
-describe('GroupDetailScreen: claim-флоу', () => {
-  it('участник в pending-группе без привязки видит инструкцию вместо кнопки', async () => {
-    handlers.role = 'member';
-    handlers.binding = null;
-    renderScreen();
-
-    const section = await screen.findByTestId('claim-no-binding');
-    expect(section.textContent).toContain('/bind_group М8О-401Б-23');
-    expect(screen.queryByTestId('open-claim')).toBeNull();
-  });
-
-  it('участник с привязанным чатом открывает шит и отправляет код: start → ввод → confirm', async () => {
-    handlers.role = 'member';
-    renderScreen();
-
-    const open_claim_el = await screen.findByTestId('open-claim');
-      await act(async () => {
-        fireEvent.click(open_claim_el);
-      });
-    const sheet = await screen.findByTestId('claim-sheet');
-    expect(sheet.getAttribute('data-state')).toBe('idle');
-
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('claim-start'));
-      await Promise.resolve();
-    });
-
-    await waitFor(() => expect(screen.getByTestId('claim-sheet').getAttribute('data-state')).toBe('code_sent'));
-    const started = calls.find((c) => c.url === '/api/v1/groups/42/claim/start');
-    expect(started?.method).toBe('POST');
-
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('claim-code'), { target: { value: '123456' } });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('claim-confirm'));
-      await Promise.resolve();
-    });
-
-    await waitFor(() =>
-      expect(calls.some((c) => c.url === '/api/v1/groups/42/claim/confirm')).toBe(true),
-    );
-    const confirm = calls.find((c) => c.url === '/api/v1/groups/42/claim/confirm');
-    expect(confirm?.body).toEqual({ code: '123456' });
-  });
-
-  it('шит claim закрыт, пока не нажата кнопка (состояние не течёт на экран)', async () => {
-    handlers.role = 'member';
-    renderScreen();
-
-    await screen.findByTestId('open-claim');
-    expect(screen.queryByTestId('claim-sheet')).toBeNull();
-  });
-
-  it('неверный код остаётся в code_sent: можно исправить опечатку', async () => {
-    handlers.role = 'member';
-    handlers.claimConfirm = [403, { error: { code: 'claim_bad_code', message: 'Неверный код' } }];
-    renderScreen();
-
-    const open_claim_el = await screen.findByTestId('open-claim');
-      await act(async () => {
-        fireEvent.click(open_claim_el);
-      });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('claim-start'));
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(screen.getByTestId('claim-sheet').getAttribute('data-state')).toBe('code_sent'));
-
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('claim-code'), { target: { value: '111111' } });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('claim-confirm'));
-      await Promise.resolve();
-    });
-
-    const alert = await screen.findByTestId('claim-error');
-    expect(alert.getAttribute('role')).toBe('alert');
-    expect(alert.textContent).toBe('Неверный код — попробуйте ещё раз');
-    expect(screen.getByTestId('claim-sheet').getAttribute('data-state')).toBe('code_sent');
-    // Введённый код не стёрт — пользователь правит одну цифру, а не вводит всё.
-    expect((screen.getByTestId('claim-code') as HTMLInputElement).value).toBe('111111');
-  });
-
-  it('истёкший код возвращает в idle с предложением запросить новый', async () => {
-    handlers.role = 'member';
-    handlers.claimConfirm = [404, { error: { code: 'claim_code_not_found', message: 'Нет кода' } }];
-    renderScreen();
-
-    const open_claim_el = await screen.findByTestId('open-claim');
-      await act(async () => {
-        fireEvent.click(open_claim_el);
-      });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('claim-start'));
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(screen.getByTestId('claim-sheet').getAttribute('data-state')).toBe('code_sent'));
-
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('claim-code'), { target: { value: '222222' } });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('claim-confirm'));
-      await Promise.resolve();
-    });
-
-    await waitFor(() => expect(screen.getByTestId('claim-sheet').getAttribute('data-state')).toBe('idle'));
-    expect(screen.getByTestId('claim-error').textContent).toContain('запросите новый');
-  });
-
-  it('429 на старте показывает задержку из Retry-After и остаётся в idle', async () => {
-    handlers.role = 'member';
-    handlers.claimStart = [
-      429,
-      { error: { code: 'rate_limit', message: 'Слишком часто' } },
-      { 'Retry-After': '60' },
+describe('GroupDetailScreen: модерация дедлайнов', () => {
+  it('заявка участника видна админу и одобрение шлёт POST /deadlines/{id}/approve', async () => {
+    handlers.pendingDeadlines = [
+      {
+        id: 7,
+        group_id: 42,
+        owner_user_id: null,
+        created_by: 2,
+        title: 'Сдать курсовую',
+        description: '',
+        due_at: '2026-10-10T12:00:00Z',
+        tz: 'Europe/Moscow',
+        status: 'pending_approval',
+        created_at: '2026-10-01T12:00:00Z',
+        updated_at: '2026-10-01T12:00:00Z',
+      },
     ];
     renderScreen();
 
-    const open_claim_el = await screen.findByTestId('open-claim');
-      await act(async () => {
-        fireEvent.click(open_claim_el);
-      });
+    const row = await screen.findByTestId('pending-deadline-7');
+    expect(row.textContent).toContain('Сдать курсовую');
+
     await act(async () => {
-      fireEvent.click(screen.getByTestId('claim-start'));
-      await Promise.resolve();
+      fireEvent.click(screen.getByTestId('approve-deadline-7'));
     });
-
-    const alert = await screen.findByTestId('claim-error');
-    expect(alert.textContent).toContain('Повторить через');
-    expect(alert.textContent).toContain('1 минуту');
-    expect(screen.getByTestId('claim-sheet').getAttribute('data-state')).toBe('idle');
-  });
-
-  it('409 «нет привязки» на старте переводит шит в инструкцию /bind_group', async () => {
-    handlers.role = 'member';
-    handlers.claimStart = [409, { error: { code: 'no_chat_binding', message: 'Нет привязки' } }];
-    renderScreen();
-
-    const open_claim_el = await screen.findByTestId('open-claim');
-      await act(async () => {
-        fireEvent.click(open_claim_el);
-      });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('claim-start'));
-      await Promise.resolve();
-    });
-
-    await waitFor(() =>
-      expect(screen.getByTestId('claim-sheet').getAttribute('data-state')).toBe('no_binding'),
-    );
-    expect(screen.getByTestId('claim-no-binding-hint').textContent).toContain('/bind_group М8О-401Б-23');
-  });
-
-  it('код неверного формата не уходит в сеть', async () => {
-    handlers.role = 'member';
-    renderScreen();
-
-    const open_claim_el = await screen.findByTestId('open-claim');
-      await act(async () => {
-        fireEvent.click(open_claim_el);
-      });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('claim-start'));
-      await Promise.resolve();
-    });
-    await waitFor(() => expect(screen.getByTestId('claim-sheet').getAttribute('data-state')).toBe('code_sent'));
-
-    // Поле принимает только цифры, а кнопка заблокирована, пока цифр не шесть:
-    // до сети неполный код не доходит вовсе.
-    const confirmButton = screen.getByTestId('claim-confirm') as HTMLButtonElement;
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('claim-code'), { target: { value: '123' } });
-    });
-    expect(confirmButton.disabled).toBe(true);
+    expect(screen.getByText('Опубликовать дедлайн «Сдать курсовую»?')).toBeTruthy();
 
     await act(async () => {
-      fireEvent.click(confirmButton);
-      await Promise.resolve();
-    });
-    expect(calls.some((c) => c.url === '/api/v1/groups/42/claim/confirm')).toBe(false);
-
-    // Шесть цифр включают кнопку и отправку.
-    await act(async () => {
-      fireEvent.change(screen.getByTestId('claim-code'), { target: { value: '123456' } });
-    });
-    expect((screen.getByTestId('claim-confirm') as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it('админ может отозвать активный код через подтверждение', async () => {
-    handlers.role = 'admin';
-    renderScreen();
-
-    const open_claim_revoke_el = await screen.findByTestId('open-claim-revoke');
-      await act(async () => {
-        fireEvent.click(open_claim_revoke_el);
-      });
-    expect(screen.getByText('Отозвать активный claim-код?')).toBeTruthy();
-
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('confirm-claim-revoke'));
+      fireEvent.click(screen.getByTestId('confirm-approve-deadline'));
       await Promise.resolve();
     });
     await waitFor(() =>
-      expect(calls.some((c) => c.url === '/api/v1/groups/42/claim/revoke' && c.method === 'POST')).toBe(true),
+      expect(calls.some((c) => c.url === '/api/v1/deadlines/7/approve' && c.method === 'POST')).toBe(true),
     );
+  });
+
+  it('отклонение подтверждается и шлёт POST /deadlines/{id}/reject', async () => {
+    handlers.pendingDeadlines = [
+      {
+        id: 7,
+        group_id: 42,
+        owner_user_id: null,
+        created_by: 2,
+        title: 'Сдать курсовую',
+        description: '',
+        due_at: '2026-10-10T12:00:00Z',
+        tz: 'Europe/Moscow',
+        status: 'pending_approval',
+        created_at: '2026-10-01T12:00:00Z',
+        updated_at: '2026-10-01T12:00:00Z',
+      },
+    ];
+    renderScreen();
+
+    await screen.findByTestId('pending-deadline-7');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reject-deadline-7'));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('confirm-reject-deadline'));
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(calls.some((c) => c.url === '/api/v1/deadlines/7/reject' && c.method === 'POST')).toBe(true),
+    );
+  });
+
+  it('без заявок секция модерации не рендерится', async () => {
+    renderScreen();
+
+    await screen.findByTestId('members-section');
+    expect(screen.queryByTestId('moderation-section')).toBeNull();
   });
 });
 

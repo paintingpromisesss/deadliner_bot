@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 
+	"github.com/go-telegram/bot/models"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sauron/deadliner/internal/app/groups"
@@ -199,13 +201,14 @@ func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serv
 	// тот же нотификатор, что и напоминания: один лимитер на процесс (§7.4).
 	groupsSvc.WithOptions(groups.Options{Slugs: slugProvider, Notifier: notifier, Users: r.Users})
 	// Инвайты с чекбоксом «Опубликовать в чат» уходят в привязанный чат
-	// группы с кнопкой на Main App direct-link (t.me/<bot>/app?startapp=<код>):
-	// Telegram открывает её нативно как Mini App, без внешнего браузера.
-	// Без BOT_USERNAME кнопки не будет — предупреждаем оператора на старте.
-	if cfg.Bot.Username == "" {
-		log.Warn("serve: BOT_USERNAME is empty: invite chat publish will send text without the Main App button")
+	// группы с кнопкой на Main App direct-link (t.me/<bot>/app?startapp=<код>).
+	// Username бота — getMe по токену; сбой фатален: инвайт без кнопки
+	// свою задачу не выполняет.
+	botUsername, err := resolveBotUsername(context.Background(), client.API())
+	if err != nil {
+		return nil, err
 	}
-	groupsSvc.WithOptions(groups.Options{InvitePublisher: telegram.NewInvitePublisher(notifier, cfg.Bot.Username)})
+	groupsSvc.WithOptions(groups.Options{InvitePublisher: telegram.NewInvitePublisher(notifier, botUsername)})
 	moderationSvc := newModerationService(r, cfg, clock, log)
 	authSvc := newAuthService(r, cfg, clock)
 	deadlinesSvc := newDeadlinesService(r, clock, log)
@@ -402,4 +405,26 @@ func shutdownHTTP(srv *http.Server, done <-chan struct{}, log *slog.Logger) {
 		log.Warn("serve: http shutdown incomplete", slog.String("error", err.Error()))
 	}
 	<-done
+}
+
+// BotUsernameSource — поверхность resolveBotUsername вместо *tgbot.Bot,
+// чтобы функцию можно было тестировать без клиента.
+type BotUsernameSource interface {
+	GetMe(ctx context.Context) (*models.User, error)
+}
+
+// resolveBotUsername — username бота из getMe; бот без username непригоден
+// для direct-link, поэтому это ошибка.
+func resolveBotUsername(ctx context.Context, api BotUsernameSource) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	me, err := api.GetMe(ctx)
+	if err != nil {
+		return "", fmt.Errorf("serve: getMe: %w", err)
+	}
+	username := strings.TrimPrefix(me.Username, "@")
+	if username == "" {
+		return "", errors.New("serve: bot has no username: Main App direct-link for invite buttons cannot be built")
+	}
+	return username, nil
 }

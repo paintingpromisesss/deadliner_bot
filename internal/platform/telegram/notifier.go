@@ -164,25 +164,17 @@ type InvitePublisher struct {
 	botUsername string
 }
 
-// NewInvitePublisher собирает публикатор. botUsername — имя бота без «@»
-// (BOT_USERNAME): из него строится direct-link
-// https://t.me/<bot>/app?startapp=<код>. Пустое имя — кнопки не будет
-// (сообщение уйдёт текстом): web_app-кнопки в группах Telegram запрещает, а
-// без username t.me-ссылку собрать нельзя.
+// NewInvitePublisher собирает публикатор: botUsername (без «@») идёт в
+// direct-link t.me/<bot>/app?startapp=<код> на кнопке инвайта.
 func NewInvitePublisher(notifier *Notifier, botUsername string) *InvitePublisher {
 	return &InvitePublisher{notifier: notifier, botUsername: strings.TrimPrefix(botUsername, "@")}
 }
 
-// PublishInvite отправляет инвайт-сообщение в чат группы. Кнопка — url-кнопка
-// на Main App direct-link: Telegram открывает такие ссылки нативно как Mini
-// App (с окном согласия при первом запуске), внешний браузер не задействуется.
-// startapp-параметр несёт plaintext-код инвайта: открывшееся приложение
-// показывает экран «Вступить в группу?» и списывает лимит только кнопкой
-// «Вступить».
+// PublishInvite отправляет инвайт-сообщение в чат группы; кнопка — direct-link
+// на Main App (startapp = plaintext-код инвайта).
 func (p *InvitePublisher) PublishInvite(ctx context.Context, chatID, threadID int64, text, inviteCode string) error {
 	if p.botUsername == "" || inviteCode == "" {
-		// Без username direct-link не собрать: уходим текстом без кнопки,
-		// оператор узнает об этом по предупреждению в логе при старте serve.
+		// Без username или кода direct-link не собрать: уходим текстом.
 		_, err := p.notifier.SendToChatID(ctx, chatID, threadID, text)
 		return err
 	}

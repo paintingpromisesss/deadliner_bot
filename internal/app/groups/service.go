@@ -118,8 +118,7 @@ type UserNotifier interface {
 // telegram.InvitePublisher; интерфейс объявлен здесь, чтобы app не зависел
 // от platform.
 type ChatPublisher interface {
-	// inviteCode — plaintext-код инвайта: нужен для Main App direct-link
-	// (startapp-параметр) на кнопке сообщения.
+	// inviteCode — код инвайта: идёт в startapp-параметр direct-link.
 	PublishInvite(ctx context.Context, chatID, threadID int64, text, inviteCode string) error
 }
 

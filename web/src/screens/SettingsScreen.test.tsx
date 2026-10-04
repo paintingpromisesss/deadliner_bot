@@ -133,10 +133,11 @@ describe('SettingsScreen: переопределения по группам', (
 
     const own = await screen.findByTestId('group-notify-42');
     expect(own.textContent).toContain('М8О-401Б-23');
-    expect(own.textContent).toContain('индивидуально');
+    expect(own.textContent).toContain('настроено отдельно (включено)');
 
     const inherited = screen.getByTestId('group-notify-43');
-    expect(inherited.textContent).toContain('как в общих настройках');
+    expect(inherited.textContent).toContain('ИКБО-33-21');
+    expect(inherited.textContent).not.toContain('настроено отдельно');
   });
 
   it('кнопка «наследовать» есть только у переопределённой группы', async () => {
@@ -226,7 +227,8 @@ describe('SettingsScreen: переопределения по группам', (
     // Исходное состояние: дефолт включён, наследующая группа включена.
     await screen.findByTestId('group-notify-43');
     expect((screen.getByTestId('group-notify-switch-43') as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByTestId('group-notify-43').textContent).toContain('как в общих настройках');
+    expect(screen.getByTestId('group-notify-43').textContent).toContain('ИКБО-33-21');
+    expect(screen.getByTestId('group-notify-43').textContent).not.toContain('настроено отдельно');
 
     // Выключаем общий дефолт (автосохранение).
     const dmSwitch = screen.getByRole('checkbox', { name: /Дублировать напоминания/ }) as HTMLInputElement;

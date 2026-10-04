@@ -228,6 +228,8 @@ export const strings = {
     groupInherit: 'Сбросить к общему',
     groupOverride: 'индивидуально',
     groupInherited: 'как в общих настройках',
+    groupOverrideEnabled: 'настроено отдельно (включено)',
+    groupOverrideDisabled: 'настроено отдельно (выключено)',
     groupsEmpty: 'Вы не состоите в группах — настраивать нечего.',
     telegramID: 'Telegram ID',
     save: 'Сохранить',

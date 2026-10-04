@@ -3,7 +3,8 @@ import type { ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppRoot, List, Placeholder, Section, Spinner } from './components/ui';
 
-import { hasInitData, getStartParam, syncBackButton } from './lib/tma';
+import { hasInitData, getStartParam, syncBackButton, hapticImpact } from './lib/tma';
+import { strings } from './lib/strings';
 import { useAuthStore } from './stores/auth';
 import { navigate, routerBack, routeGroupID, routeName, useRoute } from './router';
 import { TabBar } from './components/TabBar';
@@ -141,13 +142,45 @@ function AuthGate({ children }: { children: ReactNode }) {
 /** Синхронизация нативной кнопки «Назад» (5.1). */
 function BackButtonSync() {
   const route = useRoute();
-  const isRoot = route.raw === '#/' || route.path.length === 0;
+  const isRoot = route.path.length <= 1;
 
   useEffect(() => {
-    return syncBackButton(isRoot, routerBack);
-  }, [isRoot]);
+    return syncBackButton(isRoot, () => {
+      if (route.path[0] === 'groups' && route.path.length > 1) {
+        navigate('/groups');
+      } else {
+        routerBack();
+      }
+    });
+  }, [isRoot, route]);
 
   return null;
+}
+
+/**
+ * Единый плавающий «+» для экранов «Дедлайны» и «Календарь».
+ * Монтируется на уровне App вне .dl-screen, благодаря чему не пересоздаётся
+ * и не попадает под animation fade-in при переключении между табами.
+ */
+function AppFAB() {
+  const route = useRoute();
+  const name = routeName(route);
+  if (name !== '/' && name !== '/calendar') return null;
+
+  return (
+    <button
+      type="button"
+      className="dl-fab dl-fab--global"
+      aria-label={strings.deadlines.addButton}
+      data-testid="fab-add"
+      onClick={() => {
+        hapticImpact('medium');
+        window.dispatchEvent(new CustomEvent('deadliner:open-create'));
+      }}
+    >
+      +
+    </button>
+  );
 }
 
 export function App() {
@@ -159,6 +192,7 @@ export function App() {
           <main className="dl-main">
             <Routes />
           </main>
+          <AppFAB />
           <InviteJoinGate />
           <TabBar />
         </AuthGate>

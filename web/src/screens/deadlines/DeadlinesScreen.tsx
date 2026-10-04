@@ -2,7 +2,7 @@
 // с обратным отсчётом, чип-фильтры «Все/Личные/Групповые», сегменты
 // «Просрочено/Сегодня/7 дней/Позже», FAB «+». Действия — тапом по строке
 // (форма) или кнопками справа на строке; удаление подтверждается везде.
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Cell, List, Placeholder, Section, Spinner } from '../../components/ui';
 import { Screen } from '../../components/Screen';
 import { DeadlineCell, DeadlineHero, useMinuteTick } from '../../components/DeadlineCard';
@@ -98,6 +98,12 @@ export function DeadlinesScreen() {
     setEditing(null);
     setSheetOpen(true);
   }
+
+  useEffect(() => {
+    const handler = () => openCreate();
+    window.addEventListener('deadliner:open-create', handler);
+    return () => window.removeEventListener('deadliner:open-create', handler);
+  }, []);
 
   function openEdit(deadline: Deadline) {
     setEditing(deadline);
@@ -225,18 +231,20 @@ export function DeadlinesScreen() {
             </>
           )}
 
-          <button
-            type="button"
-            className="dl-fab"
-            aria-label={strings.deadlines.addButton}
-            data-testid="fab-add"
-            onClick={() => {
-              hapticImpact('medium');
-              openCreate();
-            }}
-          >
-            +
-          </button>
+          {typeof document === 'undefined' || !document.querySelector('.dl-fab--global') ? (
+            <button
+              type="button"
+              className="dl-fab"
+              aria-label={strings.deadlines.addButton}
+              data-testid="fab-add"
+              onClick={() => {
+                hapticImpact('medium');
+                openCreate();
+              }}
+            >
+              +
+            </button>
+          ) : null}
 
           <DeadlineSheet
             open={sheetOpen}

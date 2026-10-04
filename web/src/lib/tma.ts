@@ -58,6 +58,11 @@ let tmaInitialized = false;
 
 export function initTMA(): void {
   if (tmaInitialized) return;
+  if (typeof window !== 'undefined' && window.Telegram?.WebApp) {
+    try {
+      window.Telegram.WebApp.ready();
+    } catch {}
+  }
   if (!isTMA()) {
     // Вне Telegram SDK не инициализируется — все дальнейшие вызовы
     // отфильтрованы guard'ами isAvailable()/isMounted(). Флаг не выставляем:

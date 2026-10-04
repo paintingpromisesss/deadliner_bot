@@ -363,7 +363,7 @@ func (r *fakeInviteRepo) Revoke(ctx context.Context, groupID int64, code string)
 func (r *fakeInviteRepo) ListByGroup(ctx context.Context, groupID int64) ([]domain.Invite, error) {
 	out := []domain.Invite{}
 	for _, inv := range r.invites {
-		if inv.GroupID == groupID {
+		if inv.GroupID == groupID && inv.RevokedAt == nil {
 			out = append(out, *inv)
 		}
 	}

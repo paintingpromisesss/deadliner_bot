@@ -176,6 +176,15 @@ p, h1, h2, h3, h4 { margin: 0; }
 .dl-cell + .dl-cell {
   border-top: 1px solid var(--tg-theme-section-separator-color);
 }
+.cell-list .dl-cell-empty {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  font-size: 14px;
+  color: var(--tg-theme-hint-color);
+  line-height: 1.4;
+  border-top: 1px solid var(--tg-theme-section-separator-color);
+}
 .dl-cell--multiline {
   align-items: flex-start;
 }
@@ -770,6 +779,18 @@ button.dl-button:active:not(:disabled) {
 }
 .dl-action.dl-danger {
   color: var(--tg-theme-destructive-text-color);
+}
+.dl-action--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  color: var(--tg-theme-hint-color);
+  transition: color 120ms ease, background-color 120ms ease;
+}
+.dl-action--icon:hover,
+.dl-action--icon:active {
+  color: var(--tg-theme-text-color);
 }
 
 /* ── FAB «+» (по макету .fab) ── */

@@ -107,7 +107,7 @@ func (r *invitesRepo) Revoke(ctx context.Context, groupID int64, code string) er
 func (r *invitesRepo) ListByGroup(ctx context.Context, groupID int64) ([]domain.Invite, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+inviteColumns+` FROM invites
-		 WHERE group_id = $1 ORDER BY id`, groupID)
+		 WHERE group_id = $1 AND revoked_at IS NULL ORDER BY id DESC`, groupID)
 	if err != nil {
 		return nil, mapErr(err)
 	}

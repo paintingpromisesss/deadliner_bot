@@ -161,7 +161,7 @@ export const strings = {
     invitePublishNoBinding: 'Недоступно: у группы нет привязанного чата.',
     invitePublished: 'Приглашение опубликовано в чат группы.',
     inviteExpiresNever: 'бессрочно',
-    inviteCreated: 'Код создан — скопируйте сейчас',
+    inviteCreated: 'Инвайт-код создан',
     inviteCopy: 'Скопировать код',
     inviteCopied: 'Код скопирован',
     inviteRevoke: 'Отозвать',

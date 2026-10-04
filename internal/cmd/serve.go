@@ -31,21 +31,17 @@ const (
 	// shutdownTimeout — сколько ждём долетающие HTTP-запросы TMA после
 	// Shutdown: запросы короткие, дольше держать процесс незачем.
 	shutdownTimeout = 15 * time.Second
-	// workerDrainTimeout — сколько ждём scheduler-воркер. Воркер дожидается
-	// ТЕКУЩЕГО батча, а его горутины доводят начатую отправку под собственным
-	// FinalizeTimeout (scheduler.DefaultFinalizeTimeout = 75s: нотификатор
-	// держит 429 retry_after до 60с), поэтому бюджет — FinalizeTimeout плюс
-	// запас на MarkSent.
+	// workerDrainTimeout — сколько ждём scheduler-воркер: FinalizeTimeout
+	// (75с, включая выдержку 429 до 60с) плюс запас на MarkSent.
 	workerDrainTimeout = 90 * time.Second
 	// botDrainTimeout — остановка бота: polling-цикл выходит сразу, воркеры
 	// webhook-режима дорабатывают уже принятый апдейт.
 	botDrainTimeout = 15 * time.Second
-	// cleanupDrainTimeout — остановка cleanup-петли: она не блокируется на
-	// работе дольше одного прогона (джоба выходит по ctx), поэтому бюджет
-	// небольшой — он страхует от зависшего SQL, а не ждёт расписания.
+	// cleanupDrainTimeout — остановка cleanup-петли: джоба выходит по ctx,
+	// бюджет страхует только от зависшего SQL.
 	cleanupDrainTimeout = 30 * time.Second
-	// webhookTimeout — best-effort setWebhook/deleteWebhook. Делается
-	// собственным контекстом: на выходе ctx уже отменён сигналом.
+	// webhookTimeout — best-effort setWebhook/deleteWebhook собственным
+	// контекстом: на выходе ctx уже отменён сигналом.
 	webhookTimeout = 10 * time.Second
 	// readHeaderTimeout — защита от медленного клиента на уровне сервера.
 	readHeaderTimeout = 15 * time.Second
@@ -259,10 +255,8 @@ func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serv
 		LockTTL:      cfg.Scheduler.LockTTL,
 		MaxAttempts:  cfg.Scheduler.MaxAttempts,
 		WorkerID:     workerID(),
-		// Ноль — воркер подставит свой дефолт (scheduler.DefaultFinalizeTimeout).
-		// Значение дублировать здесь не нужно: оно обязано совпадать с тем, под
-		// которым воркер реально работает, а единственный источник — константа
-		// в пакете scheduler (проверяется тестом).
+		// Ноль — воркер подставит свой дефолт (DefaultFinalizeTimeout);
+		// единственный источник значения — константа в пакете scheduler.
 	})
 
 	return &serveGraph{moder: moderationSvc, worker: worker, bot: bot, router: router}, nil
@@ -337,14 +331,10 @@ func recoverLoop(what string, log *slog.Logger) {
 // startBot приводит Telegram к рабочему состоянию: в webhook-режиме
 // регистрирует адрес приёма апдейтов (setWebhook с secret_token), затем
 // запускает цикл приёма в горутине — polling (bot.Start) или webhook-воркеры
-// (bot.StartWebhook; сами апдейты приходят в POST /webhook). Возвращает канал,
-// закрывающийся по выходу цикла: после отмены ctx его нужно дождаться, иначе
-// процесс завершится, не доработав уже принятый апдейт.
-//
-// Проверки «UsesWebhook() ⇒ URL непуст» здесь нет: config.Load отвергает
-// POLLING_MODE=webhook без WEBHOOK_URL, а при пустом режиме webhook включает сам
-// URL. От пустого адреса всё равно страхует RegisterWebhook (возвращает ошибку),
-// поэтому рассинхронизация валидации даст отказ старта, а не молчащий бот.
+// (bot.StartWebhook; апдейты приходят в POST /webhook). Возвращает канал,
+// закрывающийся по выходу цикла: его нужно дождаться после отмены ctx, иначе
+// процесс завершится, не доработав принятый апдейт. Проверку «URL непуст»
+// делают config.Load и RegisterWebhook.
 func startBot(ctx context.Context, g *serveGraph, cfg *config.Config, log *slog.Logger) (<-chan struct{}, error) {
 	if cfg.Bot.UsesWebhook() {
 		// Регистрация — под отдельным контекстом: setWebhook переживает сигнал

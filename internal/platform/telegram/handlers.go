@@ -57,11 +57,9 @@ func NewHandlers(d HandlersDeps, log *slog.Logger) *Handlers {
 	}
 }
 
-// commands — набор setMyCommands (спека §6.1). Superadmin-команды (Task 12)
-// публикуются ТОЛЬКО в default-scope (личный чат): они защищены проверкой
-// is_superadmin, но их существование не должно попадать в меню
-// администраторов ЧАТОВ (all_chat_administrators) — там эти команды
-// бессмысленны и выглядели бы как права, которых у чат-админа нет.
+// commands — набор setMyCommands (спека §6.1). Superadmin-команды
+// публикуются только в default-scope: их существование не должно попадать в
+// меню администраторов чатов, где они бессмысленны.
 func (h *Handlers) commands() []BotCommand {
 	return []BotCommand{
 		{Command: "start", Description: i18n.T("bot.cmd.start")},
@@ -84,15 +82,10 @@ func (h *Handlers) commands() []BotCommand {
 // сообщения боту доказывает, что пользователь его не блокировал), в группах
 // пользователь обновляется только при наличии message.from.
 //
-// Забаненный пользователь на уровне ВСЕХ сообщений не проверяется намеренно:
-// UpsertByTelegram возвращает частичного пользователя (is_banned не читается),
-// и гидратация на каждое сообщение стоила бы лишнего чтения. Покрытие бана
-// неполное ровно по этой причине: API-пути (создание группы, claim, привязка
-// через REST) защищены middleware.Auth (403) и auth.Login, но привязка чата
-// (/bind_group, /unbind) существует ТОЛЬКО в боте и под middleware не попадает
-// — эти команды гидратируют вызывающего сами (Handlers.isBanned). Служебные
-// команды (/promote, /ban, /unban, /stats, /delete_group) гидратируют по той же
-// причине (guard is_superadmin).
+// Бан не проверяется на каждое сообщение: UpsertByTelegram возвращает частичного
+// пользователя (is_banned не читается). API-пути защищены middleware.Auth и
+// auth.Login; команды, живущие только в боте (/bind_group, /unbind, служебные),
+// гидратируют вызывающего сами (Handlers.isBanned, handleSuperadmin).
 func (h *Handlers) Handle(ctx context.Context, upd *models.Update) {
 	if upd == nil || upd.Message == nil {
 		// Прочие типы апдейтов (callback_query и т.п.) вне периметра v1.
@@ -131,11 +124,8 @@ func (h *Handlers) Handle(ctx context.Context, upd *models.Update) {
 }
 
 // touchUser обновляет users (UpsertByTelegram) и — только в ЛС — снимает
-// bot_blocked. Групповой апдейт НЕ доказывает, что бот не заблокирован в ЛС:
-// пользователь мог заблокировать бота и продолжать писать в общий чат, а
-// сброс флага заставил бы воркер снова тратить 403-отправки (§7.3).
-// Возвращает входные данные автора или nil, если автора нет / БД недоступна —
-// команды, требующие личности, в этом случае не выполняются.
+// bot_blocked: групповой апдейт не доказывает, что бот не заблокирован в ЛС
+// (§7.3). Возвращает данные автора или nil, если автора нет / БД недоступна.
 func (h *Handlers) touchUser(ctx context.Context, msg *models.Message) *domain.User {
 	if msg.From == nil || h.users == nil {
 		return nil
@@ -222,13 +212,11 @@ func (h *Handlers) handleGroups(ctx context.Context, msg *models.Message, actor 
 	h.send(ctx, msg.Chat.ID, nil, strings.Join(lines, "\n"), true)
 }
 
-// handleNewDeadline живёт в handlers_deadline.go (Task 11: web_app-кнопка на
-// deeplink #add).
+// handleNewDeadline живёт в handlers_deadline.go.
 
 // handleBindGroup — /bind_group <slug> (спека §6.1): привязать этот
 // chat_id(+thread_id) к группе. Порядок: чат (не ЛС) → аргумент → бан
-// вызывающего → бот — админ чата (знание Telegram, не домена) → use case
-// (слаг существует, вызывающий участник, 1 чат = 1 группа).
+// вызывающего → бот — админ чата → use case.
 func (h *Handlers) handleBindGroup(ctx context.Context, msg *models.Message, actor *domain.User, arg string) {
 	if isPrivate(msg.Chat.Type) {
 		h.send(ctx, msg.Chat.ID, nil, i18n.T("bot.bind.wrong_chat"), false)
@@ -271,9 +259,8 @@ func (h *Handlers) handleBindGroup(ctx context.Context, msg *models.Message, act
 }
 
 // handleUnbind — /unbind: снять привязку (роль admin группы, спека §6.1).
-// Забаненный вызывающий отсекается так же, как в /bind_group: привязка
-// существует только через бота, поэтому middleware-проверка бана на этом пути
-// не работает.
+// Забаненный вызывающий отсекается как в /bind_group: путь живёт только в
+// боте, middleware.Auth его не прикрывает.
 func (h *Handlers) handleUnbind(ctx context.Context, msg *models.Message, actor *domain.User) {
 	if isPrivate(msg.Chat.Type) {
 		h.send(ctx, msg.Chat.ID, nil, i18n.T("bot.bind.wrong_chat"), false)
@@ -299,16 +286,13 @@ func (h *Handlers) handleUnbind(ctx context.Context, msg *models.Message, actor 
 	h.send(ctx, msg.Chat.ID, thread, i18n.T("bot.unbind.ok", i18n.EscapeHTML(g.Title)), false)
 }
 
-// isBanned — гидратация вызывающего ради флага бана. Вызывается ТОЛЬКО из
+// isBanned — гидратация вызывающего ради флага бана. Вызывается только из
 // команд записи, доступных из чата (/bind_group, /unbind): actor из touchUser
-// частичный (is_banned не читается), а привязка чата живёт исключительно в
-// боте — middleware.Auth её не прикрывает, в отличие от API-путей (создание
-// группы, claim, удаление), где забаненный получает 403 и без этой проверки.
-// Одно чтение на команду, а не на каждое сообщение: цена приемлема, потому что
-// команды редкие и именно они меняют состояние чата.
-//
-// Ошибка чтения считается «не знаем» и трактуется вызывающим как generic:
-// пропустить забаненного хуже, чем отказать в привязке при сбое БД.
+// частичный (is_banned не читается), а эти пути живут только в боте —
+// middleware.Auth их не прикрывает. Одно чтение на команду, а не на каждое
+// сообщение: команды редкие и именно они меняют состояние чата. Ошибка чтения
+// трактуется вызывающим как generic: пропустить забаненного хуже, чем
+// отказать в привязке при сбое БД.
 func (h *Handlers) isBanned(ctx context.Context, telegramID int64) (bool, error) {
 	if h.users == nil {
 		return false, nil

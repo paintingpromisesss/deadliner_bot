@@ -40,7 +40,7 @@ func main() {
 
 	switch mode {
 	case "serve":
-		// Каталог строк интерфейса должен быть загружен до сборки роутера (Task 6).
+		// Каталог строк должен быть загружен до сборки роутера.
 		i18n.MustLoad(i18n.Locales)
 		if err := cmd.Serve(ctx, cfg, log); err != nil {
 			log.Error("serve failed", slog.String("error", err.Error()))

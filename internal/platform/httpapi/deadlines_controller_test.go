@@ -71,8 +71,8 @@ type createDeadlineResp struct {
 	} `json:"reminders"`
 }
 
-// setupGroupWithAdmin создаёт группу и делает её создателя админом (claim —
-// Task 10; напрямую в БД, как promoteGroupAdmin в groups-тестах).
+// setupGroupWithAdmin создаёт группу и делает её создателя админом напрямую
+// в БД (как promoteGroupAdmin в groups-тестах).
 func setupGroupWithAdmin(t *testing.T, r http.Handler, token string, slug string) int64 {
 	t.Helper()
 	resp := doJSON(r, http.MethodPost, "/api/v1/groups", token,

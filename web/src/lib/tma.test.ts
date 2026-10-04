@@ -1,6 +1,5 @@
-// Браузерная безопасность tma.ts: вне Telegram (jsdom без window.Telegram)
-// ни один вызов SDK не должен бросать — иначе dev-режим и пререндер падают.
-// Это контракт из брифа Task 13: «MUST work in a plain browser».
+// Браузерная безопасность tma.ts: вне Telegram ни один вызов SDK не должен
+// бросать, иначе dev-режим и пререндер падают («MUST work in a plain browser»).
 import { describe, expect, it } from 'vitest';
 import {
   getAppearance,

@@ -101,11 +101,9 @@ export function dayNumber(year: number, month: number, day: number): number {
 }
 
 /**
- * Границы месяца в UTC для запроса from/to (спека §5.2): начало первого дня и
- * последняя миллисекунда последнего дня, посчитанные в настенном времени tz
- * пользователя. Конвертация — общим fromWallClock из format.ts: та же логика,
- * что и в форме, поэтому границы не «уезжают» на час относительно введённого
- * пользователем времени.
+ * Границы месяца в UTC для запроса from/to (спека §5.2): начало первого дня
+ * и последняя миллисекунда последнего, посчитанные через общий fromWallClock —
+ * та же логика, что в форме, поэтому границы не «уезжают» на час.
  */
 export function monthBounds(year: number, month: number, tz: string): { from: Date; to: Date } {
   const from = fromWallClock(`${dayKey({ year, month, day: 1 })}`, '00:00', tz);

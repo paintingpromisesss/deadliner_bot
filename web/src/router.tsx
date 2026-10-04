@@ -63,11 +63,9 @@ export function routeName(route: Route): RouteName {
 }
 
 /**
- * Числовой id группы из маршрута «#/groups/123» → 123; иначе null.
- *
- * Мусор («#/groups/abc», «#/groups/0») даёт null, а не исключение: хеш приходит
- * из адресной строки и редактируется руками — падать на разборе нельзя, экран
- * покажет список групп.
+ * Числовой id группы из «#/groups/123» → 123; иначе null. Мусор
+ * («#/groups/abc», «#/groups/0») даёт null, а не исключение: хеш
+ * редактируется руками — экран покажет список групп.
  */
 export function routeGroupID(route: Route): number | null {
   if (route.path[0] !== 'groups') return null;

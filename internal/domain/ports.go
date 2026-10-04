@@ -42,9 +42,8 @@ type UserRepo interface {
 	GetByID(ctx context.Context, id int64) (*User, error)
 	UpsertByTelegram(ctx context.Context, u *User) error
 	UpdateSettings(ctx context.Context, id int64, tz string, dmNotifyDefault bool) error
-	// UpdateProfile пишет first_name (спека §5.2: PATCH /me принимает имя).
-	// Отдельный метод, а не расширение UpdateSettings: у настроек и профиля
-	// разные вызывающие (настройки пишет и notifications-сервис).
+	// UpdateProfile пишет first_name (спека §5.2: PATCH /me). Отдельный метод:
+	// у настроек и профиля разные вызывающие.
 	UpdateProfile(ctx context.Context, id int64, firstName string) error
 	SetBanned(ctx context.Context, id int64, banned bool) error
 	SetSuperadmin(ctx context.Context, id int64, superadmin bool) error
@@ -135,10 +134,9 @@ type ReminderRepo interface {
 	// ListByDeadline — все reminders дедлайна (любой статус), по fire_at.
 	ListByDeadline(ctx context.Context, deadlineID int64) ([]Reminder, error)
 	// FetchDue блокирует due-pending строки в tx (FOR UPDATE SKIP LOCKED) и
-	// помечает их locked_by/locked_at (спека §7.2). Реализация tx ДОЛЖНА также
-	// удовлетворять Query(ctx, sql, args...) (pgx.Rows, error) — порт Tx
-	// объявляет только Exec/QueryRow, репо утверждает tx к этому расширению и
-	// возвращает ошибку, если его нет (см. адаптер в repo-тестах).
+	// помечает их locked_by/locked_at (спека §7.2). Реализация tx обязана также
+	// поддерживать Query(ctx, sql, args...): порт Tx объявляет только
+	// Exec/QueryRow, репо делает type-assertion.
 	FetchDue(ctx context.Context, tx Tx, now time.Time, limit int, workerID string) ([]Reminder, error)
 	// MarkSent — UPDATE … WHERE status='pending' AND locked_by=workerID;
 	// ok=false если строку уже отправили/забрал другой воркер (идемпотентность
@@ -157,17 +155,12 @@ type ReminderRepo interface {
 	// olderThan): locked_by/locked_at=NULL, attempts+=1; возвращает число строк.
 	ReleaseStale(ctx context.Context, olderThan time.Time) (int64, error)
 	CancelByDeadline(ctx context.Context, deadlineID int64) error
-	// Regenerate в ОДНОЙ транзакции: pending → cancelled, затем новые
-	// reminders. Unique-индексы не учитывают status, поэтому вместо вставки
-	// поверх cancelled строка детерминированно «воскрешается»: preset/
-	// custom_offset — старейшая по id cancelled-строка с тем же (kind,
-	// offset), если новый fire_at не занят другой строкой (иначе остаётся
-	// cancelled); custom_at — cancelled-строка с точно тем же fire_at.
-	// Свежие вставки — ON CONFLICT DO NOTHING (гонки/повторы терпимы);
-	// sent/failed не трогаются. Возвращает число строк, ставших pending.
-	// КОНТРАКТ: Regenerate — отдельная транзакция от deadlines.Update, поэтому
-	// вызывающий use case при сбое ОБЯЗАН компенсировать уже применённый
-	// патч дедлайна (см. deadlines.Service.Update).
+	// Regenerate в одной транзакции: pending → cancelled, затем новые
+	// reminders (cancelled-строки «воскрешаются», свежие вставки —
+	// ON CONFLICT DO NOTHING; см. реализацию repo.upsertReminder). Возвращает
+	// число строк, ставших pending. КОНТРАКТ: это отдельная транзакция от
+	// deadlines.Update — при сбое вызывающий ОБЯЗАН компенсировать применённый
+	// патч дедлайна (deadlines.Service.Update).
 	Regenerate(ctx context.Context, deadlineID int64, newReminders []Reminder) (inserted int, err error)
 }
 
@@ -186,11 +179,9 @@ type CounterRepo interface {
 }
 
 // ChatCounterRepo — счётчики, привязанные к ЧАТУ, а не к пользователю
-// (спека §3.3: «лимит claim-кодов — 3/час на ЧАТ»). Отдельная таблица
-// chat_action_counters без FK: чат существует только как Telegram chat_id и
-// может быть ещё не привязан к группе. Семантика IncAndCheck — как у
-// CounterRepo: возвращает счётчик ПОСЛЕ инкремента, политика (count > limit)
-// остаётся в app-слое.
+// (спека §3.3). Отдельная таблица chat_action_counters без FK: чат существует
+// только как Telegram chat_id. Семантика IncAndCheck — как у CounterRepo,
+// политика (count > limit) остаётся в app-слое.
 type ChatCounterRepo interface {
 	IncAndCheck(ctx context.Context, chatID int64, action string, windowStart time.Time, limit int) (int, error)
 }
@@ -226,8 +217,7 @@ type Stats struct {
 
 // MaintenanceRepo — служебные операции над таблицами, у которых нет
 // доменной сущности с собственным use case: счётчики rate-limit и сессии.
-// Нужен cleanup-джобе (Task 12: старые окна счётчиков + истёкшие сессии) и
-// статистике инстанса.
+// Нужен cleanup-джобе и статистике инстанса.
 type MaintenanceRepo interface {
 	// Stats собирает счётчики инстанса на момент now (сессии — активные).
 	Stats(ctx context.Context, now time.Time) (Stats, error)

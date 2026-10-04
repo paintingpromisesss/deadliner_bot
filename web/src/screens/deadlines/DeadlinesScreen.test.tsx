@@ -1,10 +1,7 @@
-// Экранный тест «Дедлайны»: hero-карточка ближайшего дедлайна, чип-фильтры
-// (Все/Личные/Групповые), сегменты по срокам и доступность действий
-// «выполнить/удалить» прямо из списка.
-//
-// Системное время замораживается (vi.useFakeTimers + shouldAdvanceTime):
-// сегменты «Сегодня/7 дней/Позже» зависят от текущих суток, и без фиксации
-// тест падал бы в определённые часы. now = 2026-09-29 12:00 MSK.
+// Экранный тест «Дедлайны»: hero-карточка, чип-фильтры, сегменты по срокам,
+// действия «выполнить/удалить» из списка. Время замораживается
+// (vi.useFakeTimers + shouldAdvanceTime): сегменты зависят от текущих суток,
+// без фиксации тест падал бы в определённые часы. now = 2026-09-29 12:00 MSK.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';

@@ -57,8 +57,8 @@ func TestRealCatalogLoads(t *testing.T) {
 		t.Fatalf("Load(Locales) = %v", err)
 	}
 
-	// Ключи, зафиксированные брифом задачи 5 (bot.bind.not_group_admin заменён
-	// на bot.bind.not_chat_admin в Task 10: текст говорит про права БОТА в чате).
+	// Ключи интерфейса бота (bot.bind.not_chat_admin: текст про права БОТА
+	// в чате).
 	required := []string{
 		"bot.start", "bot.help",
 		"bot.bind.ok", "bot.bind.conflict_already_bound", "bot.bind.not_chat_admin", "bot.bind.unknown_slug",

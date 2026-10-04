@@ -45,10 +45,9 @@ export const DEADLINES_KEY = 'deadlines';
 export const GROUPS_KEY = 'groups';
 
 /**
- * Ключ настроек уведомлений. Отдельная константа, потому что эффективное
- * значение группы зависит от ОБЩЕГО дефолта (spec §5.2: COALESCE(membership,
- * users.dm_notify_default)): смена дефолта обязана инвалидировать эти же
- * данные, иначе строки групп показывали бы устаревшее значение.
+ * Ключ настроек уведомлений — отдельная константа: эффективное значение
+ * группы зависит от общего дефолта (spec §5.2: COALESCE(membership,
+ * users.dm_notify_default)), и его смена обязана инвалидировать эти же данные.
  */
 export const NOTIFICATIONS_QUERY_KEY = [GROUPS_KEY, 'notifications'] as const;
 

@@ -48,8 +48,8 @@ func scanReminder(row pgx.Row) (*domain.Reminder, error) {
 }
 
 // insertReminder строго вставляет одну строку внутри tx, заполняя ID.
-// Дубликат на любом unique-индексе → ErrConflict: страховка от дублей
-// (спека §7.1) должна откатывать транзакцию, а не молча терять строку.
+// Дубликат на unique-индексе → ErrConflict: транзакция откатывается,
+// строка не теряется молча (спека §7.1).
 func insertReminder(ctx context.Context, q pgx.Tx, r *domain.Reminder) error {
 	status := r.Status
 	if status == "" {
@@ -67,21 +67,12 @@ func insertReminder(ctx context.Context, q pgx.Tx, r *domain.Reminder) error {
 }
 
 // upsertReminder — конфликт-толерантная запись для Regenerate.
-//
-// Unique-индексы не учитывают status, поэтому вставить новую строку поверх
-// cancelled с тем же (kind, offset) нельзя — вместо этого ОДНА cancelled-
-// строка «воскрешается» обратно в pending. Выбор кандидата детерминирован:
-//   - preset/custom_offset (offset_minutes задан): старейшая по id cancelled-
-//     строка с тем же (kind, offset), и только если новый fire_at не занят
-//     другой строкой под unique-индексом (deadline_id, fire_at, kind) —
-//     коллизия (например, с sent-строкой) оставляет кандидата cancelled;
-//   - custom_at (offset_minutes NULL): cancelled-строка с точно тем же
-//     fire_at. Матч «любой cancelled custom_at» переписал бы несколько
-//     отменённых строк на одно время и упал бы в 23505.
-//
-// Если кандидата нет — вставка с ON CONFLICT DO NOTHING (гонки/повторы
-// терпимы). sent/failed-строки не трогаются. Возвращает true, если строка
-// стала pending (воскрешена или вставлена).
+// Unique-индексы не учитывают status, поэтому cancelled-строка с тем же
+// (kind, offset) «воскрешается» в pending вместо вставки: для preset/
+// custom_offset — старейшая по id cancelled-строка, если её новый fire_at не
+// занят (иначе остаётся cancelled); для custom_at — cancelled-строка с точно
+// тем же fire_at. Если кандидата нет — вставка с ON CONFLICT DO NOTHING.
+// sent/failed не трогаются; true — строка стала pending.
 func upsertReminder(ctx context.Context, q pgx.Tx, r *domain.Reminder) (bool, error) {
 	var id int64
 	var err error
@@ -211,10 +202,8 @@ func (r *remindersRepo) FetchDue(ctx context.Context, tx domain.Tx, now time.Tim
 }
 
 // PgxTx — экспортируемый адаптер pgx.Tx под domain.Tx (Exec/QueryRow/Query).
-// Воркер планировщика открывает транзакцию из пула и передаёт её в
-// FetchDue/MarkSentWithFanout через этот адаптер; repo-тесты используют его
-// же. Query не входит в порт domain.Tx (domain не должен знать pgx.Rows),
-// поэтому FetchDue обращается к нему через type-assertion в txQuery.
+// Query не входит в порт domain.Tx (domain не знает pgx.Rows): FetchDue
+// обращается к нему через type-assertion в txQuery.
 type PgxTx struct{ Tx pgx.Tx }
 
 func (a *PgxTx) Exec(ctx context.Context, sql string, args ...any) error {
@@ -249,8 +238,7 @@ func BeginDomainTx(ctx context.Context, pool TxBeginner) (domain.Tx, func(), err
 }
 
 // CommitDomainTx коммитит транзакцию, открытую BeginDomainTx. Откат при
-// ошибке коммита — на вызывающем (rollback idiom уже отработает: повторный
-// Rollback после commit безопасен и игнорируется pgx).
+// ошибке коммита — на вызывающем (повторный Rollback после commit безопасен).
 func CommitDomainTx(ctx context.Context, tx domain.Tx) error {
 	adapter, ok := tx.(*PgxTx)
 	if !ok {

@@ -25,11 +25,9 @@ type Sender interface {
 const maxInternalRetryAfter = 60 * time.Second
 
 // Notifier реализует domain.Notifier: глобальный (25/с) и per-chat (18/мин)
-// лимиты через scheduler.Limiter, внутренняя выдержка 429 retry_after.
-//
-// Если нижележащий sender реализует MessageSender (BotSender это делает),
-// сообщения уходят с inline-кнопкой web_app (спека §6.2); иначе — обычным
-// SendMessage: нотификатор остаётся работоспособен на минимальном Sender.
+// лимиты через scheduler.Limiter, внутренняя выдержка 429 retry_after. Если
+// sender реализует MessageSender, сообщения уходят с inline-кнопкой (спека
+// §6.2), иначе — обычным SendMessage.
 type Notifier struct {
 	sender Sender
 	lim    *scheduler.Limiter
@@ -62,7 +60,7 @@ func (n *Notifier) SendToChat(ctx context.Context, chatID, threadID int64, text 
 }
 
 // SendToChatID — как SendToChat, но возвращает message_id опубликованного
-// сообщения (claim-флоу пишет его в claim_codes.message_id).
+// сообщения.
 func (n *Notifier) SendToChatID(ctx context.Context, chatID, threadID int64, text string) (int64, error) {
 	var tid *int64
 	if threadID != 0 {

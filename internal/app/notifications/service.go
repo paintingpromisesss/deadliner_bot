@@ -1,11 +1,7 @@
 // Package notifications — use cases настроек уведомлений (спека §5.2, §9
 // экран 6): глобальный дефолт «дубль в ЛС» (users.dm_notify_default) и
-// per-group переопределение (group_memberships.dm_notify). NULL в членстве =
-// «наследовать дефолт», поэтому эффективное значение — COALESCE(membership,
-// default), а не отдельная копия флага.
-//
-// Сервис зависит только от domain-портов (правило зависимостей), поэтому
-// проверяется юнит-тестами на фейках.
+// per-group переопределение (group_memberships.dm_notify; NULL = наследовать
+// дефолт). Зависит только от domain-портов.
 package notifications
 
 import (
@@ -138,9 +134,8 @@ func (s *Service) Update(ctx context.Context, actor *domain.User, in UpdateInput
 		if _, err := s.members.Get(ctx, *in.GroupID, actor.ID); err != nil {
 			return nil, err
 		}
-		// Симметрия с Get: soft-deleted группа невидима (GroupRepo.GetByID
-		// фильтрует deleted_at). Без этой проверки PATCH возвращал бы 200 и
-		// молча писал в группу, которую GET по тому же id отдаёт как 404.
+		// Симметрия с Get: soft-deleted группа невидима (GetByID фильтрует
+		// deleted_at) — PATCH не должен писать туда, куда GET отдаёт 404.
 		if _, err := s.groups.GetByID(ctx, *in.GroupID); err != nil {
 			return nil, err
 		}

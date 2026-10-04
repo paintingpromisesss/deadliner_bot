@@ -449,9 +449,8 @@ func TestBindGroupWrongChatAndUsage(t *testing.T) {
 func TestUnbindSuccess(t *testing.T) {
 	hs := newHarness()
 	hs.h.Handle(context.Background(), update(-100500, models.ChatTypeSupergroup, 7, "ivan", "/unbind"))
-	// Литерал, а не повторный вызов i18n.T с теми же аргументами: тест должен
-	// ловить отсутствие глагола в шаблоне (F-1: раньше выводилось
-	// «Привязка чата снята.%!(EXTRA string=Моя группа)»).
+	// Литерал, а не повторный вызов i18n.T: тест ловит отсутствие глагола в
+	// шаблоне (форматный артефакт %! при лишнем аргументе).
 	got := hs.sender.last(t)
 	const want = "Привязка чата «Моя группа» снята."
 	if got.text != want {
@@ -650,8 +649,8 @@ func TestPlainTextIgnored(t *testing.T) {
 	}
 }
 
-// Superadmin-команды: реализованы в Task 12 и проверяются в
-// handlers_superadmin_test.go (guard is_superadmin, отказ в ЛС, действия).
+// Superadmin-команды проверяются в handlers_superadmin_test.go (guard
+// is_superadmin, отказ в ЛС, действия).
 
 // Callback-запросы и пустые апдейты игнорируются.
 func TestNonMessageUpdatesIgnored(t *testing.T) {

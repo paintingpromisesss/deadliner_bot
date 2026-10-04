@@ -187,14 +187,9 @@ type MyGroup struct {
 }
 
 // Create создаёт pending-группу с антиспам-лимитами §3.3. Создатель
-// становится АДМИНОМ группы сразу (клейм-коды удалены): активация группы —
-// привязка чата (/bind_group). Порядок: нормализация → валидация слага →
-// лимиты → группа → membership создателя (admin) → аудит.
-//
-// Валидация идёт через domain.SlugProvider (спека §2.2): SLUG_REGEX из
-// конфига отвечает за charset, провайдер добавляет правила Deadliner
-// (длина/сегменты/цифра). Superadmin — обходной путь: он создаёт группы вне
-// формата (спека §3.3), поэтому провайдер к нему не применяется.
+// становится админом сразу; активация группы — привязка чата (/bind_group).
+// Валидация слага — через domain.SlugProvider (спека §2.2); superadmin
+// создаёт группы вне формата (спека §3.3) и провайдером не проверяется.
 func (s *Service) Create(ctx context.Context, actor *domain.User, slugRaw, title string) (*domain.Group, error) {
 	slug := domain.Normalize(slugRaw)
 	if !actor.IsSuperadmin {
@@ -237,20 +232,13 @@ func (s *Service) Create(ctx context.Context, actor *domain.User, slugRaw, title
 	return g, nil
 }
 
-// ReportSlug — жалоба админа группы на конфликтующий слаг (спека §3.3,
-// «Жалобы»): админ пишет в ЛС боту /report_slug <slug>, и жалоба уходит в ЛС
-// ВСЕМ супер-админам.
-//
-// Права: вызывающий обязан быть админом СУЩЕСТВУЮЩЕЙ группы (любого статуса —
-// pending тоже: конфликт слага возникает до активации). Условие «слаг
-// конфликтует» намеренно НЕ проверяется: конфликт вузовских слагов — это
-// спор о принадлежности, который разрешает человек, а не бот; техническая
-// проверка «занят/свободен» только мешала бы законным жалобам.
-//
-// Не-админ и неизвестный слаг получают одинаковый ответ (ErrForbidden /
-// ErrNotFound) — по нему нельзя узнать, существует ли слаг. Отправка
-// best-effort: сбой ЛС одному супер-админу не отменяет остальных, но
-// фиксируется в логе; аудит пишется всегда (жалоба = факт обращения).
+// ReportSlug — жалоба админа группы на конфликтующий слаг (спека §3.3):
+// /report_slug <slug> в ЛС боту, жалоба уходит всем супер-админам.
+// Вызывающий обязан быть админом существующей группы (любого статуса —
+// конфликт слага возникает до активации); факт конфликта намеренно не
+// проверяется — спор о принадлежности слага разрешает человек. Не-админ и
+// неизвестный слаг получают одинаковый ответ, по нему нельзя узнать,
+// существует ли слаг. Отправка best-effort; аудит пишется всегда.
 func (s *Service) ReportSlug(ctx context.Context, actor *domain.User, slug string) (*domain.Group, error) {
 	if s.users == nil || s.notifier == nil {
 		return nil, fmt.Errorf("%w: slug reports are not wired", domain.ErrForbidden)
@@ -303,9 +291,7 @@ func (s *Service) ReportSlug(ctx context.Context, actor *domain.User, slug strin
 	return g, nil
 }
 
-// reporterName — как подписать жалобу: имя, а при пустом — username, иначе
-// telegram_id. Пользователь, писавший боту, почти всегда имеет first_name,
-// но подставлять пустую строку в текст нельзя.
+// reporterName — как подписать жалобу: имя, иначе username, иначе telegram_id.
 func reporterName(u *domain.User) string {
 	if u == nil {
 		return ""
@@ -322,10 +308,9 @@ func reporterName(u *domain.User) string {
 // formatInt64 — число для текста каталога.
 func formatInt64(n int64) string { return strconv.FormatInt(n, 10) }
 
-// validateSlug — валидация через подключённый провайдер, а при его
-// отсутствии — доменными правилами (структура + цифра, без charset: он
-// принадлежит SLUG_REGEX). Второй путь существует только для сборок без
-// провайдера (тесты use case); serve провайдер задаёт всегда.
+// validateSlug — через провайдер, а при его отсутствии — доменными правилами
+// (charset принадлежит SLUG_REGEX и здесь не проверяется). Второй путь —
+// только для сборок без провайдера (тесты).
 func (s *Service) validateSlug(slug string) error {
 	if s.slugs != nil {
 		return s.slugs.Validate(slug)
@@ -334,14 +319,9 @@ func (s *Service) validateSlug(slug string) error {
 }
 
 // checkCreateLimit инкрементирует счётчик окна и отклоняет превышение.
-// Начало окна floor-ится на слое приложения (репо принимает его как есть).
-//
-// ВНИМАНИЕ (связь с cleanup): окно floor-ится на своё начало, поэтому у
-// недельного счётчика (168ч) window_start бывает почти 168 часов от роду.
-// Уборка счётчиков (moderation.CleanupExpiredPending) обязана иметь ретенцию
-// строго больше 168ч (COUNTER_RETENTION, дефолт 192ч, проверяется в
-// config.Load): иначе cleanup удалял бы ЖИВУЮ строку недельного лимита и
-// LIMIT_GROUP_CREATE_WEEK молча перестал бы срабатывать.
+// Окно floor-ится на своё начало: ретенция уборки счётчиков обязана быть
+// больше 168ч (COUNTER_RETENTION, проверяется в config.Load), иначе cleanup
+// удалял бы живую строку недельного лимита.
 func (s *Service) checkCreateLimit(ctx context.Context, userID int64, action string, window time.Duration, limit int, now time.Time) error {
 	windowStart := now.Truncate(window)
 	count, err := s.counters.IncAndCheck(ctx, userID, action, windowStart, limit)
@@ -355,12 +335,9 @@ func (s *Service) checkCreateLimit(ctx context.Context, userID int64, action str
 }
 
 // Search — подсказка слага по префиксу: активные группы + свои pending
-// (фильтр на стороне репо, спека §6.4), не более SearchLimit результатов.
-// Роль вызывающего проставляется для групп, где он участник (иначе "").
-//
-// Подсказки берутся у SlugProvider (спека §2.2) — это его Suggest-часть
-// (спека §6.4 через локальную таблицу); при отсутствии провайдера — прямой
-// GroupRepo.SearchByPrefix, чтобы сборки без провайдера работали как раньше.
+// (фильтр на стороне репо, спека §6.4), не более SearchLimit результатов;
+// роль вызывающего — "" для не-участника. Подсказки идут через SlugProvider
+// (спека §2.2), при его отсутствии — напрямую GroupRepo.SearchByPrefix.
 func (s *Service) Search(ctx context.Context, actor *domain.User, q string) ([]MyGroup, error) {
 	found, err := s.suggest(ctx, actor.ID, q)
 	if err != nil {
@@ -532,14 +509,13 @@ func (s *Service) ListMembers(ctx context.Context, actor *domain.User, groupID i
 // инвайт (expires_at IS NULL: действует, пока не отозван и не исчерпан лимит).
 const maxInviteTTL = 90 * 24 * time.Hour
 
-// CreateInvite генерирует инвайт-код (admin). maxUses: -1 = без лимита,
-// ≥1 — число использований; 0 и < -1 — ErrValidation. ttl == 0 → бессрочный
+// CreateInvite генерирует инвайт-код (admin). maxUses: -1 = без лимита, ≥1 —
+// число использований; 0 и < -1 — ErrValidation. ttl == 0 → бессрочный
 // (expires_at IS NULL); ttl < 0 → дефолт из конфига; ttl > 90 дней —
 // ErrValidation. publish=true отправляет сообщение в привязанный чат группы
-// (без чата — ErrConflict с точной подсказкой; публикация — best-effort
-// ПОСЛЕ сохранения кода: сбой отправки не отменяет инвайт, но возвращает
-// ошибку, чтобы вызывающий не считал чат оповещённым). Возвращает
-// plaintext-код (показывается один раз) и сохранённый инвайт с хэшем.
+// (без чата — ErrConflict); публикация — best-effort после сохранения кода:
+// сбой не отменяет инвайт, но возвращает ошибку. Возвращает plaintext-код и
+// сохранённый инвайт с хэшем.
 func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID int64, role domain.Role, maxUses int, ttl time.Duration, publish bool) (string, *domain.Invite, error) {
 	if role != domain.RoleAdmin && role != domain.RoleMember {
 		return "", nil, &domain.ValidationError{Field: "role", Msg: "must be admin or member"}
@@ -610,8 +586,8 @@ func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID 
 		}
 		text := i18n.T("invite.chat_message", i18n.EscapeHTML(g.Title))
 		if err := s.invitePublisher.PublishInvite(ctx, binding.ChatID, threadID, text, code); err != nil {
-			// Код уже сохранён и действующ: сбой публикации не отменяет его,
-			// но вызывающий должен знать, что чат не оповещён.
+			// Код уже сохранён и действущ: сбой публикации не отменяет его, но
+			// вызывающий должен знать, что чат не оповещён.
 			s.log.Warn("groups: invite publish failed",
 				slog.Int64("group_id", groupID),
 				slog.Int64("chat_id", binding.ChatID),
@@ -623,13 +599,10 @@ func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID 
 }
 
 // RedeemInvite — вступление по коду. Отозванный/истёкший код неотличим от
-// несуществующего (ErrNotFound — не раскрываем существование); исчерпанный
-// max_uses → ErrConflict; повторный redeem действующего участника идемпотентен
-// (без инкремента used_count). Бессрочный код (expires_at NULL) истекает
-// только по отзыву/лимиту. Расход использования — атомарный IncrementUsed
-// (условие max_uses в SQL), поэтому параллельные redeem не превышают лимит.
-// Списание строго по факту успешной привязки: «Отмена»/закрытие окна
-// лимит не тратит.
+// несуществующего (ErrNotFound); исчерпанный max_uses → ErrConflict;
+// повторный redeem участника идемпотентен. Расход использования — атомарный
+// IncrementUsed (условие max_uses в SQL): параллельные redeem не превышают
+// лимит, списание — только по факту привязки.
 func (s *Service) RedeemInvite(ctx context.Context, actor *domain.User, code string) (*domain.Group, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	inv, err := s.invites.GetByCode(ctx, HashInviteCode(code))
@@ -673,10 +646,9 @@ func (s *Service) RedeemInvite(ctx context.Context, actor *domain.User, code str
 	return g, nil
 }
 
-// InvitePreview — данные экрана подтверждения «Вступить в группу?» при
-// открытии Mini App по startapp-параметру: название группы и её слаг, БЕЗ
-// расхода лимита (использование тратится только кнопкой «Вступить»).
-// Неизвестный/отозванный/истёкший код → ErrNotFound (без раскрытия деталей).
+// InvitePreview — данные экрана «Вступить в группу?» при открытии Mini App
+// по startapp-параметру: группа без расхода лимита (использование тратится
+// только кнопкой «Вступить»). Неизвестный/отозванный/истёкший код → ErrNotFound.
 func (s *Service) InvitePreview(ctx context.Context, code string) (*domain.Group, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	inv, err := s.invites.GetByCode(ctx, HashInviteCode(code))
@@ -708,16 +680,11 @@ func (s *Service) RevokeInvite(ctx context.Context, actor *domain.User, groupID 
 }
 
 // BindChat привязывает чат (или топик форума) к группе по слагу (спека §6.1,
-// /bind_group). Проверки: слаг существует, вызывающий — участник группы (её
-// создатель считается участником: membership создаётся при Create), 1 чат =
-// 1 группа и 1 группа = 1 чат (уникальные индексы chat_bindings → ErrConflict
-// с точной подсказкой). Проверка «бот — админ чата» выполняется в бот-хендлере
-// через Telegram API (ChatAdminChecker) и сюда не входит: use case не знает
-// про Telegram.
-//
-// Привязка чата АКТИВИРУЕТ pending-группу: создатель уже админ (роль выдаётся
-// при Create), клейм-кодов больше нет. Повторная привязка активной группы
-// статус не меняет.
+// /bind_group). Проверки: слаг существует, вызывающий — участник группы,
+// 1 чат = 1 группа и наоборот (уникальные индексы chat_bindings → ErrConflict
+// с точной подсказкой). Проверка «бот — админ чата» — в бот-хендлере через
+// Telegram API, сюда не входит. Привязка чата активирует pending-группу;
+// повторная привязка активной группы статус не меняет.
 func (s *Service) BindChat(ctx context.Context, actor *domain.User, chatID int64, threadID *int64, slug, chatTitle string) (*domain.Group, error) {
 	g, err := s.groups.GetBySlugNorm(ctx, domain.Normalize(slug))
 	if err != nil {
@@ -815,8 +782,8 @@ func (s *Service) BindingByChat(ctx context.Context, chatID int64, threadID *int
 }
 
 // requireMembership — вызывающий состоит в группе (любая роль), он её создатель
-// или superadmin. Создатель сохраняет право привязки и после выхода из
-// membership: привязка чата — часть онбординга созданной им группы.
+// или superadmin (создатель сохраняет право привязки и после выхода —
+// привязка чата часть онбординга его группы).
 func (s *Service) requireMembership(ctx context.Context, actor *domain.User, g *domain.Group) error {
 	if actor.IsSuperadmin || g.CreatedBy == actor.ID {
 		return nil

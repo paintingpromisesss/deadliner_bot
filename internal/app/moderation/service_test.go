@@ -652,7 +652,7 @@ func TestCleanupCancelsRemindersOfDeletedGroupsOnly(t *testing.T) {
 }
 
 // Служебная часть cleanup: старые окна счётчиков (ретенция из конфига) и
-// протухшие сессии (грейс 7 дней) — из ledger-заметок Task 6/10.
+// протухшие сессии (грейс 7 дней).
 func TestCleanupPurgesCountersAndSessions(t *testing.T) {
 	f := newFixture()
 	f.maint.counters = 5

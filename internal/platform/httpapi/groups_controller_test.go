@@ -92,9 +92,7 @@ func newTestGroupsRouterWithSlugRegex(t *testing.T, expr string) http.Handler {
 }
 
 // promoteGroupAdmin выдаёт роль admin напрямую в БД и активирует группу:
-// в рамках Task 7 это единственный путь к админству — создатель группы
-// намеренно member (спека §3.1), а claim-флоу появится в Task 10. Активация
-// нужна, потому что redeem в pending-группу чужим запрещён (finding #3).
+// redeem в pending-группу чужим запрещён, а активная группа нужна инвайтам.
 func promoteGroupAdmin(t *testing.T, r http.Handler, token string, groupID int64) {
 	t.Helper()
 	resp := doJSON(r, http.MethodGet, "/api/v1/me", token, nil)
@@ -159,7 +157,7 @@ func TestGroupsHappyPath(t *testing.T) {
 		t.Errorf("members_count = %v, want 1", details["members_count"])
 	}
 
-	// Создатель — member (claim в Task 10); для инвайтов нужен admin.
+	// Создатель — member; для инвайтов нужен admin.
 	promoteGroupAdmin(t, r, adminTok, gid)
 
 	// POST /groups/{id}/invites — member-инвайт → 201 {code}
@@ -258,9 +256,9 @@ func TestGroupsInvalidSlug400(t *testing.T) {
 	}
 }
 
-// Сквозная проверка SLUG_REGEX (finding I-1): charset приходит из конфига в
-// провайдер, а не из зашитого в домене алфавита. «ГРУППА-1» содержит цифру и
-// структурно корректна, поэтому её судьбу решает именно регулярка.
+// Сквозная проверка: charset приходит из конфига в провайдер, а не из
+// зашитого в домене алфавита. «ГРУППА-1» структурно корректна, её судьбу
+// решает именно регулярка.
 func TestGroupsCreateHonorsSlugRegexFromConfig(t *testing.T) {
 	t.Run("дефолтная регулярка отвергает латиницу вне A-Z и кириллицу вне А-Я", func(t *testing.T) {
 		r := newTestGroupsRouterWithSlugRegex(t, `^[А-Я0-9]+(-[А-Я0-9]+)*$`)

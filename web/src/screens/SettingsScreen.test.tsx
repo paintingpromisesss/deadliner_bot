@@ -1,10 +1,7 @@
 // Экранный тест настроек (спека §9, экран 6): общий дефолт ЛС-дублей и
-// per-group переопределения.
-//
-// Ключевая проверка — ТЕЛО PATCH: backend различает `dm_notify: false` и
-// `dm_notify: null` (снятие переопределения), а «отсутствие поля» читает как
-// «не трогать». Поэтому тест ловит именно отправленный JSON, а не факт вызова:
-// подмена null на false молча оставила бы у группы своё «выключено» навсегда.
+// per-group переопределения. Ключевая проверка — ТЕЛО PATCH: backend
+// различает false (выключено) и null (снятие переопределения), тест ловит
+// именно отправленный JSON, а не факт вызова.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';

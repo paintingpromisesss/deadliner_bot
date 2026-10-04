@@ -1,9 +1,6 @@
-// Регрессионный тест I-1: AppRoot обязан подписываться на 'themeChanged'.
-//
-// Тема из клиента Telegram применяется на ходу: тест монтирует App целиком
-// и проверяет, что после themeChanged корневой элемент переключается на
-// тёмный/светлый класс (dl-theme-dark / dl-theme-light), то есть подписка
-// реально состоялась.
+// Регрессионный тест: AppRoot подписывается на 'themeChanged', тема клиента
+// Telegram применяется на ходу. Тест монтирует App целиком и проверяет
+// переключение класса dl-theme-dark / dl-theme-light после события.
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

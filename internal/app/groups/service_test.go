@@ -698,8 +698,7 @@ func TestSearch_CarriesCallerRole(t *testing.T) {
 // --- Invites ---
 
 // seedGroupWithAdmin создаёт активную группу и делает actorID её админом
-// (через SQL-подобный SetRole — в обход claim, который в Task 10). Группа
-// активируется: redeem в pending-группу запрещён чужим (finding #3).
+// (через SetRole). Группа активируется: redeem в pending-группу запрещён чужим.
 func seedGroupWithAdmin(t *testing.T, f *fixture, adminID int64, slug string) *domain.Group {
 	t.Helper()
 	ctx := context.Background()

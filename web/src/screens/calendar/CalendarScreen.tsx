@@ -1,10 +1,7 @@
 // Экран «Календарь» (спека §9, экран 3): месячная сетка Пн..Вс с точками на
-// днях, где есть дедлайны; навигация по месяцам; тап по дню — cell-список этого
-// дня ниже сетки.
-//
-// Сетка рисуется вручную (lib/calendar.ts), данные берутся одним запросом на
-// видимый месяц: GET /me/deadlines?scope=all&from&to в границах месяца,
-// посчитанных в tz пользователя (monthBounds).
+// днях с дедлайнами, навигация по месяцам, тап по дню — список дня. Сетка —
+// lib/calendar.ts, данные одним запросом GET /me/deadlines?from&to в границах
+// месяца в tz пользователя (monthBounds).
 import { useMemo, useState } from 'react';
 import { Button, Cell, List, Placeholder, Section, Spinner } from '../../components/ui';
 import { Screen } from '../../components/Screen';

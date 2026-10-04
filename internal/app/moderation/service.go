@@ -1,13 +1,8 @@
 // Package moderation — use cases модерации инстанса (спека §3.3, §6.1):
-// cleanup протухших pending-групп по TTL, служебная уборка (окна
-// rate-limit-счётчиков и протухшие сессии), бан/разбан, promotion в
-// супер-админы, удаление группы по слагу и статистика инстанса.
-//
-// Сервис зависит только от domain-портов (правило зависимостей), поэтому
-// проверяется юнит-тестами на фейках.
-//
-// Аудит: cleanup-джоба работает без актора (actor_user_id = NULL) — это
-// системное действие; действия супер-админа пишут его user_id.
+// cleanup протухших pending-групп, уборка счётчиков и сессий, бан/разбан,
+// promotion, удаление группы и статистика. Зависит только от domain-портов
+// (правило зависимостей). Аудит: cleanup пишет actor_user_id = NULL,
+// действия супер-админа — его user_id.
 package moderation
 
 import (
@@ -26,20 +21,17 @@ import (
 // таблицей (следующий прогон доберёт остаток).
 const pendingScanLimit = 500
 
-// defaultCounterRetention — ретенция окна rate-limit-счётчика по умолчанию:
-// 8 суток. Обязана быть больше самого длинного окна лимита — недельного
-// «group_create_week» (168ч, groups.Service.checkCreateLimit): окно
-// floor-ится на своё начало, поэтому живая строка недельного счётчика бывает
-// почти 168 часов от роду, и любая ретенция ≤ 168ч удаляла бы её — лимит
-// «5 групп в неделю» (LIMIT_GROUP_CREATE_WEEK) молча переставал бы
-// срабатывать. Реальное значение приходит из конфига
-// (COUNTER_RETENTION, дефолт 192ч) — см. config.Load, где оно валидируется
-// строго больше 168ч.
+// defaultCounterRetention — ретенция окна rate-limit-счётчика по умолчанию
+// (8 суток). Обязана быть больше недельного окна лимита group_create_week
+// (168ч): окно floor-ится на своё начало, поэтому живая строка недельного
+// счётчика бывает почти 168 часов от роду, и ретенция ≤ 168ч удаляла бы её.
+// Реальное значение — из конфига (COUNTER_RETENTION, валидируется в
+// config.Load).
 const defaultCounterRetention = 8 * 24 * time.Hour
 
 const (
 	// sessionGrace — грейс после expires_at, на который сессия ещё остаётся в
-	// БД (Task 6: GetActive и так отвергает истёкшие; здесь только уборка).
+	// БД: GetActive и так отвергает истёкшие, здесь только уборка.
 	sessionGrace = 7 * 24 * time.Hour
 	// defaultCleanupInterval — интервал cleanup по умолчанию (спека: каждый час).
 	defaultCleanupInterval = time.Hour
@@ -48,14 +40,11 @@ const (
 // Config — параметры модерации из env (спека §8).
 type Config struct {
 	// PendingTTL — TTL pending-группы (GROUP_PENDING_TTL_DAYS, дефолт 14 дней).
-	// Хранится для документирования и для CLI-вывода; сам cut-off берётся из
-	// claim_expires_at группы (он и есть created_at + TTL), поэтому джоба не
-	// зависит от значения в момент прогона.
+	// Для CLI-вывода; cut-off джоба берёт из claim_expires_at группы.
 	PendingTTL time.Duration
-	// CounterRetention — сколько живёт окно rate-limit-счётчика после начала
-	// окна (COUNTER_RETENTION, дефолт 192ч). Ноль/отрицательное значение
-	// заменяется дефолтом; конфиг обязан гарантировать значение больше
-	// недельного окна лимита (проверяется в config.Load).
+	// CounterRetention — сколько живёт окно rate-limit-счётчика после его
+	// начала (COUNTER_RETENTION, дефолт 192ч); обязано быть больше недельного
+	// окна лимита (проверяется в config.Load).
 	CounterRetention time.Duration
 }
 
@@ -92,8 +81,7 @@ func NewService(d Deps) *Service {
 		d.Clock = domain.SystemClock{}
 	}
 	if d.Config.CounterRetention <= 0 {
-		// Защита от нулевого значения у вызывающего без конфига (тесты):
-		// 48ч и меньше было бы багом (см. defaultCounterRetention).
+		// Вызывающий без конфига (тесты): значение ≤ 168ч было бы багом.
 		d.Config.CounterRetention = defaultCounterRetention
 	}
 	return &Service{deps: d, cfg: d.Config, log: d.Log}
@@ -108,21 +96,12 @@ type CleanupReport struct {
 }
 
 // CleanupExpiredPending — автоудаление протухших pending-групп (спека §3.3:
-// 14 дней без привязки чата И без админа → автоудаление) плюс служебная
-// уборка счётчиков и сессий.
-//
-// Критерий удаления проверяется ИНДИВИДУАЛЬНО по каждой группе-кандидату:
-// claim_expires_at — не единственное условие, привязка чата или админ
-// «спасают» группу. Отбор кандидатов — GroupRepo.ListPendingExpired (status
-// pending + deleted_at IS NULL + claim_expires_at <= now).
-//
-// Порядок: гасим напоминания дедлайнов → soft-delete группы. Обратный порядок
-// оставил бы pending-напоминания у невидимой группы: слаг и заголовок в
-// сообщении воркера уже недоступны (GetByID фильтрует deleted_at), а лишние
-// отправки по удалённому дедлайну — прямой мусор в чате.
-//
-// Ошибка по отдельной группе не прерывает прогон (остальные кандидаты
-// обрабатываются, следующая джоба доберёт незакрытую) и попадает в лог.
+// 14 дней без привязки чата И без админа) плюс уборка счётчиков и сессий.
+// Критерий проверяется по каждой группе: claim_expires_at — не единственное
+// условие, привязка чата или админ «спасают» группу (кандидаты —
+// ListPendingExpired). Сначала гасим напоминания, затем soft-delete группы —
+// иначе напоминания останутся у невидимой группы. Ошибка по отдельной группе
+// не прерывает прогон.
 func (s *Service) CleanupExpiredPending(ctx context.Context) (CleanupReport, error) {
 	now := s.deps.Clock.Now()
 	var report CleanupReport
@@ -156,21 +135,18 @@ func (s *Service) CleanupExpiredPending(ctx context.Context) (CleanupReport, err
 			continue
 		}
 		report.Groups++
-		// Reminders — число pending-напоминаний, УВИДЕННЫХ перед гашением
-		// (ListByDeadline → CancelByDeadline). Величина справочная: при гонке
-		// с воркером (напоминание успело стать sent между чтением и UPDATE)
-		// она может быть на единицу больше фактически погашенных — реальный
-		// эффект всё равно идемпотентен.
+		// Reminders — число pending-напоминаний, увиденных перед гашением
+		// (справочно: при гонке с воркером может быть на единицу больше
+		// фактически погашенных).
 		report.Reminders += cancelled
 		s.log.Info("cleanup: pending group deleted",
 			slog.Int64("group_id", g.ID), slog.String("slug", g.Slug))
 	}
 
-	// Служебная уборка (ledger Task 6/10): окна счётчиков и протухшие сессии.
-	// Сбой уборки не отменяет уже удалённые группы и не роняет прогон.
-	// Ретенция счётчиков — из конфига (COUNTER_RETENTION): она обязана быть
-	// больше самого длинного окна лимита, иначе удалила бы живую строку
-	// недельного лимита (LIMIT_GROUP_CREATE_WEEK).
+	// Служебная уборка: окна счётчиков и протухшие сессии. Сбой уборки не
+	// отменяет уже удалённые группы и не роняет прогон. Ретенция счётчиков —
+	// из конфига (COUNTER_RETENTION) и обязана быть больше самого длинного
+	// окна лимита.
 	counters, err := s.deps.Maintenance.PurgeCounters(ctx, now.Add(-s.cfg.CounterRetention))
 	if err != nil {
 		s.log.Warn("cleanup: counter purge failed", slog.String("error", err.Error()))
@@ -211,10 +187,9 @@ func (s *Service) hasBindingOrAdmin(ctx context.Context, groupID int64) (bool, e
 }
 
 // cancelGroupReminders гасит pending-напоминания всех дедлайнов группы и
-// возвращает их число. Булк-метода «по группе» в порту нет, а списки
-// дедлайнов группы короткие: сначала ListByGroup, затем CancelByDeadline на
-// каждый. Удалённых (soft-delete) дедлайнов ListByGroup не возвращает — их
-// напоминания уже погашены при удалении дедлайна.
+// возвращает их число: ListByGroup, затем CancelByDeadline на каждый
+// (булк-метода «по группе» в порту нет, списки короткие). Удалённых дедлайнов
+// ListByGroup не возвращает — их напоминания уже погашены.
 func (s *Service) cancelGroupReminders(ctx context.Context, groupID int64) (int, error) {
 	ds, err := s.deps.Deadlines.ListByGroup(ctx, groupID, nil, nil, nil)
 	if err != nil {
@@ -257,15 +232,10 @@ func (s *Service) PromoteSuperadmin(ctx context.Context, actor *domain.User, tel
 	return nil
 }
 
-// BanUser банит пользователя (спека §3.3: запрет создавать группы, claim и
-// привязывать чаты) и немедленно гасит все его сессии — именно ради отзыва
-// и выбран opaque-токен вместо JWT (спека §5.1). Middleware.Auth и
-// auth.Login отвергают забаненного, поэтому достаточно одного флага + DELETE
-// сессий.
-//
-// Запреты: себя банить нельзя (самоблокировка инстанса) и нельзя банить
-// другого супер-админа — иначе одна ошибка в консоли отрезает управление
-// инстансом; сначала снимите права (в БД), потом баньте.
+// BanUser банит пользователя (спека §3.3) и немедленно гасит все его сессии
+// — ради этого и выбран opaque-токен вместо JWT (спека §5.1). Себя и другого
+// супер-админа банить нельзя (иначе ошибка в консоли отрезает управление
+// инстансом): сначала снимите права, потом баньте.
 func (s *Service) BanUser(ctx context.Context, actor *domain.User, telegramID int64) error {
 	if err := s.requireSuperadmin(actor); err != nil {
 		return err
@@ -294,8 +264,8 @@ func (s *Service) BanUser(ctx context.Context, actor *domain.User, telegramID in
 	return nil
 }
 
-// UnbanUser снимает бан. Сессии не восстанавливаются: пользователь входит
-// заново через initData (свежесть auth_date проверяется в любом случае).
+// UnbanUser снимает бан. Сессии не восстанавливаются: вход заново через
+// initData.
 func (s *Service) UnbanUser(ctx context.Context, actor *domain.User, telegramID int64) error {
 	if err := s.requireSuperadmin(actor); err != nil {
 		return err
@@ -334,9 +304,8 @@ func (s *Service) DeleteGroup(ctx context.Context, actor *domain.User, slug stri
 	return g, nil
 }
 
-// Stats — счётчики инстанса для /stats и CLI (спека §6.1, §7.2 п.4: failed
-// напоминания — сигнал супер-админу). Читается одной реализацией
-// MaintenanceRepo, чтобы у use case не было N+1 по несвязанным таблицам.
+// Stats — счётчики инстанса для /stats и CLI (спека §6.1, §7.2 п.4).
+// Читается одной реализацией MaintenanceRepo — без N+1.
 func (s *Service) Stats(ctx context.Context, actor *domain.User) (domain.Stats, error) {
 	if err := s.requireSuperadmin(actor); err != nil {
 		return domain.Stats{}, err
@@ -348,14 +317,10 @@ func (s *Service) Stats(ctx context.Context, actor *domain.User) (domain.Stats, 
 // и в справке cleanup; сама джоба опирается на claim_expires_at строки).
 func (s *Service) PendingTTL() time.Duration { return s.cfg.PendingTTL }
 
-// listGroupsLimit — максимум групп в одном ответе `admin list-groups`.
-// Ограничение осознанное: инстанс рассчитан на сотни групп, а CLI печатает
-// таблицу в терминал оператора; при превышении лимита команда честно
-// предупреждает, что список усечён, вместо того чтобы молча потерять хвост.
-//
-// Экспортирован и используется CLI как ListGroupsLimit: предупреждение об
-// усечении обязано называть РОВНО то число, которым ограничен вывод, иначе
-// оператор читает «показано 500» при реальных 1000.
+// listGroupsLimit — максимум групп в одном ответе `admin list-groups`
+// (CLI печатает таблицу в терминал; при превышении — предупреждение об
+// усечении). Экспортирован как ListGroupsLimit: предупреждение обязано
+// называть ровно то число, которым ограничен вывод.
 const listGroupsLimit = 500
 
 // ListGroupsLimit — публичное имя лимита `admin list-groups` (см. выше).
@@ -423,9 +388,7 @@ func (s *Service) requireSuperadmin(actor *domain.User) error {
 // writeAudit — best-effort запись в audit_log: сбой аудита не роняет уже
 // согласованную операцию, но остаётся предупреждением в логе. actor == nil
 // (cleanup-джоба) и actor.ID == 0 (SystemActor CLI) дают actor_user_id = NULL —
-// это и есть нужная семантика для системного действия (audit_log.actor_user_id
-// объявлен nullable и без FK на users, так что «пользователь 0» был бы не
-// ошибкой БД, а вводящей в заблуждение записью).
+// семантика системного действия.
 func (s *Service) writeAudit(ctx context.Context, actor *domain.User, action, targetType string, targetID *int64, meta map[string]any) {
 	var actorID *int64
 	if actor != nil && actor.ID != 0 {
@@ -447,9 +410,7 @@ func (s *Service) writeAudit(ctx context.Context, actor *domain.User, action, ta
 }
 
 // SystemActor — актор CLI-пути: команда запускается оператором на сервере,
-// поэтому строки в users у неё нет (ID 0). Отдельный тип актора намеренно не
-// вводится — проверка прав одна на CLI и бота; writeAudit вместо «пользователя
-// 0» пишет actor_user_id = NULL, как и для cleanup-джобы.
+// строки в users у неё нет (ID 0); writeAudit пишет actor_user_id = NULL.
 var SystemActor = &domain.User{IsSuperadmin: true}
 
 // Cleaner — поверхность cleanup для планировщика (реализуется *Service).
@@ -458,11 +419,9 @@ type Cleaner interface {
 }
 
 // StartCleanupLoop — часовая петля cleanup (спека §3.3, §12 п.7): первый
-// прогон сразу на старте (рестарт не должен откладывать уборку на час),
-// дальше — interval. Блокирующая: serve гоняет её в горутине и закрывает по
-// ctx.Done. Ошибка прогона логируется и не завершает петлю — следующая
-// попытка через интервал; паника в прогоне ловится отдельно (runCleanupOnce),
-// иначе она убила бы весь процесс serve.
+// прогон сразу на старте, дальше — interval. Блокирующая: serve гоняет её в
+// горутине и закрывает по ctx.Done. Ошибка прогона логируется и не завершает
+// петлю; паника ловится в runCleanupOnce, иначе она убила бы процесс serve.
 func StartCleanupLoop(ctx context.Context, svc Cleaner, interval time.Duration, log *slog.Logger) {
 	if log == nil {
 		log = slog.Default()
@@ -488,10 +447,9 @@ func StartCleanupLoop(ctx context.Context, svc Cleaner, interval time.Duration, 
 	}
 }
 
-// runCleanupOnce — один прогон с защитой от паники: джоба служебная, и паника
-// в репозитории (например, nil-разыменование в адаптере) не должна ронять
-// процесс serve, обслуживающий бота и API. Ошибка и паника логируются
-// одинаково; петля продолжает работу по расписанию.
+// runCleanupOnce — один прогон с защитой от паники: паника в репозитории
+// не должна ронять процесс serve. Ошибка и паника логируются; петля
+// продолжает работу по расписанию.
 func runCleanupOnce(ctx context.Context, svc Cleaner, log *slog.Logger) {
 	defer func() {
 		if r := recover(); r != nil {

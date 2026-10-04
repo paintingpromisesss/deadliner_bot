@@ -1,8 +1,7 @@
 // Package deadlines — use cases дедлайнов (спека §3, §5.2, §7.1): CRUD
 // с генерацией reminders в одной транзакции, регенерация при смене due_at,
-// права (персональный — owner; групповой пишут автор дедлайна и admin, читает
-// любой участник) и модерация: дедлайн участника создаётся
-// pending_approval и становится active только после подтверждения админом.
+// права и модерация: дедлайн участника создаётся pending_approval и становится
+// active после подтверждения админом.
 package deadlines
 
 import (
@@ -168,7 +167,7 @@ func (s *Service) Create(ctx context.Context, actor *domain.User, in CreateInput
 		if !isAdmin {
 			// Участник без роли admin (и не участник вовсе) должен быть
 			// участником группы: посторонним создавать групповые дедлайны
-			// нельзя. Не-участник → 403 как раньше.
+			// нельзя.
 			if member == nil && !actor.IsSuperadmin {
 				if _, err := s.groups.GetByID(ctx, *in.GroupID); err != nil {
 					return nil, err
@@ -182,8 +181,8 @@ func (s *Service) Create(ctx context.Context, actor *domain.User, in CreateInput
 		}
 		d.OwnerUserID = nil
 		if len(in.Reminders) == 0 && isAdmin {
-			// Пресеты группы подставляются только активному дедлайну:
-			// до апрува напоминания не планируются вовсе.
+			// Пресеты группы — только активному дедлайну: до апрува
+			// напоминания не планируются.
 			g, err := s.groups.GetByID(ctx, *in.GroupID)
 			if err != nil {
 				return nil, err
@@ -215,11 +214,10 @@ func (s *Service) Create(ctx context.Context, actor *domain.User, in CreateInput
 	return &View{Deadline: d, Reminders: planned}, nil
 }
 
-// Approve — подтверждение админом группового дедлайна в статусе
-// pending_approval: переводит его в active, планирует напоминания (пресеты
-// группы, если автор не задал свои) и рассылает групповые уведомления.
-// Идемпотентность опущена намеренно: повторный approve неактивного
-// дедлайна → ErrConflict (состояние уже изменено, тихий успех врал бы).
+// Approve — подтверждение админом группового дедлайна в pending_approval:
+// переводит его в active, планирует напоминания (пресеты группы, если автор
+// не задал свои) и рассылает групповые уведомления. Повторный approve →
+// ErrConflict (идемпотентность намеренно опущена).
 func (s *Service) Approve(ctx context.Context, actor *domain.User, id int64) (*View, error) {
 	d, err := s.deadlines.GetByID(ctx, id)
 	if err != nil {
@@ -524,8 +522,7 @@ func (s *Service) Update(ctx context.Context, actor *domain.User, id int64, in U
 // compensateUpdate возвращает поля дедлайна к old после сбоя Regenerate:
 // due_at и изменённые поля откатываются обратным патчем. Провал самой
 // компенсации не скрывает исходную ошибку — только log.Error с id дедлайна
-// (аудит-хук: рассинхрон дедлайна и reminders чинится следующей правкой
-// due_at либо Task 9 воркер защитно пропустит reminders done/deleted).
+// (воркер защитно пропускает reminders done/deleted дедлайнов).
 func (s *Service) compensateUpdate(ctx context.Context, id int64, old *domain.Deadline, applied domain.DeadlinePatch) {
 	revert := domain.DeadlinePatch{}
 	if applied.Title != nil {
@@ -620,7 +617,7 @@ func (s *Service) Delete(ctx context.Context, actor *domain.User, id int64) erro
 		return err
 	}
 	// Сбой отмены reminders не отклоняет запрос: дедлайн уже удалён, а воркер
-	// (Task 9) защитно пропускает reminders soft-deleted дедлайнов.
+	// защитно пропускает reminders soft-deleted дедлайнов.
 	if err := s.reminders.CancelByDeadline(ctx, id); err != nil {
 		s.log.Error("deadline deleted but reminder cancellation failed",
 			slog.Int64("deadline_id", id),
@@ -645,7 +642,7 @@ func (s *Service) Complete(ctx context.Context, actor *domain.User, id int64) (*
 		return nil, err
 	}
 	// Как в Delete: статус уже changed, сбой отмены — только log.Error
-	// (воркер Task 9 защитно пропустит reminders done-дедлайна).
+	// (воркер защитно пропустит reminders done-дедлайна).
 	if err := s.reminders.CancelByDeadline(ctx, id); err != nil {
 		s.log.Error("deadline completed but reminder cancellation failed",
 			slog.Int64("deadline_id", id),

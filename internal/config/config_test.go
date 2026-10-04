@@ -73,8 +73,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Bot.RatePerChat != 18 {
 		t.Errorf("Bot.RatePerChat = %d, want 18", cfg.Bot.RatePerChat)
 	}
-	if cfg.Limits.GroupPendingTTL != 14*24*time.Hour {
-		t.Errorf("Limits.GroupPendingTTL = %v, want %v", cfg.Limits.GroupPendingTTL, 14*24*time.Hour)
+	if cfg.Limits.GroupPendingTTL != 1*24*time.Hour {
+		t.Errorf("Limits.GroupPendingTTL = %v, want %v", cfg.Limits.GroupPendingTTL, 1*24*time.Hour)
 	}
 	if cfg.Limits.GroupCreateDay != 3 {
 		t.Errorf("Limits.GroupCreateDay = %d, want 3", cfg.Limits.GroupCreateDay)
@@ -273,8 +273,8 @@ func TestLoadInvalidInt(t *testing.T) {
 	}
 }
 
-// Регрессия C-1 (конфиг): retention ≤ недельного окна — ошибка загрузки, а не
-// молчаливая потеря живого недельного счётчика rate-limit.
+// retention ≤ недельного окна — ошибка загрузки, а не молчаливая потеря
+// живого недельного счётчика rate-limit.
 func TestLoadCounterRetentionMustExceedWeekWindow(t *testing.T) {
 	setRequired(t)
 	t.Setenv("COUNTER_RETENTION", "24h")

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/go-telegram/bot/models"
 	"github.com/sauron/deadliner/internal/domain"
 	"github.com/sauron/deadliner/internal/i18n"
 	"github.com/sauron/deadliner/internal/platform/scheduler"
@@ -25,11 +27,9 @@ type Sender interface {
 const maxInternalRetryAfter = 60 * time.Second
 
 // Notifier реализует domain.Notifier: глобальный (25/с) и per-chat (18/мин)
-// лимиты через scheduler.Limiter, внутренняя выдержка 429 retry_after.
-//
-// Если нижележащий sender реализует MessageSender (BotSender это делает),
-// сообщения уходят с inline-кнопкой web_app (спека §6.2); иначе — обычным
-// SendMessage: нотификатор остаётся работоспособен на минимальном Sender.
+// лимиты через scheduler.Limiter, внутренняя выдержка 429 retry_after. Если
+// sender реализует MessageSender, сообщения уходят с inline-кнопкой (спека
+// §6.2), иначе — обычным SendMessage.
 type Notifier struct {
 	sender Sender
 	lim    *scheduler.Limiter
@@ -62,7 +62,7 @@ func (n *Notifier) SendToChat(ctx context.Context, chatID, threadID int64, text 
 }
 
 // SendToChatID — как SendToChat, но возвращает message_id опубликованного
-// сообщения (claim-флоу пишет его в claim_codes.message_id).
+// сообщения.
 func (n *Notifier) SendToChatID(ctx context.Context, chatID, threadID int64, text string) (int64, error) {
 	var tid *int64
 	if threadID != 0 {
@@ -159,30 +159,43 @@ func (n *Notifier) SendToChatWithButton(ctx context.Context, chatID, threadID in
 
 // InvitePublisher — публикация инвайта в чат группы: призыв «Присоединяйтесь»
 // и inline-кнопка, открывающая Mini App как Main App.
-type InvitePublisher struct {
-	notifier    *Notifier
-	botUsername string
+type BotUsernameSource interface {
+	GetMe(ctx context.Context) (*models.User, error)
 }
 
-// NewInvitePublisher собирает публикатор. botUsername — имя бота без «@»
-// (BOT_USERNAME): из него строится direct-link
-// https://t.me/<bot>/app?startapp=<код>. Пустое имя — кнопки не будет
-// (сообщение уйдёт текстом): web_app-кнопки в группах Telegram запрещает, а
-// без username t.me-ссылку собрать нельзя.
+type InvitePublisher struct {
+	notifier    *Notifier
+	api         BotUsernameSource
+	botUsername string
+	mu          sync.Mutex
+}
+
+// NewInvitePublisher собирает публикатор: botUsername (без «@») идёт в
+// direct-link t.me/<bot>/app?startapp=<код> на кнопке инвайта.
 func NewInvitePublisher(notifier *Notifier, botUsername string) *InvitePublisher {
 	return &InvitePublisher{notifier: notifier, botUsername: strings.TrimPrefix(botUsername, "@")}
 }
 
-// PublishInvite отправляет инвайт-сообщение в чат группы. Кнопка — url-кнопка
-// на Main App direct-link: Telegram открывает такие ссылки нативно как Mini
-// App (с окном согласия при первом запуске), внешний браузер не задействуется.
-// startapp-параметр несёт plaintext-код инвайта: открывшееся приложение
-// показывает экран «Вступить в группу?» и списывает лимит только кнопкой
-// «Вступить».
+// NewInvitePublisherWithAPI собирает публикатор с ленивым получением username
+// через getMe при первой отправке (граф строится offline).
+func NewInvitePublisherWithAPI(notifier *Notifier, api BotUsernameSource) *InvitePublisher {
+	return &InvitePublisher{notifier: notifier, api: api}
+}
+
+// PublishInvite отправляет инвайт-сообщение в чат группы; кнопка — direct-link
+// на Main App (startapp = plaintext-код инвайта).
 func (p *InvitePublisher) PublishInvite(ctx context.Context, chatID, threadID int64, text, inviteCode string) error {
+	if p.botUsername == "" && p.api != nil {
+		p.mu.Lock()
+		if p.botUsername == "" {
+			if me, err := p.api.GetMe(ctx); err == nil && me != nil {
+				p.botUsername = strings.TrimPrefix(me.Username, "@")
+			}
+		}
+		p.mu.Unlock()
+	}
 	if p.botUsername == "" || inviteCode == "" {
-		// Без username direct-link не собрать: уходим текстом без кнопки,
-		// оператор узнает об этом по предупреждению в логе при старте serve.
+		// Без username или кода direct-link не собрать: уходим текстом.
 		_, err := p.notifier.SendToChatID(ctx, chatID, threadID, text)
 		return err
 	}

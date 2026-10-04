@@ -23,6 +23,7 @@ import {
   createInvite,
   deleteGroup,
   fetchGroupDetail,
+  fetchGroupInvites,
   fetchInvitePreview,
   fetchGroups,
   fetchMembers,
@@ -34,6 +35,7 @@ import {
   revokeInvite,
   setMemberRole,
   type Group,
+  type GroupInvite,
   type InviteCreated,
   type InviteInput,
   type NotificationSettings,
@@ -45,10 +47,9 @@ export const DEADLINES_KEY = 'deadlines';
 export const GROUPS_KEY = 'groups';
 
 /**
- * Ключ настроек уведомлений. Отдельная константа, потому что эффективное
- * значение группы зависит от ОБЩЕГО дефолта (spec §5.2: COALESCE(membership,
- * users.dm_notify_default)): смена дефолта обязана инвалидировать эти же
- * данные, иначе строки групп показывали бы устаревшее значение.
+ * Ключ настроек уведомлений — отдельная константа: эффективное значение
+ * группы зависит от общего дефолта (spec §5.2: COALESCE(membership,
+ * users.dm_notify_default)), и его смена обязана инвалидировать эти же данные.
  */
 export const NOTIFICATIONS_QUERY_KEY = [GROUPS_KEY, 'notifications'] as const;
 
@@ -332,12 +333,23 @@ export function useKickMember() {
   });
 }
 
-/** Создание инвайта: код возвращается один раз — кэшировать его нельзя. */
+/** Список инвайтов группы (GET /groups/{id}/invites). */
+export function useGroupInvites(groupID: number, enabled = true) {
+  return useQuery<{ invites: GroupInvite[] }, Error>({
+    queryKey: [GROUPS_KEY, groupID, 'invites'],
+    queryFn: () => fetchGroupInvites(groupID),
+    enabled: enabled && groupID > 0,
+  });
+}
+
+/** Создание инвайта. */
 export function useCreateInvite() {
+  const qc = useQueryClient();
   return useMutation<InviteCreated, Error, { groupID: number; input: InviteInput }>({
     mutationFn: (vars) => createInvite(vars.groupID, vars.input),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       hapticNotification('success');
+      void qc.invalidateQueries({ queryKey: [GROUPS_KEY, vars.groupID, 'invites'] });
     },
     onError: () => hapticNotification('error'),
   });
@@ -345,12 +357,14 @@ export function useCreateInvite() {
 
 /** Отзыв инвайта по plaintext-коду. */
 export function useRevokeInvite() {
+  const qc = useQueryClient();
   const invalidate = useInvalidateGroups();
   return useMutation({
     mutationFn: (vars: { groupID: number; code: string }) => revokeInvite(vars.groupID, vars.code),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       hapticNotification('success');
       void invalidate();
+      void qc.invalidateQueries({ queryKey: [GROUPS_KEY, vars.groupID, 'invites'] });
     },
     onError: () => hapticNotification('error'),
   });

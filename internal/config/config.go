@@ -6,7 +6,6 @@ import (
 	"os"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/sauron/deadliner/internal/domain"
@@ -40,12 +39,8 @@ type DB struct {
 }
 
 type Bot struct {
-	Token   string
-	APIBase string
-	// Username — BOT_USERNAME: username бота без «@» для Main App direct-
-	// ссылок (https://t.me/<username>/app?startapp=…) в инвайт-кнопках групп.
-	// Пусто — публикация инвайта в чат уходит без кнопки (только текст).
-	Username      string
+	Token         string
+	APIBase       string
 	PollingMode   string
 	WebhookURL    string
 	WebhookSecret string
@@ -78,9 +73,8 @@ type Cleanup struct {
 }
 
 // longestLimitWindow — самое длинное окно rate-limit-счётчика
-// (group_create_week в groups.Service: 168 часов). Retention уборки обязан
-// быть строго больше него, иначе cleanup удалит ЖИВУЮ строку недельного
-// лимита и LIMIT_GROUP_CREATE_WEEK молча перестанет срабатывать.
+// (group_create_week: 168 часов). Retention уборки обязан быть строго
+// больше него, иначе cleanup удалит живую строку недельного лимита.
 const longestLimitWindow = 168 * time.Hour
 
 type Limits struct {
@@ -163,7 +157,6 @@ func Load() (*Config, error) {
 		Bot: Bot{
 			Token:         os.Getenv("BOT_TOKEN"),
 			APIBase:       os.Getenv("BOT_API_BASE"),
-			Username:      strings.TrimPrefix(os.Getenv("BOT_USERNAME"), "@"),
 			PollingMode:   l.string("POLLING_MODE", "long_polling"),
 			WebhookURL:    os.Getenv("WEBHOOK_URL"),
 			WebhookSecret: os.Getenv("WEBHOOK_SECRET"),
@@ -181,7 +174,7 @@ func Load() (*Config, error) {
 			Interval: l.duration("CLEANUP_INTERVAL", time.Hour),
 		},
 		Limits: Limits{
-			GroupPendingTTL:      l.days("GROUP_PENDING_TTL_DAYS", 14),
+			GroupPendingTTL:      l.days("GROUP_PENDING_TTL_DAYS", 1),
 			GroupCreateDay:       l.int("LIMIT_GROUP_CREATE_DAY", 3),
 			GroupCreateWeek:      l.int("LIMIT_GROUP_CREATE_WEEK", 5),
 			ClaimPerChatHour:     l.int("LIMIT_CLAIM_PER_CHAT_HOUR", 3),
@@ -203,37 +196,32 @@ func Load() (*Config, error) {
 			"POLLING_MODE=%q is not a known mode (use %q or %q)",
 			cfg.Bot.PollingMode, "long_polling", PollingModeWebhook))
 	}
-	// Fail-closed: webhook-режим без секрета принимает ЛЮБОЙ POST /webhook
-	// (библиотека сверяет заголовок только при непустом секрете) — то есть
-	// подделанные апдейты, включая /bind_group в чужом чате. Режим webhook
-	// определяется POLLING_MODE=webhook либо непустым WEBHOOK_URL.
+	// Fail-closed: webhook-режим без секрета принимает любой POST /webhook
+	// (библиотека сверяет заголовок только при непустом секрете) — подделанные
+	// апдейты. Режим определяют POLLING_MODE=webhook либо WEBHOOK_URL.
 	if cfg.Bot.UsesWebhook() && cfg.Bot.WebhookSecret == "" {
 		l.errs = append(l.errs, errors.New(
 			"missing required env var WEBHOOK_SECRET: webhook mode without a secret token accepts forged updates"))
 	}
 	// Fail-closed: POLLING_MODE=webhook без WEBHOOK_URL — процесс, который
-	// стартует и молча не принимает апдейты: регистрировать вебхук некуда,
-	// getUpdates тоже не запускается. Ошибка на старте громче и дешевле, чем
-	// «бот жив, но молчит» в проде. Пустой PollingMode сюда не попадает:
-	// webhook-режим тогда определяет сам WEBHOOK_URL, а он непуст по условию.
+	// стартует и молча не принимает апдейты. Ошибка на старте дешевле, чем
+	// «бот жив, но молчит» в проде.
 	if cfg.Bot.PollingMode == PollingModeWebhook && cfg.Bot.WebhookURL == "" {
 		l.errs = append(l.errs, errors.New(
 			"missing required env var WEBHOOK_URL: POLLING_MODE=webhook without a webhook URL "+
 				"starts a process that receives no updates"))
 	}
 	// Fail-closed: некомпилируемый SLUG_REGEX обязан ронять старт, а не
-	// молчаливо превращать Create в 500 на первом же пакете /groups. Сама
-	// компиляция — в slugprovider.Compile (единственная точка), проверка
-	// здесь отличается только формулировкой сообщения.
+	// превращать Create в 500 на первом запросе. Компиляция — в
+	// slugprovider.Compile (единственная точка).
 	if _, err := regexp.Compile(cfg.Limits.SlugRegex); err != nil {
 		l.errs = append(l.errs, fmt.Errorf(
 			"SLUG_REGEX=%q is not a valid regular expression: %w", cfg.Limits.SlugRegex, err))
 	}
 	// Retention уборки счётчиков обязан быть больше самого длинного окна
-	// лимита (168ч = неделя): окно floor-ится на своё начало, поэтому живая
-	// строка недельного счётчика может быть почти 168 часов от роду, и
-	// retention ≤ 168ч удалял бы её — лимит «5 групп в неделю» молча
-	// переставал бы срабатывать.
+	// лимита (168ч = неделя): окно floor-ится на своё начало, и живая строка
+	// недельного счётчика бывает почти 168 часов от роду — retention ≤ 168ч
+	// удалял бы её.
 	if cfg.Limits.CounterRetention <= longestLimitWindow {
 		l.errs = append(l.errs, fmt.Errorf(
 			"COUNTER_RETENTION=%s must exceed the longest rate-limit window (%s, week limit): "+

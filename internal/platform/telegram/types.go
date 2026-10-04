@@ -9,10 +9,9 @@ import (
 )
 
 // OutMessage — исходящее сообщение: минимум, который нужен боту и нотификатору.
-// ButtonURL непустой добавляет inline-кнопку «Открыть Deadliner» (спека §6.2):
-// web_app-кнопка в личном чате, обычная url-кнопка в группе (Telegram разрешает
-// web_app-кнопки только в приватных чатах, поэтому в группах используется URL
-// того же APP_PUBLIC_URL — иначе отправка кода в чат группы падала бы с 400).
+// ButtonURL непустой добавляет inline-кнопку (спека §6.2): web_app-кнопка в
+// ЛС, url-кнопка в группе (Telegram разрешает web_app только в приватных
+// чатах).
 type OutMessage struct {
 	ChatID   int64
 	ThreadID *int64
@@ -28,11 +27,10 @@ type OutMessage struct {
 
 // MessageSender — опциональное РАСШИРЕНИЕ Sender: отправка OutMessage с
 // inline-кнопкой и возвратом message_id. Отдельный интерфейс (а не методы в
-// Sender) — чтобы существующий Notifier и его тестовые фейки продолжали
-// компилироваться: Notifier использует MessageSender, только если нижележащий
-// sender его реализует, иначе деградирует до обычного SendMessage.
-//
-// RULING (Task 10): этот же интерфейс — контракт хендлеров бота на отправку.
+// Sender), чтобы Notifier и его фейки компилировались без него: Notifier
+// использует MessageSender, только если нижележащий sender его реализует,
+// иначе деградирует до обычного SendMessage. Этот же интерфейс — контракт
+// хендлеров бота на отправку.
 type MessageSender interface {
 	Send(ctx context.Context, m OutMessage) (messageID int64, err error)
 }
@@ -44,10 +42,8 @@ type ChatAdminChecker interface {
 }
 
 // GroupBinder — use case-поверхность привязки чата для хендлеров /bind_group,
-// /unbind и /groups. Реализуется internal/app/groups.Service (сигнатуры
-// совпадают, адаптер не нужен). Пакет telegram лежит в platform и по правилу
-// зависимостей может импортировать app — здесь это нужно ради типа MyGroup:
-// дублировать проекцию групп в отдельный DTO смысла нет.
+// /unbind и /groups. Реализуется internal/app/groups.Service (адаптер не
+// нужен; telegram может импортировать app по правилу зависимостей).
 type GroupBinder interface {
 	BindChat(ctx context.Context, actor *domain.User, chatID int64, threadID *int64, slug, chatTitle string) (*domain.Group, error)
 	UnbindChat(ctx context.Context, actor *domain.User, chatID int64, threadID *int64) (*domain.Group, error)
@@ -56,8 +52,7 @@ type GroupBinder interface {
 }
 
 // Superadmin — use case-поверхность служебных команд (§6.1). Реализуется
-// internal/app/moderation.Service (сигнатуры совпадают, адаптер не нужен);
-// пакет telegram может импортировать app по правилу зависимостей.
+// internal/app/moderation.Service (адаптер не нужен).
 type Superadmin interface {
 	PromoteSuperadmin(ctx context.Context, actor *domain.User, telegramID int64) error
 	BanUser(ctx context.Context, actor *domain.User, telegramID int64) error
@@ -67,16 +62,14 @@ type Superadmin interface {
 }
 
 // SlugReporter — use case-поверхность жалобы на слаг (спека §3.3,
-// /report_slug). Реализуется internal/app/groups.Service (сигнатуры
-// совпадают). Права (админ группы) и рассылка супер-админам — внутри use
-// case: хендлер только маршрутизирует и отвечает обобщённым текстом.
+// /report_slug). Реализуется internal/app/groups.Service. Права и рассылка —
+// внутри use case; хендлер отвечает обобщённым текстом.
 type SlugReporter interface {
 	ReportSlug(ctx context.Context, actor *domain.User, slug string) (*domain.Group, error)
 }
 
-// Проверки совместимости на этапе компиляции: реальные реализации обязаны
-// удовлетворять интерфейсам без адаптеров (иначе serve сломается на сборке,
-// а не в рантайме).
+// Проверки совместимости на этапе компиляции: реализации обязаны
+// удовлетворять интерфейсам (иначе ошибка на сборке, а не в рантайме).
 var (
 	_ GroupBinder      = (*groups.Service)(nil)
 	_ MessageSender    = (*BotSender)(nil)

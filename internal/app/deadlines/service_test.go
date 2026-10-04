@@ -265,6 +265,7 @@ func (r *fakeGroupRepo) SetStatus(ctx context.Context, id int64, status domain.G
 	return nil
 }
 func (r *fakeGroupRepo) SoftDelete(ctx context.Context, id int64) error { return nil }
+func (r *fakeGroupRepo) HardDelete(ctx context.Context, id int64) error { return nil }
 func (r *fakeGroupRepo) ListMine(ctx context.Context, userID int64) ([]domain.Group, error) {
 	return nil, nil
 }

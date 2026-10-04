@@ -71,8 +71,8 @@ type createDeadlineResp struct {
 	} `json:"reminders"`
 }
 
-// setupGroupWithAdmin создаёт группу и делает её создателя админом (claim —
-// Task 10; напрямую в БД, как promoteGroupAdmin в groups-тестах).
+// setupGroupWithAdmin создаёт группу и делает её создателя админом напрямую
+// в БД (как promoteGroupAdmin в groups-тестах).
 func setupGroupWithAdmin(t *testing.T, r http.Handler, token string, slug string) int64 {
 	t.Helper()
 	resp := doJSON(r, http.MethodPost, "/api/v1/groups", token,
@@ -225,11 +225,12 @@ func TestDeadlinesGroupFlowFull(t *testing.T) {
 		t.Fatalf("redeem = %d", resp.Code)
 	}
 
-	resp = doJSON(r, http.MethodPost, "/api/v1/deadlines", memberTok, map[string]any{
+	outsiderTok, _ := login(t, r, 3099)
+	resp = doJSON(r, http.MethodPost, "/api/v1/deadlines", outsiderTok, map[string]any{
 		"group_id": gid, "title": "Экзамен", "due_at": due.Format(time.RFC3339),
 	})
 	if resp.Code != http.StatusForbidden {
-		t.Errorf("member create group deadline = %d, want 403; body: %s", resp.Code, resp.Body)
+		t.Errorf("outsider create group deadline = %d, want 403; body: %s", resp.Code, resp.Body)
 	}
 
 	// admin создаёт без reminders → подставляются пресеты группы (7д/3д/24ч).
@@ -263,7 +264,7 @@ func TestDeadlinesGroupFlowFull(t *testing.T) {
 	}
 
 	// Не-участник не видит ни список, ни дедлайн.
-	outsiderTok, _ := login(t, r, 3004)
+	outsiderTok, _ = login(t, r, 3004)
 	if resp = doJSON(r, http.MethodGet, fmt.Sprintf("/api/v1/groups/%d/deadlines", gid), outsiderTok, nil); resp.Code != http.StatusForbidden {
 		t.Errorf("outsider list = %d, want 403", resp.Code)
 	}

@@ -1,7 +1,6 @@
-// Ре-энтрантность initTMA (minor 12): StrictMode/HMR вызывают initTMA
-// повторно, и без гварда viewport.mount() уходил бы в SDK второй раз
-// (ConcurrentCallError / лишняя работа). SDK замокан — проверяются именно
-// вызовы, а не окружение.
+// Ре-энтрантность initTMA: StrictMode/HMR вызывают initTMA повторно, и без
+// гварда viewport.mount() уходил бы в SDK второй раз (ConcurrentCallError).
+// SDK замокан — проверяются именно вызовы, а не окружение.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sdk = vi.hoisted(() => {

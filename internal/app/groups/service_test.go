@@ -116,6 +116,15 @@ func (r *fakeGroupRepo) SoftDelete(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (r *fakeGroupRepo) HardDelete(ctx context.Context, id int64) error {
+	if _, ok := r.groups[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(r.groups, id)
+	delete(r.deleted, id)
+	return nil
+}
+
 func (r *fakeGroupRepo) ListMine(ctx context.Context, userID int64) ([]domain.Group, error) {
 	out := []domain.Group{}
 	for _, g := range r.groups {
@@ -329,7 +338,7 @@ func (r *fakeInviteRepo) IncrementUsed(ctx context.Context, id int64) error {
 			continue
 		}
 		now := r.clock.Now()
-		if inv.RevokedAt != nil || !inv.ExpiresAt.After(now) {
+		if inv.RevokedAt != nil || !inv.ExpiresAtValid(now) {
 			return domain.ErrConflict
 		}
 		if inv.MaxUses >= 0 && inv.UsedCount >= inv.MaxUses {
@@ -698,8 +707,7 @@ func TestSearch_CarriesCallerRole(t *testing.T) {
 // --- Invites ---
 
 // seedGroupWithAdmin создаёт активную группу и делает actorID её админом
-// (через SQL-подобный SetRole — в обход claim, который в Task 10). Группа
-// активируется: redeem в pending-группу запрещён чужим (finding #3).
+// (через SetRole). Группа активируется: redeem в pending-группу запрещён чужим.
 func seedGroupWithAdmin(t *testing.T, f *fixture, adminID int64, slug string) *domain.Group {
 	t.Helper()
 	ctx := context.Background()
@@ -713,10 +721,13 @@ func seedGroupWithAdmin(t *testing.T, f *fixture, adminID int64, slug string) *d
 	if err := f.groups.SetStatus(ctx, g.ID, domain.GroupStatusActive); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
+	if err := f.bindings.Create(ctx, &domain.ChatBinding{GroupID: g.ID, ChatID: -1000 - g.ID, BoundBy: adminID}); err != nil {
+		t.Fatalf("Create binding: %v", err)
+	}
 	return g
 }
 
-func TestCreateInvite_CodeStoredAsHash(t *testing.T) {
+func TestCreateInvite_CodeStoredInDB(t *testing.T) {
 	f := newFixture(Config{})
 	ctx := context.Background()
 	g := seedGroupWithAdmin(t, f, 1, "А-111")
@@ -734,8 +745,8 @@ func TestCreateInvite_CodeStoredAsHash(t *testing.T) {
 			t.Errorf("code %q contains ambiguous char %q", code, r)
 		}
 	}
-	if inv.Code != sha(code) {
-		t.Errorf("stored code = %q, want sha256 hex of plaintext", inv.Code)
+	if inv.Code != code {
+		t.Errorf("stored code = %q, want plaintext %q", inv.Code, code)
 	}
 	wantExpiry := f.clock.now.Add(7 * 24 * time.Hour) // ttl=0 → InviteDefaultTTL
 	if !inv.ExpiresAt.Equal(wantExpiry) {
@@ -792,7 +803,7 @@ func TestRedeemInvite_HappyPath(t *testing.T) {
 	if m.Role != domain.RoleAdmin {
 		t.Errorf("role = %q, want admin (роль из инвайта)", m.Role)
 	}
-	stored, err := f.invites.GetByCode(ctx, sha(code))
+	stored, err := f.invites.GetByCode(ctx, code)
 	if err != nil || stored.UsedCount != 1 {
 		t.Errorf("used_count = %v (err %v), want 1", stored.UsedCount, err)
 	}
@@ -862,7 +873,7 @@ func TestRedeemInvite_MemberIdempotent(t *testing.T) {
 	if _, err := f.svc.RedeemInvite(ctx, user(2, false), code); err != nil {
 		t.Fatalf("re-redeem by member err = %v, want idempotent success", err)
 	}
-	stored, err := f.invites.GetByCode(ctx, sha(code))
+	stored, err := f.invites.GetByCode(ctx, code)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -885,7 +896,7 @@ func TestRedeemInvite_ExhaustedAtRepoLevel(t *testing.T) {
 		t.Fatalf("CreateInvite: %v", err)
 	}
 	// Исчерпываем лимит «в обход» redeem — как если бы гонка уже случилась.
-	stored, err := f.invites.GetByCode(ctx, sha(code))
+	stored, err := f.invites.GetByCode(ctx, code)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1079,6 +1090,24 @@ func TestLeave_LastAdminConflict(t *testing.T) {
 	}
 	if _, err := f.members.Get(ctx, g.ID, 2); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("membership after Leave: %v, want gone", err)
+	}
+}
+
+// 1.2: Выход создателя из непривязанной группы безвозвратно удаляет группу.
+func TestLeave_UnboundGroupDeletesGroup(t *testing.T) {
+	f := newFixture(Config{})
+	ctx := context.Background()
+	g, err := f.svc.Create(ctx, user(1, false), "А-111", "T")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := f.svc.Leave(ctx, user(1, false), g.ID); err != nil {
+		t.Fatalf("Leave unbound group: %v", err)
+	}
+
+	if _, err := f.groups.GetByID(ctx, g.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("group after Leave: %v, want ErrNotFound (deleted from DB)", err)
 	}
 }
 

@@ -5,6 +5,7 @@
 // (`initData.restore`, `expand.isAvailable()` и т.п.), а `window.Telegram`
 // читается только через SDK — прямых обращений нет.
 import {
+  backButton,
   hapticFeedback,
   initData,
   isTMA,
@@ -13,6 +14,22 @@ import {
   themeParams,
   viewport,
 } from '@telegram-apps/sdk-react';
+
+declare global {
+  interface Window {
+    Telegram?: {
+      WebApp?: {
+        BackButton?: {
+          isVisible?: boolean;
+          show: () => void;
+          hide: () => void;
+          onClick: (fn: () => void) => void;
+          offClick: (fn: () => void) => void;
+        };
+      };
+    };
+  }
+}
 
 export type Appearance = 'light' | 'dark';
 /** TelegramUI AppRoot понимает только эти два значения. */
@@ -203,4 +220,58 @@ export function showMainButton({
     // SDK в неожиданном состоянии: форма остаётся с собственной кнопкой.
     return () => {};
   }
+}
+
+/**
+ * Управление нативной кнопкой BackButton (Telegram.WebApp.BackButton и SDK).
+ * Показывается на всех дочерних страницах, скрывается на главном табе (#/).
+ * По клику вызывает onBack (routerBack()).
+ */
+export function syncBackButton(isRoot: boolean, onBack: () => void): () => void {
+  let offSDK: (() => void) | undefined;
+
+  // 1. SDK-обёртка (если доступна)
+  if (isTMA()) {
+    try {
+      if (backButton.mount.isAvailable() && !backButton.isMounted()) {
+        backButton.mount();
+      }
+      if (backButton.isMounted()) {
+        if (isRoot) {
+          backButton.hide();
+        } else {
+          backButton.show();
+          offSDK = backButton.onClick(onBack);
+        }
+      }
+    } catch {
+      // Игнорируем ошибки SDK
+    }
+  }
+
+  // 2. Нативный Telegram.WebApp.BackButton
+  const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp?.BackButton : undefined;
+  if (tg) {
+    try {
+      if (isRoot) {
+        tg.hide();
+      } else {
+        tg.show();
+        tg.onClick(onBack);
+      }
+    } catch {}
+  }
+
+  return () => {
+    if (offSDK) {
+      try {
+        offSDK();
+      } catch {}
+    }
+    if (tg) {
+      try {
+        tg.offClick(onBack);
+      } catch {}
+    }
+  };
 }

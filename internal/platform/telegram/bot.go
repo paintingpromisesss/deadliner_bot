@@ -1,10 +1,8 @@
 // Package telegram — Telegram Bot API (спека §6): адаптер Notifier (лимиты,
 // 429/403), транспорт BotSender поверх go-telegram/bot и хендлеры команд
-// (/start, /help, /bind_group, /unbind, /groups, /new_deadline).
-//
-// Хендлеры зависят только от узких интерфейсов (MessageSender,
-// ChatAdminChecker, GroupBinder), поэтому проверяются юнит-тестами на фейках
-// без сети; Bot связывает их с реальным клиентом.
+// (/start, /help, /bind_group, /unbind, /groups, /new_deadline). Хендлеры
+// зависят только от узких интерфейсов, поэтому проверяются юнит-тестами на
+// фейках без сети.
 package telegram
 
 import (
@@ -71,16 +69,13 @@ type Deps struct {
 	// BotUserID — telegram id бота для проверки админства. Ноль означает
 	// «выведи из токена» (NewBot делает это офлайн через tgbot.Bot.ID).
 	BotUserID int64
-	// API — уже созданный клиент (NewClient). Нужен serve: транспорт должен
-	// существовать ДО сервисов (нотификатор уходит в claim-флоу), а хендлеры
-	// зависят от сервисов — поэтому клиент и диспетчер собираются в два шага.
-	// nil — NewBot создаёт клиент сам.
+	// API — уже созданный клиент (NewClient): транспорт нужен сервисам до
+	// сборки хендлеров. nil — NewBot создаёт клиент сам.
 	API *tgbot.Bot
 }
 
-// Client — созданный клиент Bot API и его транспорт, ещё без диспетчера
-// апдейтов. Двухшаговая сборка нужна serve: транспорт требуется сервисам
-// (нотификатор), а диспетчер — сервисам в своих зависимостях.
+// Client — клиент Bot API и его транспорт без диспетчера апдейтов:
+// двухшаговая сборка для serve (транспорт нужен сервисам раньше хендлеров).
 type Client struct {
 	api    *tgbot.Bot
 	sender *BotSender
@@ -130,19 +125,14 @@ type Bot struct {
 	log    *slog.Logger
 	handl  *Handlers
 
-	// mu защищает пересборку диспетчера: SetDeps зовётся один раз на старте
-	// (serve), до запуска приёма апдейтов, но подписка на апдейты идёт через
-	// указатель в замыкании — пересборка обязана быть безопасной.
+	// mu защищает пересборку диспетчера: подписка на апдейты идёт через
+	// указатель в замыкании.
 	mu sync.RWMutex
 }
 
-// SetDeps пересобирает диспетчер апдейтов на новых зависимостях.
-//
-// Нужен из-за порядка сборки в serve: транспорт (BotSender) обязан
-// существовать ДО сервисов — нотификатор уходит в claim-флоу, — а сервисы
-// зависят от него. Поэтому клиент и диспетчер собираются двумя шагами:
-// NewClient → сервисы → NewBot(Deps.API, ... ) либо NewBot → SetDeps.
-// Вызывается один раз до старта приёма апдейтов.
+// SetDeps пересобирает диспетчер апдейтов на новых зависимостях: клиент и
+// диспетчер собираются двумя шагами (NewClient → сервисы → NewBot/SetDeps).
+// Вызывается до старта приёма апдейтов.
 func (b *Bot) SetDeps(deps Deps) {
 	if deps.Sender == nil {
 		deps.Sender = b.sender
@@ -180,12 +170,9 @@ func (b *Bot) newHandlers(deps Deps) *Handlers {
 }
 
 // NewBot создаёт бота, транспорт и регистрирует диспетчер апдейтов. Сеть не
-// запрашивается (WithSkipGetMe): id бота для проверок админства берётся из
-// самого токена (tgbot.Bot.ID разбирает префикс "<id>:<secret>"), а явный
-// Deps.BotUserID переопределяет его при необходимости.
-//
-// Deps.API позволяет передать клиент, созданный ранее через NewClient (serve:
-// транспорт должен существовать до сервисов); иначе клиент создаётся здесь.
+// запрашивается (WithSkipGetMe): id бота берётся из токена
+// (префикс "<id>:<secret>"), Deps.BotUserID переопределяет. Deps.API позволяет
+// передать клиент, созданный через NewClient.
 func NewBot(cfg BotConfig, deps Deps, log *slog.Logger) (*Bot, error) {
 	if strings.TrimSpace(cfg.Token) == "" {
 		return nil, errors.New("telegram: empty bot token")
@@ -197,8 +184,7 @@ func NewBot(cfg BotConfig, deps Deps, log *slog.Logger) (*Bot, error) {
 		cfg.Mode = ModePolling
 	}
 	// Fail-closed (спека §6.1): в webhook-режиме без секрета библиотека
-	// принимает любой POST /webhook, то есть подделанные апдейты — включая
-	// /bind_group в чужом чате. Лучше не стартовать, чем стартовать открытым.
+	// принимает любой POST /webhook — подделанные апдейты.
 	if cfg.Mode == ModeWebhook && cfg.WebhookSecret == "" {
 		return nil, errors.New("telegram: webhook mode requires WebhookSecret (empty secret accepts forged updates)")
 	}
@@ -231,8 +217,8 @@ func (b *Bot) Sender() *BotSender { return b.sender }
 // API — нижележащий клиент (для методов, не покрытых адаптером).
 func (b *Bot) API() *tgbot.Bot { return b.api }
 
-// WebhookHandler — http.Handler для монтирования в chi-роутер на POST /webhook
-// (Task 16). Секрет проверяет библиотека (WithWebhookSecretToken).
+// WebhookHandler — http.Handler для монтирования в chi-роутер на POST /webhook.
+// Секрет проверяет библиотека (WithWebhookSecretToken).
 func (b *Bot) WebhookHandler() http.Handler { return b.api.WebhookHandler() }
 
 // Start запускает приём апдейтов (блокирующий вызов — serve гоняет его в
@@ -262,10 +248,8 @@ func (b *Bot) Handle(ctx context.Context, upd *models.Update) {
 }
 
 // RegisterWebhook публикует адрес приёма апдейтов в Telegram (setWebhook,
-// спека §10) вместе с secret_token: Telegram присылает его в заголовке
-// X-Telegram-Bot-Api-Secret-Token, который проверяет WebhookHandler. В
-// polling-режиме не делает ничего (вебхук был бы вторым конкурирующим
-// приёмником апдейтов).
+// спека §10) вместе с secret_token; проверяет его WebhookHandler. В
+// polling-режиме — no-op (вебхук был бы вторым приёмником апдейтов).
 func (b *Bot) RegisterWebhook(ctx context.Context, url string) error {
 	if b.cfg.Mode != ModeWebhook {
 		return nil
@@ -288,8 +272,7 @@ func (b *Bot) RegisterWebhook(ctx context.Context, url string) error {
 }
 
 // UnregisterWebhook снимает вебхук (graceful shutdown, спека §10). В
-// polling-режиме — no-op. Вызов best-effort: ошибку возвращает вызывающий,
-// который решает, считать ли её фатальной (при остановке — нет).
+// polling-режиме — no-op; вызов best-effort.
 func (b *Bot) UnregisterWebhook(ctx context.Context) error {
 	if b.cfg.Mode != ModeWebhook {
 		return nil
@@ -323,11 +306,9 @@ func (b *Bot) setupUI(ctx context.Context) {
 }
 
 // TelegramError маппит ошибки Telegram API в доменные: 429 → RateLimitError;
-// 403 в ЛС → BotBlockedError (chat_id ЛС = telegram_id получателя, а воркер
-// помечает users.bot_blocked именно по telegram_id). 403 в ГРУППЕ означает
-// «бота кикнули/нет прав», а не блокировку пользователя, поэтому уходит как
-// есть — иначе MarkBotBlocked искал бы пользователя с отрицательным id.
-// Остальное — как есть. Notifier и хендлеры используют один маппинг.
+// 403 в ЛС → BotBlockedError (chat_id ЛС = telegram_id получателя). 403 в
+// группе означает «бота кикнули/нет прав» и уходит как есть. Notifier и
+// хендлеры используют один маппинг.
 func TelegramError(err error, chatID int64) error {
 	if err == nil {
 		return nil

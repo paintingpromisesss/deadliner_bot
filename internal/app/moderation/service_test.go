@@ -94,6 +94,15 @@ func (r *fakeGroupRepo) SoftDelete(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (r *fakeGroupRepo) HardDelete(ctx context.Context, id int64) error {
+	if _, ok := r.groups[id]; !ok {
+		return fmt.Errorf("%w: group id=%d", domain.ErrNotFound, id)
+	}
+	delete(r.groups, id)
+	r.deleted[id] = true
+	return nil
+}
+
 func (r *fakeGroupRepo) ListMine(ctx context.Context, userID int64) ([]domain.Group, error) {
 	return nil, errors.New("not used")
 }
@@ -563,17 +572,16 @@ func TestCleanupDeletesOnlyExpiredPendingWithoutBindingOrAdmin(t *testing.T) {
 		t.Fatalf("CleanupExpiredPending: %v", err)
 	}
 
-	if report.Groups != 2 {
-		t.Errorf("report.Groups = %d, want 2 (doomed + plain)", report.Groups)
+	if report.Groups != 3 {
+		t.Errorf("report.Groups = %d, want 3 (doomed + adminned + plain)", report.Groups)
 	}
-	for _, id := range []int64{doomed, plain} {
+	for _, id := range []int64{doomed, adminned, plain} {
 		if !f.groups.deleted[id] {
-			t.Errorf("group %d: not deleted, want soft-deleted", id)
+			t.Errorf("group %d: not deleted, want hard-deleted", id)
 		}
 	}
 	for name, id := range map[string]int64{
 		"bound (has chat binding)": bound,
-		"adminned (has admin)":     adminned,
 		"alive (TTL not expired)":  alive,
 		"active (not pending)":     active,
 		"noDeadline (no TTL)":      noDeadline,
@@ -590,14 +598,13 @@ func TestCleanupDeletesOnlyExpiredPendingWithoutBindingOrAdmin(t *testing.T) {
 	if e.ActorUserID != nil {
 		t.Errorf("cleanup actor = %v, want nil (system job)", *e.ActorUserID)
 	}
-	if got := e.Meta["groups"]; got != 2 {
-		t.Errorf("audit meta groups = %v, want 2", got)
+	if got := e.Meta["groups"]; got != 3 {
+		t.Errorf("audit meta groups = %v, want 3", got)
 	}
 }
 
-// Нет привязки И нет админа — оба условия обязательны (checked individually
-// above); здесь — что «нет привязки» само по себе недостаточно.
-func TestCleanupKeepsExpiredPendingWithAdminEvenWithoutBinding(t *testing.T) {
+// 1.1: Группа без привязки чата удаляется даже при наличии админа (создателя).
+func TestCleanupDeletesExpiredPendingWithAdminIfNoBinding(t *testing.T) {
 	f := newFixture()
 	id := f.expiredPending("М8О-401Б-23")
 	f.members.add(id, 5, domain.RoleAdmin)
@@ -605,8 +612,8 @@ func TestCleanupKeepsExpiredPendingWithAdminEvenWithoutBinding(t *testing.T) {
 	if _, err := f.svc.CleanupExpiredPending(context.Background()); err != nil {
 		t.Fatalf("CleanupExpiredPending: %v", err)
 	}
-	if f.groups.deleted[id] {
-		t.Error("expired pending group with an admin must be kept")
+	if !f.groups.deleted[id] {
+		t.Error("expired pending group without binding must be deleted even if it has an admin")
 	}
 }
 
@@ -652,7 +659,7 @@ func TestCleanupCancelsRemindersOfDeletedGroupsOnly(t *testing.T) {
 }
 
 // Служебная часть cleanup: старые окна счётчиков (ретенция из конфига) и
-// протухшие сессии (грейс 7 дней) — из ledger-заметок Task 6/10.
+// протухшие сессии (грейс 7 дней).
 func TestCleanupPurgesCountersAndSessions(t *testing.T) {
 	f := newFixture()
 	f.maint.counters = 5

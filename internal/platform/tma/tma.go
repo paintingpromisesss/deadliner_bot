@@ -139,10 +139,9 @@ func cleanPath(urlPath string) (string, bool) {
 }
 
 // extraTypes — расширения, которых нет во встроенной таблице mime (проверено
-// по Go 1.26: .webp есть, .woff2/.ttf/.otf/.eot — нет). В alpine-образе нет
-// /etc/mime.types, поэтому TypeByExtension для этих файлов вернул бы пусто и
-// браузер получил бы их без Content-Type. Шрифты и изображения Vite-бандла
-// хешированы, так что промах MIME кэшировался бы на год.
+// по Go 1.26: .webp есть, .woff2/.ttf/.otf/.eot — нет); в alpine-образе нет
+// /etc/mime.types, поэтому TypeByExtension вернул бы пусто. Ассеты Vite
+// хешированы — промах MIME кэшировался бы на год.
 var extraTypes = map[string]string{
 	".woff2": "font/woff2",
 	".woff":  "font/woff",

@@ -21,8 +21,7 @@ var _ domain.CounterRepo = (*countersRepo)(nil)
 
 // IncAndCheck upserts the (user, action, window) counter row and returns the
 // count after incrementing. The caller compares it against limit: count > limit
-// means the rate limit is exhausted (per Task 3 ruling — policy stays in the
-// app layer).
+// means the rate limit is exhausted (policy stays in the app layer).
 func (r *countersRepo) IncAndCheck(ctx context.Context, userID int64, action string, windowStart time.Time, limit int) (int, error) {
 	var count int
 	err := r.pool.QueryRow(ctx,

@@ -52,10 +52,8 @@ func toNotificationsSettingsDTO(s *notifications.Settings) notificationSettingsD
 	return notificationSettingsDTO{DMNotifyDefault: s.DMNotifyDefault, Groups: groups}
 }
 
-// queryGroupID — необязательный ?group_id= в фильтре GET. Отсутствие ключа →
-// nil; переданный ключ с пустым или нечисловым/неположительным значением → 400
-// (ok=false): «group_id=» — это явный фильтр с невалидным значением, а не
-// «фильтра нет».
+// queryGroupID — необязательный ?group_id= в фильтре GET: отсутствие ключа →
+// nil; пустое/нечисловое/неположительное значение → 400.
 func queryGroupID(w http.ResponseWriter, r *http.Request) (*int64, bool) {
 	vals, present := r.URL.Query()["group_id"]
 	if !present {
@@ -80,7 +78,7 @@ func parseGroupID(raw string) (int64, error) {
 }
 
 // validGroupID — один критерий валидности id для query и тела: неположительный
-// идентификатор отвергается 400 ещё до обращения к БД, а не превращается в 404.
+// id → 400 до обращения к БД, а не 404.
 func validGroupID(id int64) bool { return id > 0 }
 
 func writeValidationError(w http.ResponseWriter) {

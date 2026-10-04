@@ -14,21 +14,11 @@ import (
 )
 
 // handleSuperadmin — /promote, /ban, /unban, /stats, /delete_group (спека §6.1,
-// только ЛС superadmin).
-//
-// Контекст: в группах команды ИГНОРИРУЮТСЯ молча — отвечать «только
-// администратору инстанса» в общем чате значит раскрывать участникам
-// существование служебных команд и приглашать к их перебору. В личном чате
-// отказ явный (superadmin.only): пользователь уже знает команду, иначе
-// молчание выглядело бы поломкой.
-//
-// Права: UpsertByTelegram из touchUser возвращает ЧАСТИЧНОГО пользователя
-// (is_superadmin/is_banned в RETURNING не читаются), поэтому перед любой
-// служебной командой обязательна гидратация GetByTelegramID. Обычные
-// сообщения такой проверки не делают намеренно: бан закрывает пути записи, а
-// они в основном идут через API (создание группы, claim — middleware.Auth
-// 403 и отказ auth.Login); исключение — команды привязки чата, живущие только
-// в боте: их гидратирует Handlers.isBanned (спека §3.3).
+// только ЛС superadmin). В группах команды игнорируются молча: ответ в общем
+// чате раскрывал бы существование служебных команд; в ЛС отказ явный.
+// UpsertByTelegram возвращает частичного пользователя (is_superadmin /
+// is_banned не читаются), поэтому перед командой обязательна гидратация
+// GetByTelegramID.
 func (h *Handlers) handleSuperadmin(ctx context.Context, msg *models.Message, actor *domain.User, cmd, arg string) {
 	if !isPrivate(msg.Chat.Type) {
 		return
@@ -53,9 +43,8 @@ func (h *Handlers) handleSuperadmin(ctx context.Context, msg *models.Message, ac
 		h.send(ctx, msg.Chat.ID, nil, i18n.T("superadmin.only"), false)
 		return
 	}
-	// Забаненный вызывающий не считается супер-админом: бан выдаётся только
-	// не-супер-админам (moderation.BanUser запрещает банить супер-админа), но
-	// проверка бесплатна — пользователь уже гидратирован.
+	// Забаненный не считается супер-админом; проверка бесплатна —
+	// пользователь уже гидратирован.
 	if caller.IsBanned {
 		h.send(ctx, msg.Chat.ID, nil, i18n.T("superadmin.only"), false)
 		return
@@ -123,9 +112,7 @@ func (h *Handlers) handleSuperadmin(ctx context.Context, msg *models.Message, ac
 }
 
 // parseTelegramIDArg — telegram_id из аргумента команды: только цифры
-// (ведущий «+» допускается), ноль и мусор отвергаются. Аргумент приходит от
-// человека, поэтому парсинг максимально узкий — «почти число» должно давать
-// подсказку об использовании, а не ошибку БД.
+// (ведущий «+» допускается), ноль и мусор отвергаются.
 func parseTelegramIDArg(arg string) (int64, bool) {
 	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(arg), "+"))
 	if s == "" {

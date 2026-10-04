@@ -52,7 +52,7 @@ func (r *fakeUserRepo) UpsertByTelegram(ctx context.Context, u *domain.User) err
 	}
 	existing.Username = u.Username
 	existing.FirstName = u.FirstName
-	// Mirror the Task 4 repo limitation: only ID and CreatedAt are filled.
+	// Mirror the repo limitation: only ID and CreatedAt are filled.
 	u.ID = existing.ID
 	u.CreatedAt = existing.CreatedAt
 	return nil

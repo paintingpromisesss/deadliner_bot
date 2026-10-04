@@ -106,7 +106,7 @@ export const strings = {
 
     /** Экран группы. */
     detailTitle: 'Группа',
-    statusPending: 'ожидает привязки',
+    statusPending: 'Ожидает привязки',
     statusActive: 'активна',
     statusArchived: 'в архиве',
     membersCount: 'Участников: %s',
@@ -116,10 +116,12 @@ export const strings = {
     bindingHint:
       'Привяжите чат к группе: напишите в нём /bind_group %s — бот должен быть администратором чата. После привязки станет доступна выдача админа.',
     bindingChat: 'Привязан чат: %s',
-    bindingTopic: 'Привязан чат: %s (топик %s)',
+    bindingTopic: 'Привязан чат: %s (#%s)',
     leave: 'Выйти из группы',
     leaveConfirm: 'Выйти из группы?',
     leaveConfirmHint: 'Вернуться можно будет только по новому инвайт-коду.',
+    leaveConfirmUnboundHint:
+      'Группа ещё не привязана к чату. При выходе она будет безвозвратно удалена.',
     pendingUntil: 'Группа будет удалена без привязки и админа: %s',
 
     /** Админ-панель. */
@@ -170,6 +172,13 @@ export const strings = {
     inviteExpiresAt: 'до %s',
     inviteRoleAdmin: 'админ при вступлении',
     inviteRoleMember: 'участник',
+    inviteStatusActive: 'активен',
+    inviteStatusExpired: 'истёк',
+    inviteStatusRevoked: 'отозван',
+    inviteStatusExhausted: 'исчерпан',
+    inviteUsesRemaining: 'осталось %s из %s',
+    inviteUsesUnlimited: 'без ограничений',
+    inviteEmpty: 'В группе пока нет созданных инвайтов.',
 
     /** Модерация дедлайнов (заявки участников, pending_approval). */
     moderationHeader: 'Дедлайны на модерации',
@@ -210,15 +219,15 @@ export const strings = {
     tzUseDevice: 'Использовать пояс устройства',
     tzDeviceHint: 'Часовой пояс устройства: %s',
     notificationsHeader: 'Уведомления',
-    dmDefault: 'Дубли в личку по умолчанию',
+    dmDefault: 'Дублировать напоминания в ЛС',
     dmDefaultHint:
-      'Копировать напоминания о групповых дедлайнах в личные сообщения. Ниже можно переопределить для отдельных групп.',
-    groupsHeader: 'Дубли по группам',
+      'Отправлять копии напоминаний о дедлайнах в личные сообщения с ботом. Ниже можно переопределить для отдельных групп.',
+    groupsHeader: 'Напоминания по группам',
     groupsFooter:
-      'Эффективное значение: своё для группы либо общее по умолчанию. «Наследовать» возвращает группу к общему значению.',
-    groupInherit: 'Наследовать',
-    groupOverride: 'своё значение',
-    groupInherited: 'как по умолчанию',
+      'Если в нескольких группах одинаковые дедлайны или вы хотите настроить уведомления точечно: переопределите получение ЛС-напоминаний для конкретной группы. «Сбросить к общему» вернёт дефолтную настройку.',
+    groupInherit: 'Сбросить к общему',
+    groupOverride: 'индивидуально',
+    groupInherited: 'как в общих настройках',
     groupsEmpty: 'Вы не состоите в группах — настраивать нечего.',
     telegramID: 'Telegram ID',
     save: 'Сохранить',

@@ -269,7 +269,7 @@ func TestGroupUpdateDoesNotClearBotBlocked(t *testing.T) {
 	}
 }
 
-// F-5 (companion): приватный апдейт снимает флаг (пишущий боту не блокировал его).
+// Приватный апдейт снимает флаг (пишущий боту не блокировал его).
 func TestPrivateUpdateClearsBotBlocked(t *testing.T) {
 	hs := newHarness()
 	hs.h.Handle(context.Background(), update(500, models.ChatTypePrivate, 7, "ivan", "привет"))
@@ -449,9 +449,8 @@ func TestBindGroupWrongChatAndUsage(t *testing.T) {
 func TestUnbindSuccess(t *testing.T) {
 	hs := newHarness()
 	hs.h.Handle(context.Background(), update(-100500, models.ChatTypeSupergroup, 7, "ivan", "/unbind"))
-	// Литерал, а не повторный вызов i18n.T с теми же аргументами: тест должен
-	// ловить отсутствие глагола в шаблоне (F-1: раньше выводилось
-	// «Привязка чата снята.%!(EXTRA string=Моя группа)»).
+	// Литерал, а не повторный вызов i18n.T: тест ловит отсутствие глагола в
+	// шаблоне (форматный артефакт %! при лишнем аргументе).
 	got := hs.sender.last(t)
 	const want = "Привязка чата «Моя группа» снята."
 	if got.text != want {
@@ -563,9 +562,8 @@ func TestNewDeadlineWithoutAppURL(t *testing.T) {
 
 // --- служебные инварианты ---
 
-// F-2 (fix round): забаненный не привязывает и не отвязывает чат. Привязка
-// живёт только в боте — middleware.Auth её не прикрывает, поэтому проверка
-// бана обязана быть здесь: use case НЕ вызывается, привязка не создаётся.
+// Забаненный не привязывает и не отвязывает чат. Привязка живёт только в
+// боте — middleware.Auth её не прикрывает: use case НЕ вызывается.
 func TestBindGroupAndUnbindRefuseBannedUser(t *testing.T) {
 	hs := newHarness()
 	hs.users.me = &domain.User{ID: 7, TelegramID: 777, IsBanned: true}
@@ -608,7 +606,7 @@ func TestBindGroupBanCheckFailureFailsClosed(t *testing.T) {
 	}
 }
 
-// Не-забаненный пользователь проходит проверку: /bind_group работает как раньше.
+// Не-забаненный пользователь проходит проверку: /bind_group работает.
 func TestBindGroupUnaffectedForActiveUser(t *testing.T) {
 	hs := newHarness()
 	hs.users.me = &domain.User{ID: 7, TelegramID: 7}
@@ -650,8 +648,8 @@ func TestPlainTextIgnored(t *testing.T) {
 	}
 }
 
-// Superadmin-команды: реализованы в Task 12 и проверяются в
-// handlers_superadmin_test.go (guard is_superadmin, отказ в ЛС, действия).
+// Superadmin-команды проверяются в handlers_superadmin_test.go (guard
+// is_superadmin, отказ в ЛС, действия).
 
 // Callback-запросы и пустые апдейты игнорируются.
 func TestNonMessageUpdatesIgnored(t *testing.T) {

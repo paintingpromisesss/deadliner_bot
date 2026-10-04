@@ -95,8 +95,8 @@ type patchMeRequest struct {
 	FirstName       *string `json:"first_name"`
 }
 
-// maxFirstNameRunes — граница имени (как у title дедлайна): имя показывается в
-// списках участников и в тексте жалобы, бесконтрольная длина ломала бы вёрстку.
+// maxFirstNameRunes — граница имени: оно показывается в списках участников
+// и в тексте жалобы.
 const maxFirstNameRunes = 64
 
 // PatchMe — PATCH /api/v1/me {tz?, dm_notify_default?, first_name?} →
@@ -143,9 +143,8 @@ func (c *authController) PatchMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.FirstName != nil {
-		// Второй UPDATE только когда имя реально пришло: UpdateSettings —
-		// основной путь настроек, и лишняя запись на каждый PATCH /me была бы
-		// платой за редкий случай.
+		// Второй UPDATE только когда имя пришло: лишняя запись на каждый
+		// PATCH /me не нужна.
 		if err := c.users.UpdateProfile(r.Context(), u.ID, firstName); err != nil {
 			httpjson.WriteDomainError(w, err)
 			return

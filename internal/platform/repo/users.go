@@ -106,10 +106,8 @@ func (r *usersRepo) UpdateProfile(ctx context.Context, id int64, firstName strin
 }
 
 // ListSuperadmins — адресаты служебных рассылок (/report_slug, спека §3.3).
-// Забаненные исключены на стороне запроса: бан снимает права супер-админа
-// (moderation.BanUser запрещает банить супер-админа, но флаг мог остаться с
-// прошлых версий), а bot_blocked отсеивается вызывающим — там же логируется
-// пропуск, чтобы «никому не дошло» было видно в логах, а не молчало.
+// Забаненные исключены на стороне запроса; bot_blocked отсеивается
+// вызывающим (пропуск логируется).
 func (r *usersRepo) ListSuperadmins(ctx context.Context) ([]domain.User, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+userColumns+` FROM users

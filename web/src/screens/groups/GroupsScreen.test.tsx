@@ -165,8 +165,8 @@ describe('GroupsScreen: список моих групп', () => {
     renderScreen();
 
     await screen.findByTestId('group-42');
-    expect(screen.getByTestId('group-42').textContent).toContain('ожидает привязки');
-    expect(screen.getByTestId('group-43').textContent).not.toContain('ожидает привязки');
+    expect(screen.getByTestId('group-42').textContent).toContain('Ожидает привязки');
+    expect(screen.getByTestId('group-43').textContent).not.toContain('Ожидает привязки');
   });
 
   it('пустой список — плейсхолдер с призывом создать группу', async () => {

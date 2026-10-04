@@ -1,10 +1,7 @@
 // Экран «Календарь» (спека §9, экран 3): месячная сетка Пн..Вс с точками на
-// днях, где есть дедлайны; навигация по месяцам; тап по дню — cell-список этого
-// дня ниже сетки.
-//
-// Сетка рисуется вручную (lib/calendar.ts), данные берутся одним запросом на
-// видимый месяц: GET /me/deadlines?scope=all&from&to в границах месяца,
-// посчитанных в tz пользователя (monthBounds).
+// днях с дедлайнами, навигация по месяцам, тап по дню — список дня. Сетка —
+// lib/calendar.ts, данные одним запросом GET /me/deadlines?from&to в границах
+// месяца в tz пользователя (monthBounds).
 import { useMemo, useState } from 'react';
 import { Button, Cell, List, Placeholder, Section, Spinner } from '../../components/ui';
 import { Screen } from '../../components/Screen';
@@ -26,17 +23,39 @@ import type { Deadline } from '../../lib/deadlines';
 import { hapticImpact } from '../../lib/tma';
 import { strings, tpl } from '../../lib/strings';
 
+// Персистентность состояния между экранами (2.2).
+let savedCursor: { year: number; month: number } | null = null;
+let savedSelected: number | null = null;
+
+export function resetCalendarState(): void {
+  savedCursor = null;
+  savedSelected = null;
+}
+
 export function CalendarScreen() {
   const tz = useAuthStore((s) => s.user?.tz ?? 'Europe/Moscow');
   const now = useMinuteTick();
   const today = useMemo(() => localToday(tz, now), [tz, now]);
+  const todayNumber = dayNumber(today.year, today.month, today.day);
 
-  // Курсор месяца — собственное состояние, а не производное от `now`: иначе
-  // минутный тик сбрасывал бы выбранный день и листал месяц обратно.
-  const [cursor, setCursor] = useState(() => ({ year: today.year, month: today.month }));
-  const [selected, setSelected] = useState<number | null>(null);
+  // Курсор месяца и выбранный день — по умолчанию сегодня и сохраняются между табами (2.2).
+  const [cursor, setCursor] = useState(() => savedCursor ?? { year: today.year, month: today.month });
+  const [selected, setSelected] = useState<number | null>(() => savedSelected ?? todayNumber);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<Deadline | null>(null);
+
+  function updateCursor(next: { year: number; month: number } | ((prev: { year: number; month: number }) => { year: number; month: number })) {
+    setCursor((prev) => {
+      const val = typeof next === 'function' ? next(prev) : next;
+      savedCursor = val;
+      return val;
+    });
+  }
+
+  function updateSelected(val: number | null) {
+    savedSelected = val;
+    setSelected(val);
+  }
 
   const bounds = useMemo(() => monthBounds(cursor.year, cursor.month, tz), [cursor, tz]);
   const query = useAllDeadlines({
@@ -48,20 +67,19 @@ export function CalendarScreen() {
 
   const grid = useMemo(() => buildMonth(cursor.year, cursor.month), [cursor]);
   const byDay = useMemo(() => groupByDay(asDeadlines(query.data), tz), [query.data, tz]);
-  const todayNumber = dayNumber(today.year, today.month, today.day);
 
   function shift(delta: number) {
     hapticImpact('light');
-    setSelected(null);
-    setCursor((prev) => addMonths(prev.year, prev.month, delta));
+    updateSelected(null);
+    updateCursor((prev) => addMonths(prev.year, prev.month, delta));
   }
 
   function onPickDay(day: MonthDay) {
     hapticImpact('light');
     // Тап по добивке (день соседнего месяца) перелистывает месяц: иначе
     // выбранный день остался бы за пределами видимой сетки.
-    if (!day.inMonth) setCursor({ year: day.year, month: day.month });
-    setSelected(dayNumber(day.year, day.month, day.day));
+    if (!day.inMonth) updateCursor({ year: day.year, month: day.month });
+    updateSelected(dayNumber(day.year, day.month, day.day));
   }
 
   const selectedDayDeadlines = selected === null ? [] : (byDay.get(selected) ?? []);
@@ -182,17 +200,6 @@ export function CalendarScreen() {
                 />
               ))
             )}
-          </Section>
-          <Section>
-            <Cell
-              Component="button"
-              type="button"
-              className="dl-cell-button"
-              onClick={openCreate}
-              data-testid="day-add"
-            >
-              {strings.deadlines.addButton}
-            </Cell>
           </Section>
         </List>
       )}

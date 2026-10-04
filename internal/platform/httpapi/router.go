@@ -30,8 +30,8 @@ type Deps struct {
 	Sessions      domain.SessionRepo
 	Log           *slog.Logger
 	SessionTTL    time.Duration
-	// WebhookHandler — POST /webhook бота в webhook-режиме (Task 10:
-	// telegram.Bot.WebhookHandler()). nil в polling-режиме.
+	// WebhookHandler — POST /webhook бота в webhook-режиме
+	// (telegram.Bot.WebhookHandler()). nil в polling-режиме.
 	WebhookHandler http.Handler
 }
 
@@ -77,6 +77,7 @@ func New(d Deps) chi.Router {
 				r.Get("/groups/{id}", groupsCtl.Get)
 				r.Patch("/groups/{id}", groupsCtl.Update)
 				r.Delete("/groups/{id}", groupsCtl.Delete)
+				r.Get("/groups/{id}/invites", groupsCtl.ListInvites)
 				r.Post("/groups/{id}/invites", groupsCtl.CreateInvite)
 				r.Delete("/groups/{id}/invites/{code}", groupsCtl.RevokeInvite)
 				r.Get("/groups/{id}/members", groupsCtl.ListMembers)
@@ -109,9 +110,8 @@ func New(d Deps) chi.Router {
 		})
 	})
 
-	// POST /webhook — приём апдейтов Telegram в webhook-режиме (Task 16
-	// передаёт сюда telegram.Bot.WebhookHandler). Вне /api/v1: это не REST API
-	// TMA, а канал Telegram, и секрет проверяется библиотекой.
+	// POST /webhook — приём апдейтов Telegram в webhook-режиме. Вне /api/v1:
+	// это канал Telegram, а не REST API TMA; секрет проверяет библиотека.
 	if d.WebhookHandler != nil {
 		r.Post("/webhook", d.WebhookHandler.ServeHTTP)
 	}

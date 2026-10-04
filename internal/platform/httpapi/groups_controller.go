@@ -245,10 +245,9 @@ const maxTTLHours = 24 * 90
 // {role, max_uses, ttl_hours, publish_to_chat} → 201 {code, expires_at};
 // plaintext-код возвращается один раз.
 // max_uses: -1 = без лимита (дефолт), ≥1 — число использований; 0 и < -1 → 400.
-// ttl_hours: -1 = бессрочный (no expiration); null/отсутствует → дефолт
-// конфига; 0 запрещён (неоднозначен), > 2160 → 400.
-// publish_to_chat: true → бот отправляет в привязанный чат группы призыв с
-// Main App-кнопкой (startapp-параметр = код инвайта). Без привязки — 409.
+// ttl_hours: -1 = бессрочный; null/отсутствует → дефолт конфига; 0 запрещён,
+// > 2160 → 400. publish_to_chat: бот отправляет призыв в привязанный чат
+// (без привязки — 409).
 func (c *groupsController) CreateInvite(w http.ResponseWriter, r *http.Request) {
 	actor := middleware.UserFrom(r.Context())
 	if actor == nil {
@@ -276,11 +275,8 @@ func (c *groupsController) CreateInvite(w http.ResponseWriter, r *http.Request) 
 	if req.MaxUses != nil {
 		maxUses = *req.MaxUses
 	}
-	// -1 — «дефолт конфига» для старых клиентов (не задали поле вовсе);
-	// sentinel для бессрочного — тоже -1, но со стороны клиента поле
-	// отсутствует = default. Явный inviteTTLNone выбран как -1 не случайно:
-	// старый API тоже позволял -1? Нет: старый контракт отвергал отрицательные
-	// значения, поэтому -1 здесь однозначно читается как «no expiration».
+	// Поле отсутствует → inviteTTLNone (-1) → дефолт конфига; явный -1 в
+	// запросе читается однозначно как «бессрочный».
 	ttlHours := inviteTTLNone
 	if req.TTLHours != nil {
 		ttlHours = *req.TTLHours
@@ -333,8 +329,8 @@ func (c *groupsController) RedeemInvite(w http.ResponseWriter, r *http.Request) 
 }
 
 // InvitePreview — GET /api/v1/invites/{code} → 200 {group}: данные экрана
-// подтверждения «Вступить в группу?» при открытии Mini App по startapp.
-// Лимит использования НЕ расходуется: списание — только фактом «Вступить».
+// «Вступить в группу?» при открытии Mini App по startapp. Лимит не
+// расходуется: списание — только фактом «Вступить».
 func (c *groupsController) InvitePreview(w http.ResponseWriter, r *http.Request) {
 	actor := middleware.UserFrom(r.Context())
 	if actor == nil {
@@ -375,6 +371,71 @@ func (c *groupsController) RevokeInvite(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type inviteDTO struct {
+	ID        int64      `json:"id"`
+	GroupID   int64      `json:"group_id"`
+	Code      string     `json:"code"`
+	Role      string     `json:"role"`
+	MaxUses   int        `json:"max_uses"`
+	UsedCount int        `json:"used_count"`
+	CreatedBy int64      `json:"created_by"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	Status    string     `json:"status"`
+}
+
+func inviteStatus(inv domain.Invite, now time.Time) string {
+	if inv.RevokedAt != nil {
+		return "revoked"
+	}
+	if !inv.ExpiresAt.IsZero() && inv.ExpiresAt.Before(now) {
+		return "expired"
+	}
+	if inv.MaxUses >= 0 && inv.UsedCount >= inv.MaxUses {
+		return "exhausted"
+	}
+	return "active"
+}
+
+// ListInvites — GET /api/v1/groups/{id}/invites → 200 {invites: []}.
+func (c *groupsController) ListInvites(w http.ResponseWriter, r *http.Request) {
+	actor := middleware.UserFrom(r.Context())
+	if actor == nil {
+		httpjson.WriteUnauthorized(w)
+		return
+	}
+	id, ok := pathGroupID(w, r)
+	if !ok {
+		return
+	}
+	invs, err := c.svc.ListInvites(r.Context(), actor, id)
+	if err != nil {
+		writeGroupsError(w, err)
+		return
+	}
+	now := time.Now().UTC()
+	out := make([]inviteDTO, 0, len(invs))
+	for _, inv := range invs {
+		var exp *time.Time
+		if !inv.ExpiresAt.IsZero() {
+			exp = &inv.ExpiresAt
+		}
+		out = append(out, inviteDTO{
+			ID:        inv.ID,
+			GroupID:   inv.GroupID,
+			Code:      inv.Code,
+			Role:      string(inv.Role),
+			MaxUses:   inv.MaxUses,
+			UsedCount: inv.UsedCount,
+			CreatedBy: inv.CreatedBy,
+			ExpiresAt: exp,
+			RevokedAt: inv.RevokedAt,
+			Status:    inviteStatus(inv, now),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invites": out})
 }
 
 // memberDTO — участник в списке группы.

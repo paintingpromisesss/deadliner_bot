@@ -52,6 +52,7 @@ func (r *fakeGroupRepo) SetStatus(ctx context.Context, id int64, status domain.G
 	return nil
 }
 func (r *fakeGroupRepo) SoftDelete(ctx context.Context, id int64) error { return nil }
+func (r *fakeGroupRepo) HardDelete(ctx context.Context, id int64) error { return nil }
 func (r *fakeGroupRepo) ListMine(ctx context.Context, userID int64) ([]domain.Group, error) {
 	return nil, nil
 }
@@ -80,9 +81,8 @@ func TestValidateAcceptsDefaultFormat(t *testing.T) {
 	}
 }
 
-// Набор символов берётся ИЗ КОНФИГА: символ, не проходящий дефолтную
-// регулярку, принимается, если оператор расширил SLUG_REGEX. Это и есть
-// устранение мёртвой настройки: раньше charset был зашит в ValidateStrict.
+// Набор символов берётся ИЗ КОНФИГА: символ вне дефолтной регулярки
+// принимается, если оператор расширил SLUG_REGEX.
 func TestValidateUsesConfiguredCharset(t *testing.T) {
 	const slug = "ЁЖ9" // «Ё» вне дефолтного А-Я и не нормализуется в Ж
 

@@ -9,7 +9,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppRoot } from '../../components/ui';
 
-import { CalendarScreen } from './CalendarScreen';
+import { CalendarScreen, resetCalendarState } from './CalendarScreen';
 import { configureAuth } from '../../lib/api';
 import { useAuthStore } from '../../stores/auth';
 
@@ -82,6 +82,7 @@ function lastListUrl(): string {
 }
 
 beforeEach(() => {
+  resetCalendarState();
   calls = [];
   deadlinesPayload = [];
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -305,7 +306,7 @@ describe('CalendarScreen: выбор дня', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('day-2026-09-15'));
     });
-    const add = await screen.findByTestId('day-add');
+    const add = await screen.findByTestId('fab-add');
     await act(async () => {
       fireEvent.click(add);
     });
@@ -342,7 +343,7 @@ describe.each([
     expect(screen.queryByText('16 сентября')).toBeNull();
 
     // ...и форма предзаполнена той же календарной датой.
-    const add = await screen.findByTestId('day-add');
+    const add = await screen.findByTestId('fab-add');
     await act(async () => {
       fireEvent.click(add);
     });

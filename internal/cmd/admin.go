@@ -1,5 +1,5 @@
 // Package cmd — подрежимы единого бинарника `deadliner` (спека §2):
-// migrate и admin. serve собирается в Task 16.
+// migrate, admin и serve.
 package cmd
 
 import (
@@ -34,15 +34,12 @@ const (
 //	ban <telegram_id>        забанить (сессии отзываются немедленно)
 //	unban <telegram_id>      снять бан
 //	delete-group <slug>      soft-delete группы по слагу
-//	list-groups [status]     таблица групп: слаг, название, статус, участники,
-//	                         создана (status: pending|active|archived)
+//	list-groups [status]     таблица групп (status: pending|active|archived)
 //	stats                    счётчики инстанса
-//	cleanup                  один прогон cleanup (протухшие pending-группы,
-//	                         счётчики, сессии)
+//	cleanup                  один прогон cleanup
 //
-// Миграции НЕ применяются: CLI работает с уже существующей схемой (миграции —
-// отдельный подрежим migrate), иначе случайный `admin stats` на проде менял бы
-// схему. Ошибка → код 1, ошибка использования → 2.
+// Миграции не применяются (это подрежим migrate): CLI работает с существующей
+// схемой. Ошибка → код 1, ошибка использования → 2.
 func Admin(ctx context.Context, args []string, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
@@ -162,8 +159,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, i18n.T("admin.usage"))
 }
 
-// dispatch выполняет разобранную команду. Актор — SystemActor: команда
-// запускается оператором на сервере, строки users у неё нет, поэтому аудит
+// dispatch выполняет разобранную команду. Актор — SystemActor: аудит
 // пишется с actor_user_id = NULL (см. moderation.writeAudit).
 func dispatch(ctx context.Context, svc *moderation.Service, cmd, arg string, out, errOut io.Writer) int {
 	actor := moderation.SystemActor
@@ -260,8 +256,7 @@ func printReport(w io.Writer, r moderation.CleanupReport) {
 }
 
 // parseGroupStatus — необязательный фильтр `admin list-groups [status]`.
-// Пустой аргумент → nil (все статусы); мусор → ok=false (ошибка использования,
-// выход 2). Значения совпадают с группами статусов в domain.GroupStatus.
+// Пустой аргумент → nil (все статусы); мусор → ok=false.
 func parseGroupStatus(arg string) (*domain.GroupStatus, bool) {
 	if arg == "" {
 		return nil, true
@@ -275,12 +270,8 @@ func parseGroupStatus(arg string) (*domain.GroupStatus, bool) {
 	}
 }
 
-// printGroups — таблица `admin list-groups`. Колонки выравниваются по самой
-// длинной ячейке: слаг — ASCII/кириллица, а title произвольный, поэтому
-// фиксированная ширина ломала бы вывод (см. printStats с той же логикой).
-//
-// Число колонок фиксировано пятью (спека §2), независимо от содержимого:
-// выравнивание по максимальной ширине ВНУТРИ колонки, а не по всей строке.
+// printGroups — таблица `admin list-groups`: колонки выравниваются по самой
+// длинной ячейке внутри колонки (title произвольный; как в printStats).
 func printGroups(w io.Writer, rows []moderation.GroupSummary, truncated bool) {
 	if len(rows) == 0 {
 		fmt.Fprintln(w, i18n.T("admin.list_groups.empty"))
@@ -321,8 +312,8 @@ func printGroups(w io.Writer, rows []moderation.GroupSummary, truncated bool) {
 				b.WriteString("  ")
 			}
 			b.WriteString(cell)
-			// Последняя колонка не добивается пробелами (хвостовые пробелы в
-			// терминале — мусор, по которому ломается копипаста).
+			// Последняя колонка не добивается пробелами (хвостовые пробелы
+			// ломают копипасту из терминала).
 			if i < len(row)-1 {
 				b.WriteString(strings.Repeat(" ", widths[i]-len([]rune(cell))))
 			}

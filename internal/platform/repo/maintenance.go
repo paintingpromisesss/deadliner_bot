@@ -11,9 +11,8 @@ import (
 
 // maintenanceRepo — служебные операции над таблицами без доменной сущности:
 // статистика инстанса для /stats и уборка протухших окон rate-limit-счётчиков
-// и сессий (cleanup-джоба, Task 12). Отдельный репозиторий, а не расширение
-// UserRepo/SessionRepo: единственный потребитель — moderation.Service, и
-// агрегаты бьют по нескольким таблицам сразу.
+// и сессий. Отдельный репозиторий: единственный потребитель —
+// moderation.Service, агрегаты бьют по нескольким таблицам сразу.
 type maintenanceRepo struct {
 	pool *pgxpool.Pool
 }
@@ -49,15 +48,11 @@ func (r *maintenanceRepo) Stats(ctx context.Context, now time.Time) (domain.Stat
 	return s, nil
 }
 
-// PurgeCounters удаляет окна счётчиков старше olderThan. Самое длинное окно
-// лимита — НЕДЕЛЬНОЕ (group_create_week, 168ч, groups.Service), а окно
-// floor-ится на своё начало: живая строка недельного счётчика бывает почти
-// 168 часов от роду. Поэтому olderThan обязан быть больше 168ч (конфиг
-// COUNTER_RETENTION, дефолт 192ч; config.Load отвергает значение ≤ 168ч) —
-// меньшая ретенция удаляла бы ЖИВУЮ строку и LIMIT_GROUP_CREATE_WEEK молча
-// перестал бы срабатывать. Оба счётчика (user и chat) чистятся одной
-// транзакцией: частичная уборка оставила бы рассинхрон user/chat-лимитов.
-// Возвращает число строк.
+// PurgeCounters удаляет окна счётчиков старше olderThan. olderThan обязан
+// быть больше 168ч (недельное окно group_create_week floor-ится на своё
+// начало; COUNTER_RETENTION валидируется в config.Load) — меньшая ретенция
+// удаляла бы живую строку недельного лимита. Оба счётчика (user и chat)
+// чистятся одной транзакцией. Возвращает число строк.
 func (r *maintenanceRepo) PurgeCounters(ctx context.Context, olderThan time.Time) (int64, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -85,11 +80,9 @@ func (r *maintenanceRepo) PurgeCounters(ctx context.Context, olderThan time.Time
 	return users + chats, nil
 }
 
-// PurgeExpiredSessions удаляет строки сессий, истёкшие до olderThan. Грейс
-// задаёт вызывающий (cleanup берёт 7 дней): сама сессия недействительна уже в
-// expires_at (GetActive сравнивает с now), грейс нужен лишь для того, чтобы
-// не удалять свежие «только что истёкшие» токены — по ним ещё возможны
-// диагностика и разбор инцидентов.
+// PurgeExpiredSessions удаляет строки сессий, истёкшие до olderThan. Сессия
+// недействительна уже в expires_at (GetActive); грейс от вызывающего — чтобы
+// не удалять свежеистёкшие токены, ещё нужные для диагностики.
 func (r *maintenanceRepo) PurgeExpiredSessions(ctx context.Context, olderThan time.Time) (int64, error) {
 	tag, err := r.pool.Exec(ctx,
 		`DELETE FROM sessions WHERE expires_at < $1`, olderThan)

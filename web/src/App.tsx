@@ -3,17 +3,15 @@ import type { ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppRoot, List, Placeholder, Section, Spinner } from './components/ui';
 
-import { hasInitData } from './lib/tma';
-import { getStartParam } from './lib/tma';
+import { hasInitData, getStartParam, syncBackButton } from './lib/tma';
 import { useAuthStore } from './stores/auth';
-import { routeGroupID, routeName, useRoute } from './router';
+import { navigate, routerBack, routeGroupID, routeName, useRoute } from './router';
 import { TabBar } from './components/TabBar';
 import { CalendarScreen } from './screens/calendar/CalendarScreen';
 import { DeadlinesScreen } from './screens/deadlines/DeadlinesScreen';
 import { GroupsScreen } from './screens/groups/GroupsScreen';
 import { GroupDetailScreen } from './screens/groups/GroupDetailScreen';
 import { JoinGroupSheet } from './components/JoinGroupSheet';
-import { navigate } from './router';
 import { SettingsScreen } from './screens/SettingsScreen';
 
 const queryClient = new QueryClient({
@@ -26,7 +24,7 @@ const queryClient = new QueryClient({
   },
 });
 
-/** Экраны Task 13–15: settings, дедлайны, календарь, группы и группа детально. */
+/** Экраны по имени маршрута: settings, дедлайны, календарь, группы. */
 function Routes() {
   const route = useRoute();
   switch (routeName(route)) {
@@ -45,13 +43,10 @@ function Routes() {
 }
 
 /**
- * Обработка startapp-параметра (Main App flow): Mini App, открытое кнопкой
- * приглашения из чата группы, получает код инвайта и показывает экран
- * подтверждения «Вступить в группу?». Лимит инвайта тратится только кнопкой
- * «Вступить»; закрытие окна или «Отмена» ничего не списывают.
- *
- * Параметр читается ОДИН раз при монтировании: повторная реакция на тот же
- * код при ре-рендере снова открывала бы модалку после отмены.
+ * startapp-параметр (Main App flow): кнопка приглашения из чата открывает
+ * Mini App с кодом инвайта и экраном «Вступить в группу?». Лимит тратится
+ * только кнопкой «Вступить». Параметр читается ОДИН раз при монтировании:
+ * повторная реакция при ре-рендере снова открывала бы модалку после отмены.
  */
 function InviteJoinGate() {
   const [startParam] = useState(() => getStartParam());
@@ -143,11 +138,24 @@ function AuthGate({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/** Синхронизация нативной кнопки «Назад» (5.1). */
+function BackButtonSync() {
+  const route = useRoute();
+  const isRoot = route.raw === '#/' || route.path.length === 0;
+
+  useEffect(() => {
+    return syncBackButton(isRoot, routerBack);
+  }, [isRoot]);
+
+  return null;
+}
+
 export function App() {
   return (
     <AppRoot>
       <QueryClientProvider client={queryClient}>
         <AuthGate>
+          <BackButtonSync />
           <main className="dl-main">
             <Routes />
           </main>

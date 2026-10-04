@@ -29,6 +29,7 @@ export interface Group {
 export interface Binding {
   chat_id: number;
   message_thread_id?: number | null;
+  topic_name?: string | null;
   chat_title: string;
 }
 
@@ -120,6 +121,25 @@ export function deleteGroup(groupID: number): Promise<void> {
 /** POST /groups/{id}/invites → 201 {code, expires_at}; код показывается один раз. */
 export function createInvite(groupID: number, input: InviteInput): Promise<InviteCreated> {
   return apiFetch<InviteCreated>(`/groups/${groupID}/invites`, { method: 'POST', body: input });
+}
+
+/** Сохранённый инвайт группы (GET /groups/{id}/invites). */
+export interface GroupInvite {
+  id: number;
+  group_id: number;
+  code: string;
+  role: 'admin' | 'member';
+  max_uses: number;
+  used_count: number;
+  created_by: number;
+  expires_at: string | null;
+  revoked_at: string | null;
+  status: 'active' | 'revoked' | 'expired' | 'exhausted';
+}
+
+/** GET /groups/{id}/invites → список сохранённых инвайтов группы. */
+export function fetchGroupInvites(groupID: number): Promise<{ invites: GroupInvite[] }> {
+  return apiFetch<{ invites: GroupInvite[] }>(`/groups/${groupID}/invites`);
 }
 
 /** DELETE /groups/{id}/invites/{code} → 204 (отзыв по plaintext-коду). */

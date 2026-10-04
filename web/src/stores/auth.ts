@@ -1,12 +1,9 @@
-// Состояние авторизации (zustand): токен сессии, профиль, статус bootstrap.
-//
-// Токен персистится в localStorage (ключ 'dl_token'), чтобы перезапуск Mini App
-// не требовал полного цикла входа. Bootstrap:
-//   сохранённый токен → GET /me → authed;
-//   иначе → POST /auth/telegram с initData → authed;
-//   нет ни того, ни другого (обычный браузер без Telegram) → anonymous:
-//   отсутствие окружения — не сбой входа, а нейтральное состояние без
-//   кнопки «Повторить». 'error' остаётся для реальных отказов авторизации.
+// Состояние авторизации (zustand): токен, профиль, статус bootstrap. Токен
+// персистится в localStorage ('dl_token'), чтобы перезапуск Mini App не
+// требовал полного входа. Bootstrap: сохранённый токен → GET /me → authed;
+// иначе POST /auth/telegram с initData → authed; нет ни того, ни другого
+// (браузер без Telegram) → anonymous — нейтральное состояние, не сбой;
+// 'error' — только реальные отказы авторизации.
 import { create } from 'zustand';
 import { ApiError, apiFetch, api, authenticate, configureAuth, type Session, type User } from '../lib/api';
 import { getInitData } from '../lib/tma';
@@ -154,7 +151,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 }));
 
 // Связка api-клиента со стором: 401 → повторный вход по initData; провал
-// повторного входа → экран ошибки (Task 13: api.ts не импортирует стор).
+// повторного входа → экран ошибки. api.ts стор не импортирует (инъекция хуков).
 configureAuth({
   getToken: () => useAuthStore.getState().token,
   getInitData: () => getInitData() ?? null,

@@ -503,9 +503,8 @@ describe('DeadlineSheet: кастомные напоминания', () => {
       fireEvent.click(screen.getByTestId('add-reminder'));
     });
 
-    // Отступ 0 часов даёт 0 минут — меньше минимума (5): раньше такой элемент
-    // молча выпадал из тела запроса, теперь это видимая ошибка, а отправка
-    // заблокирована.
+    // Отступ 0 часов даёт 0 минут — меньше минимума (5): видимая ошибка,
+    // отправка заблокирована.
     const custom = () => container.querySelector('.dl-custom') as HTMLElement;
     const amount = custom().querySelector('input[type="number"]') as HTMLInputElement;
     fireEvent.change(amount, { target: { value: '0' } });

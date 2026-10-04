@@ -29,10 +29,8 @@ func (s *BotSender) SendMessage(ctx context.Context, chatID int64, threadID *int
 }
 
 // Send отправляет OutMessage и возвращает message_id. Текст уходит с
-// parse_mode=HTML (спека §6.2: шаблоны каталога содержат <b>), поэтому все
-// пользовательские подстановки обязаны быть экранированы вызывающей стороной
-// через общий хелпер i18n.EscapeHTML (им пользуются scheduler, claims и
-// handlers). Ошибки маппятся TelegramError (429/403 → доменные).
+// parse_mode=HTML (спека §6.2), пользовательские подстановки обязаны быть
+// экранированы вызывающим (i18n.EscapeHTML). Ошибки маппятся TelegramError.
 func (s *BotSender) Send(ctx context.Context, m OutMessage) (int64, error) {
 	params := &tgbot.SendMessageParams{
 		ChatID:    m.ChatID,
@@ -40,9 +38,7 @@ func (s *BotSender) Send(ctx context.Context, m OutMessage) (int64, error) {
 		ParseMode: models.ParseModeHTML,
 	}
 	if m.ThreadID != nil && *m.ThreadID != 0 {
-		// В SendMessageParams поле int с omitempty: в топик форума нужно
-		// непустое значение, иначе сообщение уйдёт в General (и claim-код
-		// окажется не в том топике).
+		// Поле int с omitempty: ноль ушёл бы в General, а не в топик.
 		params.MessageThreadID = int(*m.ThreadID)
 	}
 	if m.LinkPreviewOff {
@@ -53,8 +49,7 @@ func (s *BotSender) Send(ctx context.Context, m OutMessage) (int64, error) {
 		button := models.InlineKeyboardButton{Text: m.ButtonText}
 
 		// web_app-кнопки разрешены только в ЛС: в группах Telegram отвечает
-		// 400 BUTTON_TYPE_INVALID, поэтому там используется url-кнопка на тот
-		// же TMA-адрес.
+		// 400, поэтому там url-кнопка на тот же адрес.
 		if m.ChatID > 0 {
 			button.WebApp = &models.WebAppInfo{URL: m.ButtonURL}
 		} else {
@@ -78,8 +73,8 @@ func (s *BotSender) Send(ctx context.Context, m OutMessage) (int64, error) {
 // IsChatAdmin — статус участника чата: creator/administrator.
 func (s *BotSender) IsChatAdmin(ctx context.Context, chatID, userID int64) (bool, error) {
 	if userID == 0 {
-		// Идентификатор бота неизвестен (getMe не вызывался) — безопаснее
-		// считать «не админ», чем разрешить привязку без проверки.
+		// Идентификатор бота неизвестен — безопаснее «не админ», чем
+		// привязка без проверки.
 		return false, nil
 	}
 	member, err := s.api.GetChatMember(ctx, &tgbot.GetChatMemberParams{
@@ -138,11 +133,9 @@ func isAdminCommand(cmd string) bool {
 // SetMenuButton — menu button типа web_app (спека §6.1).
 func (s *BotSender) SetMenuButton(ctx context.Context, text, url string) error {
 	if _, err := s.api.SetChatMenuButton(ctx, &tgbot.SetChatMenuButtonParams{
-		// Type обязателен: у MenuButtonWebApp тег `rules:"required,equals:web_app"`,
-		// и без него уходит {"type":""} — Telegram отвечает
-		// "Bad Request: can't parse menu button: MenuButton has unsupported type".
-		// Обёртка models.MenuButton тут не подходит: её MarshalJSON проставляет тип,
-		// но menuButtonTag() у неё нет, а поле требует InputMenuButton.
+		// Type обязателен (тег rules у MenuButtonWebApp): без него Telegram
+		// отвечает "can't parse menu button"; обёртка models.MenuButton не
+		// проходит menuButtonTag().
 		MenuButton: &models.MenuButtonWebApp{
 			Type:   models.MenuButtonTypeWebApp,
 			Text:   text,

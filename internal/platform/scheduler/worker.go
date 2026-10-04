@@ -33,13 +33,10 @@ type Config struct {
 	FinalizeTimeout time.Duration
 }
 
-// DefaultFinalizeTimeout — бюджет финализации по умолчанию. 75s, а не 30s:
-// нотификатор держит выдержку 429 retry_after внутри себя до 60с
-// (telegram.maxInternalRetryAfter) и повторяет отправку, поэтому бюджет обязан
-// покрывать 60с выдержки плюс запас на саму отправку и UPDATE — иначе graceful
-// shutdown обрывал бы легитимное ожидание и сообщение оставалось бы с локом
-// (дубль после рестарта). Экспортирован, чтобы serve не дублировал значение:
-// расхождение здесь вернуло бы баг незаметно.
+// DefaultFinalizeTimeout — бюджет финализации по умолчанию: 75s покрывает
+// внутреннюю выдержку 429 retry_after нотификатора (до 60с) плюс отправку и
+// UPDATE, иначе graceful shutdown оставил бы сообщение с локом (дубль после
+// рестарта). Экспортирован, чтобы serve не дублировал значение.
 const DefaultFinalizeTimeout = 75 * time.Second
 
 // Deps — зависимости воркера (только domain-порты + пул для транзакций).
@@ -108,9 +105,8 @@ func New(deps Deps, cfg Config) *Worker {
 	}
 }
 
-// FinalizeTimeout — фактический бюджет финализации воркера (после подстановки
-// дефолта). Интроспективное API для тестов сборки графа: serve не задаёт
-// значение сам, и проверять нужно реально применяемое, а не константу.
+// FinalizeTimeout — фактический бюджет финализации воркера (после
+// подстановки дефолта); для тестов сборки графа.
 func (w *Worker) FinalizeTimeout() time.Duration { return w.cfg.FinalizeTimeout }
 
 // Run — главный цикл (спека §7.2): джиттер 0–500мс, ReleaseStale → FetchDue
@@ -141,23 +137,15 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// Tick — один цикл воркера (публичный: Run зовёт его в цикле; тесты и
-// future admin-команды — напрямую). Дожидается завершения батча.
+// Tick — один цикл воркера (публичный: Run зовёт его в цикле, тесты — напрямую);
+// дожидается завершения батча.
 //
-// ИНВАРИАНТ МАСШТАБИРОВАНИЯ (спека §2, runbook §2.1): между ReleaseStale и
-// MarkSent напоминание защищено ТОЛЬКО локом в БД (locked_by/locked_at) плюс
-// условным UPDATE в MarkSent (status='pending' AND locked_by=workerID).
-// Внутри одного процесса это исключает двойную отправку полностью, но при
-// НЕСКОЛЬКИХ инстансах serve второй инстанс, у которого now-LockTTL оказался
-// больше времени дренажа батча, освободит ещё живой лок (ReleaseStale) и
-// переотправит напоминание — дубль в чат.
-//
-// Отсюда требование к конфигурации: SCHED_LOCK_TTL > худшего времени дренажа
-// батча ≈ (Batch/Concurrency) × (отправка + ожидание per-chat лимитера),
-// включая выдержку 429 retry_after до 60с внутри нотификатора. Штатный деплой —
-// ОДИН инстанс serve (см. runbook §2.1); менять Batch/RatePerChat без
-// пересчёта LockTTL нельзя. Поведение здесь намеренно не меняется: очередь
-// остаётся в БД, а межпроцессная безопасность — вопрос конфигурации, а не кода.
+// ИНВАРИАНТ МАСШТАБИРОВАНИЯ (runbook §2.1): между ReleaseStale и MarkSent
+// напоминание защищено только локом в БД и условным UPDATE. При нескольких
+// инстансах serve второй инстанс с now-LockTTL больше времени дренажа батча
+// освободит живой лок и переотправит напоминание. Требование к конфигурации:
+// SCHED_LOCK_TTL > худшего времени дренажа батча; штатный деплой — один
+// инстанс serve.
 func (w *Worker) Tick(ctx context.Context) error {
 	now := w.deps.Clock.Now()
 
@@ -208,13 +196,9 @@ func (w *Worker) Tick(ctx context.Context) error {
 }
 
 // process — один reminder: сообщение → MarkSent (+fan-out) | MarkFailed.
-//
-// ctx намеренно отвязывается от отмены (§7.2, graceful shutdown): остановка
-// воркера не должна рвать уже начатую отправку или её фиксацию. Отмена —
-// сигнал циклу (Run) больше не брать новые батчи; незавершённая работа
-// доводится под собственным дедлайном FinalizeTimeout. Иначе отправленное в
-// Telegram сообщение осталось бы с локом, ReleaseStale вернул бы строку в
-// очередь и после рестарта чат получил бы дубль.
+// ctx отвязывается от отмены: отмена — сигнал Run'у не брать новые батчи,
+// начатая отправка и её фиксация доводятся под дедлайном FinalizeTimeout
+// (иначе ReleaseStale вернул бы строку в очередь — дубль после рестарта).
 func (w *Worker) process(ctx context.Context, rem domain.Reminder) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.FinalizeTimeout)
 	defer cancel()
@@ -223,8 +207,8 @@ func (w *Worker) process(ctx context.Context, rem domain.Reminder) {
 
 	dl, err := w.deps.Deadlines.GetByID(ctx, rem.DeadlineID)
 	if errors.Is(err, domain.ErrNotFound) {
-		// Дедлайн удалён/завершён — reminder потребляем молча (ruling Task 8:
-		// send не делаем, строка не ретраится).
+		// Дедлайн удалён/завершён — reminder потребляем молча: send не делаем,
+		// строка не ретраится.
 		w.log.Info("scheduler: skipped: deadline deleted",
 			slog.Int64("reminder_id", rem.ID), slog.Int64("deadline_id", rem.DeadlineID))
 		if _, err := w.deps.Reminders.MarkSent(ctx, rem.ID, w.cfg.WorkerID, now); err != nil {
@@ -275,8 +259,7 @@ func (w *Worker) processGroup(ctx context.Context, rem domain.Reminder, dl domai
 		return
 	}
 	if err != nil {
-		// Не «привязки нет», а сбой БД: обычный backoff. Дешёвый часовой
-		// ретрай здесь лишь маскировал бы проблему.
+		// Не «привязки нет», а сбой БД: обычный backoff.
 		w.fail(ctx, rem, "binding load: "+err.Error(), now.Add(w.nextBackoff(rem)))
 		return
 	}
@@ -334,18 +317,16 @@ func (w *Worker) processGroup(ctx context.Context, rem domain.Reminder, dl domai
 	if err != nil {
 		rollback()
 		w.log.Error("scheduler: MarkSentWithFanout failed", slog.String("error", err.Error()))
-		// Отправка в чат уже была — родителя не ретраим (повторная отправка
-		// недопустима), фиксируем sent отдельным MarkSent: он сработает, только
-		// если строка ещё pending и locked_by=нас.
+		// Отправка в чат уже была: ретраить нельзя, фиксируем sent отдельным
+		// MarkSent (только если строка ещё pending и locked_by=нас).
 		w.finalizeWithoutFanout(ctx, rem.ID, now, "mark-sent-with-fanout-failed")
 		return
 	}
 	if err := repo.CommitDomainTx(ctx, tx); err != nil {
 		rollback()
 		w.log.Error("scheduler: fanout commit failed", slog.String("error", err.Error()))
-		// Инвариант «в чат — без дубля» держится и здесь: после отката строка
-		// снова pending и locked_by=нас, поэтому фиксируем sent тем же
-		// плейн-MarkSent. Дети потеряны, повторной отправки в чат нет.
+		// После отката строка снова pending и locked_by=нас: фиксируем sent
+		// плейн-MarkSent; дети потеряны, повторной отправки в чат нет.
 		w.finalizeWithoutFanout(ctx, rem.ID, now, "fanout-commit-failed")
 		return
 	}
@@ -354,11 +335,10 @@ func (w *Worker) processGroup(ctx context.Context, rem domain.Reminder, dl domai
 	}
 }
 
-// finalizeWithoutFanout — громкое сообщение в чат уже ушло, а fan-out не
-// состоялся: помечаем родителя sent вне его транзакции. MarkSent проходит
-// только если строка ещё pending и locked_by=нас, поэтому повторная отправка
-// в чат исключена; дочерние dm_dup в этом пути теряются — приоритет у
-// инварианта «чат не получает дубль».
+// finalizeWithoutFanout — сообщение в чат уже ушло, а fan-out не состоялся:
+// помечаем родителя sent вне транзакции (MarkSent проходит только если строка
+// ещё pending и locked_by=нас). Дочерние dm_dup теряются: приоритет —
+// отсутствие дубля в чате.
 func (w *Worker) finalizeWithoutFanout(ctx context.Context, remID int64, now time.Time, reason string) {
 	if _, err := w.deps.Reminders.MarkSent(ctx, remID, w.cfg.WorkerID, now); err != nil {
 		w.log.Error("scheduler: MarkSent fallback failed",
@@ -479,7 +459,7 @@ func (w *Worker) fail(ctx context.Context, rem domain.Reminder, errText string, 
 	}
 }
 
-// quarantine — BlockedError: MarkFailed с ретраем через неделю (ruling).
+// quarantine — BlockedError: MarkFailed с ретраем через неделю.
 func (w *Worker) quarantine(ctx context.Context, rem domain.Reminder, errText string, now time.Time) {
 	w.log.Info("scheduler: user blocked bot, quarantine reminder",
 		slog.Int64("reminder_id", rem.ID), slog.String("error", errText))

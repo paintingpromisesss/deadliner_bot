@@ -407,10 +407,9 @@ func TestReminderRegenerateConflictTolerated(t *testing.T) {
 }
 
 // TestReminderRegenerateMultipleCustomAt — регенерация (как при PATCH due_at)
-// на дедлайне с двумя custom_at и одним preset: старый upsert переписал бы ВСЕ
-// cancelled custom_at на один fire_at и упал в 23505; теперь каждая custom_at
-// воскрешается по точному совпадению fire_at, preset — по offset. Успех,
-// итоговый набор корректен, дублей нет.
+// на дедлайне с двумя custom_at и одним preset: каждая custom_at воскрешается
+// по точному совпадению fire_at, preset — по offset. Итоговый набор корректен,
+// дублей нет.
 func TestReminderRegenerateMultipleCustomAt(t *testing.T) {
 	pool := newTestDB(t)
 	ctx := t.Context()

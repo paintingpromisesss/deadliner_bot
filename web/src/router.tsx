@@ -63,11 +63,9 @@ export function routeName(route: Route): RouteName {
 }
 
 /**
- * Числовой id группы из маршрута «#/groups/123» → 123; иначе null.
- *
- * Мусор («#/groups/abc», «#/groups/0») даёт null, а не исключение: хеш приходит
- * из адресной строки и редактируется руками — падать на разборе нельзя, экран
- * покажет список групп.
+ * Числовой id группы из «#/groups/123» → 123; иначе null. Мусор
+ * («#/groups/abc», «#/groups/0») даёт null, а не исключение: хеш
+ * редактируется руками — экран покажет список групп.
  */
 export function routeGroupID(route: Route): number | null {
   if (route.path[0] !== 'groups') return null;
@@ -83,6 +81,17 @@ export function navigate(path: string): void {
   const clean = path.startsWith('/') ? path : `/${path}`;
   const next = `#${clean}`;
   if (window.location.hash !== next) window.location.hash = next;
+}
+
+/** Навигация назад по внутреннему стеку истории (5.1). */
+export function routerBack(): void {
+  if (typeof window !== 'undefined') {
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      navigate('/');
+    }
+  }
 }
 
 /** Текущий маршрут с подпиской на hashchange. */

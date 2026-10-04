@@ -92,9 +92,7 @@ func newTestGroupsRouterWithSlugRegex(t *testing.T, expr string) http.Handler {
 }
 
 // promoteGroupAdmin выдаёт роль admin напрямую в БД и активирует группу:
-// в рамках Task 7 это единственный путь к админству — создатель группы
-// намеренно member (спека §3.1), а claim-флоу появится в Task 10. Активация
-// нужна, потому что redeem в pending-группу чужим запрещён (finding #3).
+// redeem в pending-группу чужим запрещён, а активная группа нужна инвайтам.
 func promoteGroupAdmin(t *testing.T, r http.Handler, token string, groupID int64) {
 	t.Helper()
 	resp := doJSON(r, http.MethodGet, "/api/v1/me", token, nil)
@@ -110,6 +108,14 @@ func promoteGroupAdmin(t *testing.T, r http.Handler, token string, groupID int64
 		groupID, int64(me["id"].(float64))); err != nil {
 		t.Fatalf("promote admin: %v", err)
 	}
+	if _, err := testPool.Exec(t.Context(),
+		`UPDATE groups SET status='active' WHERE id=$1`, groupID); err != nil {
+		t.Fatalf("activate group: %v", err)
+	}
+}
+
+func activateGroup(t *testing.T, groupID int64) {
+	t.Helper()
 	if _, err := testPool.Exec(t.Context(),
 		`UPDATE groups SET status='active' WHERE id=$1`, groupID); err != nil {
 		t.Fatalf("activate group: %v", err)
@@ -152,17 +158,15 @@ func TestGroupsHappyPath(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &details); err != nil {
 		t.Fatal(err)
 	}
-	if details["role"] != "member" {
-		t.Errorf("creator role = %v, want member", details["role"])
+	if details["role"] != "admin" {
+		t.Errorf("creator role = %v, want admin", details["role"])
 	}
 	if details["members_count"] != float64(1) {
 		t.Errorf("members_count = %v, want 1", details["members_count"])
 	}
 
-	// Создатель — member (claim в Task 10); для инвайтов нужен admin.
-	promoteGroupAdmin(t, r, adminTok, gid)
-
 	// POST /groups/{id}/invites — member-инвайт → 201 {code}
+	activateGroup(t, gid)
 	resp = doJSON(r, http.MethodPost, fmt.Sprintf("/api/v1/groups/%d/invites", gid), adminTok,
 		map[string]any{"role": "member", "max_uses": 2, "ttl_hours": 48})
 	if resp.Code != http.StatusCreated {
@@ -216,7 +220,7 @@ func TestGroupsHappyPath(t *testing.T) {
 		t.Fatalf("PATCH member = %d, want 200; body: %s", resp.Code, resp.Body)
 	}
 
-	// DELETE /groups/{id}/me — участник выходит (админов теперь двое)
+	// DELETE /groups/{id}/me — участник выходит (админов двое)
 	resp = doJSON(r, http.MethodDelete, fmt.Sprintf("/api/v1/groups/%d/me", gid), memberTok, nil)
 	if resp.Code != http.StatusNoContent {
 		t.Fatalf("DELETE /me = %d, want 204; body: %s", resp.Code, resp.Body)
@@ -258,9 +262,9 @@ func TestGroupsInvalidSlug400(t *testing.T) {
 	}
 }
 
-// Сквозная проверка SLUG_REGEX (finding I-1): charset приходит из конфига в
-// провайдер, а не из зашитого в домене алфавита. «ГРУППА-1» содержит цифру и
-// структурно корректна, поэтому её судьбу решает именно регулярка.
+// Сквозная проверка: charset приходит из конфига в провайдер, а не из
+// зашитого в домене алфавита. «ГРУППА-1» структурно корректна, её судьбу
+// решает именно регулярка.
 func TestGroupsCreateHonorsSlugRegexFromConfig(t *testing.T) {
 	t.Run("дефолтная регулярка отвергает латиницу вне A-Z и кириллицу вне А-Я", func(t *testing.T) {
 		r := newTestGroupsRouterWithSlugRegex(t, `^[А-Я0-9]+(-[А-Я0-9]+)*$`)
@@ -412,8 +416,8 @@ func TestGroupsSearchAndListMine(t *testing.T) {
 	if grp == nil || grp["slug"] != "ПОИСК-11" {
 		t.Errorf("search result shape = %v, want {group:{slug:ПОИСК-11},role}", found[0])
 	}
-	if found[0]["role"] != "member" {
-		t.Errorf("search role = %v, want member (создатель — участник)", found[0]["role"])
+	if found[0]["role"] != "admin" {
+		t.Errorf("search role = %v, want admin (создатель — админ)", found[0]["role"])
 	}
 	// Без q — мои группы с ролью.
 	resp = doJSON(r, http.MethodGet, "/api/v1/groups", tok, nil)
@@ -424,7 +428,7 @@ func TestGroupsSearchAndListMine(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &mine); err != nil {
 		t.Fatal(err)
 	}
-	if len(mine) != 1 || mine[0]["role"] != "member" {
+	if len(mine) != 1 || mine[0]["role"] != "admin" {
 		t.Errorf("list mine = %v", mine)
 	}
 }
@@ -458,10 +462,10 @@ func TestGroupsInviteBounds400(t *testing.T) {
 		map[string]any{"role": "member", "ttl_hours": 24 * 91}); resp.Code != http.StatusBadRequest {
 		t.Errorf("ttl_hours=2184 = %d, want 400; body: %s", resp.Code, resp.Body)
 	}
-	// ttl_hours отрицательный → 400.
+	// ttl_hours отрицательный (кроме -1) → 400.
 	if resp = doJSON(r, http.MethodPost, invitesURL, tok,
-		map[string]any{"role": "member", "ttl_hours": -1}); resp.Code != http.StatusBadRequest {
-		t.Errorf("ttl_hours=-1 = %d, want 400; body: %s", resp.Code, resp.Body)
+		map[string]any{"role": "member", "ttl_hours": -2}); resp.Code != http.StatusBadRequest {
+		t.Errorf("ttl_hours=-2 = %d, want 400; body: %s", resp.Code, resp.Body)
 	}
 	// max_uses = -1 (без лимита) — валидно → 201.
 	if resp = doJSON(r, http.MethodPost, invitesURL, tok,
@@ -509,9 +513,17 @@ func TestGroupsLastAdminLeave409(t *testing.T) {
 		} `json:"group"`
 	}
 	_ = json.Unmarshal(resp.Body.Bytes(), &created)
-	promoteGroupAdmin(t, r, adminTok, created.Group.ID)
+	gid := created.Group.ID
 
-	resp = doJSON(r, http.MethodDelete, fmt.Sprintf("/api/v1/groups/%d/me", created.Group.ID), adminTok, nil)
+	// Привязываем чат, чтобы группа считалась связанной; иначе выход удаляет группу (1.2).
+	userID := meID(t, r, adminTok)
+	if _, err := testPool.Exec(t.Context(),
+		`INSERT INTO chat_bindings (group_id, chat_id, chat_title, bound_by) VALUES ($1, $2, 'Chat', $3)`,
+		gid, int64(-100970), userID); err != nil {
+		t.Fatalf("bind chat: %v", err)
+	}
+
+	resp = doJSON(r, http.MethodDelete, fmt.Sprintf("/api/v1/groups/%d/me", gid), adminTok, nil)
 	if resp.Code != http.StatusConflict {
 		t.Fatalf("last admin leave = %d, want 409; body: %s", resp.Code, resp.Body)
 	}
@@ -519,5 +531,35 @@ func TestGroupsLastAdminLeave409(t *testing.T) {
 	_ = json.Unmarshal(resp.Body.Bytes(), &env)
 	if env["error"]["code"] != "last_admin" {
 		t.Errorf("error code = %q, want last_admin", env["error"]["code"])
+	}
+}
+
+func TestGroupsUnboundCreatorLeaveDeletesGroup(t *testing.T) {
+	r := newTestGroupsRouterDefault(t)
+	adminTok, _ := login(t, r, 971)
+
+	resp := doJSON(r, http.MethodPost, "/api/v1/groups", adminTok,
+		map[string]any{"slug": "Г-778", "title": "T"})
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("create = %d", resp.Code)
+	}
+	var created struct {
+		Group struct {
+			ID int64 `json:"id"`
+		} `json:"group"`
+	}
+	_ = json.Unmarshal(resp.Body.Bytes(), &created)
+	gid := created.Group.ID
+
+	// Выход создателя из непривязанной группы каскадно удаляет её → 204.
+	resp = doJSON(r, http.MethodDelete, fmt.Sprintf("/api/v1/groups/%d/me", gid), adminTok, nil)
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("unbound leave = %d, want 204; body: %s", resp.Code, resp.Body)
+	}
+
+	// Группа удалена из БД.
+	resp = doJSON(r, http.MethodGet, fmt.Sprintf("/api/v1/groups/%d", gid), adminTok, nil)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("GET deleted group = %d, want 404", resp.Code)
 	}
 }

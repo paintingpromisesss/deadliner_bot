@@ -230,7 +230,7 @@ describe('auth store: login / patchMe / logout', () => {
   });
 });
 
-describe('auth store: single-flight бутстрапа (I-3b)', () => {
+describe('auth store: single-flight бутстрапа', () => {
   it('два параллельных bootstrap() — один GET /me', async () => {
     window.localStorage.setItem(TOKEN_STORAGE_KEY, 'stored-token');
     stubFetch(() => jsonResponse(200, user));

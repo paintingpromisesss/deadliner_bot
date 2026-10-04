@@ -118,7 +118,9 @@ type UserNotifier interface {
 // telegram.InvitePublisher; интерфейс объявлен здесь, чтобы app не зависел
 // от platform.
 type ChatPublisher interface {
-	PublishInvite(ctx context.Context, chatID, threadID int64, text string) error
+	// inviteCode — plaintext-код инвайта: нужен для Main App direct-link
+	// (startapp-параметр) на кнопке сообщения.
+	PublishInvite(ctx context.Context, chatID, threadID int64, text, inviteCode string) error
 }
 
 // Options — необязательные зависимости сервиса: часть сборок (unit-тесты use
@@ -608,7 +610,7 @@ func (s *Service) CreateInvite(ctx context.Context, actor *domain.User, groupID 
 			threadID = *binding.MessageThreadID
 		}
 		text := i18n.T("invite.chat_message", i18n.EscapeHTML(g.Title))
-		if err := s.invitePublisher.PublishInvite(ctx, binding.ChatID, threadID, text); err != nil {
+		if err := s.invitePublisher.PublishInvite(ctx, binding.ChatID, threadID, text, code); err != nil {
 			// Код уже сохранён и действующ: сбой публикации не отменяет его,
 			// но вызывающий должен знать, что чат не оповещён.
 			s.log.Warn("groups: invite publish failed",

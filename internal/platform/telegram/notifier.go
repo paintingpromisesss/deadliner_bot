@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/sauron/deadliner/internal/domain"
@@ -156,22 +158,36 @@ func (n *Notifier) SendToChatWithButton(ctx context.Context, chatID, threadID in
 }
 
 // InvitePublisher — публикация инвайта в чат группы: призыв «Присоединяйтесь»
-// и Main App-кнопка (startapp = plaintext-код инвайта). Реализует интерфейс
-// httpapi.InvitePublisher.
+// и inline-кнопка, открывающая Mini App как Main App.
 type InvitePublisher struct {
-	notifier *Notifier
-	appURL   string
+	notifier    *Notifier
+	botUsername string
 }
 
-func NewInvitePublisher(notifier *Notifier, appURL string) *InvitePublisher {
-	return &InvitePublisher{notifier: notifier, appURL: appURL}
+// NewInvitePublisher собирает публикатор. botUsername — имя бота без «@»
+// (BOT_USERNAME): из него строится direct-link
+// https://t.me/<bot>/app?startapp=<код>. Пустое имя — кнопки не будет
+// (сообщение уйдёт текстом): web_app-кнопки в группах Telegram запрещает, а
+// без username t.me-ссылку собрать нельзя.
+func NewInvitePublisher(notifier *Notifier, botUsername string) *InvitePublisher {
+	return &InvitePublisher{notifier: notifier, botUsername: strings.TrimPrefix(botUsername, "@")}
 }
 
-// PublishInvite отправляет инвайт-сообщение в чат группы. Кнопка открывает
-// Mini App как Main App: startapp-параметр несёт plaintext-код инвайта
-// (ссылок во внешний браузер нет — приложение открывается нативно в Telegram).
-func (p *InvitePublisher) PublishInvite(ctx context.Context, chatID, threadID int64, text string) error {
+// PublishInvite отправляет инвайт-сообщение в чат группы. Кнопка — url-кнопка
+// на Main App direct-link: Telegram открывает такие ссылки нативно как Mini
+// App (с окном согласия при первом запуске), внешний браузер не задействуется.
+// startapp-параметр несёт plaintext-код инвайта: открывшееся приложение
+// показывает экран «Вступить в группу?» и списывает лимит только кнопкой
+// «Вступить».
+func (p *InvitePublisher) PublishInvite(ctx context.Context, chatID, threadID int64, text, inviteCode string) error {
+	if p.botUsername == "" || inviteCode == "" {
+		// Без username direct-link не собрать: уходим текстом без кнопки,
+		// оператор узнает об этом по предупреждению в логе при старте serve.
+		_, err := p.notifier.SendToChatID(ctx, chatID, threadID, text)
+		return err
+	}
+	url := fmt.Sprintf("https://t.me/%s/app?startapp=%s", p.botUsername, url.PathEscape(inviteCode))
 	_, err := p.notifier.SendToChatWithButton(ctx, chatID, threadID, text,
-		i18n.T("bot.button.join_group"), p.appURL)
+		i18n.T("bot.button.join_group"), url)
 	return err
 }

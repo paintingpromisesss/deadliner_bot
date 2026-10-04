@@ -199,8 +199,13 @@ func buildGraph(cfg *config.Config, pool *pgxpool.Pool, log *slog.Logger) (*serv
 	// тот же нотификатор, что и напоминания: один лимитер на процесс (§7.4).
 	groupsSvc.WithOptions(groups.Options{Slugs: slugProvider, Notifier: notifier, Users: r.Users})
 	// Инвайты с чекбоксом «Опубликовать в чат» уходят в привязанный чат
-	// группы с Main App-кнопкой (startapp = код инвайта).
-	groupsSvc.WithOptions(groups.Options{InvitePublisher: telegram.NewInvitePublisher(notifier, cfg.App.PublicURL)})
+	// группы с кнопкой на Main App direct-link (t.me/<bot>/app?startapp=<код>):
+	// Telegram открывает её нативно как Mini App, без внешнего браузера.
+	// Без BOT_USERNAME кнопки не будет — предупреждаем оператора на старте.
+	if cfg.Bot.Username == "" {
+		log.Warn("serve: BOT_USERNAME is empty: invite chat publish will send text without the Main App button")
+	}
+	groupsSvc.WithOptions(groups.Options{InvitePublisher: telegram.NewInvitePublisher(notifier, cfg.Bot.Username)})
 	moderationSvc := newModerationService(r, cfg, clock, log)
 	authSvc := newAuthService(r, cfg, clock)
 	deadlinesSvc := newDeadlinesService(r, clock, log)

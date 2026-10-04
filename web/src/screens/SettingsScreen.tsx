@@ -194,47 +194,38 @@ export function SettingsScreen() {
             groupSettings.map((item) => (
               <div key={item.group_id} data-testid={`group-notify-${item.group_id}`}>
                 <Cell
-                  Component="label"
+                  Component="div"
                   multiline
                   subtitle={
-                    <span>
-                      {`${item.slug} · ${item.override ? strings.settings.groupOverride : strings.settings.groupInherited}`}
-                      {item.override ? (
-                        <>
-                          {' · '}
-                          <button
-                            type="button"
-                            className="dl-link-btn"
-                            style={{
-                              background: 'none',
-                              border: 0,
-                              padding: 0,
-                              color: 'var(--tg-theme-link-color, var(--tg-theme-button-color, #2481cc))',
-                              fontSize: 'inherit',
-                              textDecoration: 'underline',
-                              cursor: 'pointer',
-                            }}
-                            data-testid={`group-inherit-${item.group_id}`}
-                            disabled={patchSettings.isPending}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              inheritGroup(item);
-                            }}
-                          >
-                            {strings.settings.groupInherit}
-                          </button>
-                        </>
-                      ) : null}
-                    </span>
+                    item.override
+                      ? `${item.slug} · ${item.dm_notify ? strings.settings.groupOverrideEnabled : strings.settings.groupOverrideDisabled}`
+                      : item.slug
                   }
                   after={
-                    <Switch
-                      checked={item.dm_notify}
-                      disabled={patchSettings.isPending}
-                      data-testid={`group-notify-switch-${item.group_id}`}
-                      onChange={(e) => toggleGroup(item, e.target.checked)}
-                    />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {item.override ? (
+                        <button
+                          type="button"
+                          className="dl-reset-btn"
+                          data-testid={`group-inherit-${item.group_id}`}
+                          disabled={patchSettings.isPending}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            inheritGroup(item);
+                          }}
+                          title={strings.settings.groupInherit}
+                        >
+                          {strings.settings.groupInherit}
+                        </button>
+                      ) : null}
+                      <Switch
+                        checked={item.dm_notify}
+                        disabled={patchSettings.isPending}
+                        data-testid={`group-notify-switch-${item.group_id}`}
+                        onChange={(e) => toggleGroup(item, e.target.checked)}
+                      />
+                    </div>
                   }
                 >
                   {item.title || item.slug}

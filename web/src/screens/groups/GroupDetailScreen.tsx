@@ -170,7 +170,11 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
   const inGroup = role !== '';
 
   return (
-    <Screen title={group.title || group.slug}>
+    <Screen
+      title={group.title || group.slug}
+      onBack={() => navigate('/groups')}
+      backLabel={strings.groups.title}
+    >
       <List>
         <Section>
           <Cell

@@ -306,7 +306,7 @@ interface InputProps extends FieldBase {
 
 /** Поле ввода: label с подписью и input (как .field/.input макета). */
 export function Input({ header, status = 'default', className, placeholder, ...rest }: InputProps) {
-  const showDatePlaceholder = rest.type === 'date' && !rest.value && Boolean(placeholder);
+  const showDatePlaceholder = (rest.type === 'date' || rest.type === 'time') && !rest.value && Boolean(placeholder);
   return (
     <label className={['dl-field', status === 'error' ? 'dl-field--error' : '', className ?? '']
       .filter(Boolean)

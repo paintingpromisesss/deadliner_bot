@@ -2,13 +2,13 @@
 // днях с дедлайнами, навигация по месяцам, тап по дню — список дня. Сетка —
 // lib/calendar.ts, данные одним запросом GET /me/deadlines?from&to в границах
 // месяца в tz пользователя (monthBounds).
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Cell, List, Placeholder, Section, Spinner } from '../../components/ui';
 import { Screen } from '../../components/Screen';
 import { DeadlineCell, useMinuteTick } from '../../components/DeadlineCard';
 import { DeadlineSheet } from '../../components/DeadlineSheet';
 import { useAuthStore } from '../../stores/auth';
-import { addMonths, buildMonth, dayKey, dayNumber, monthBounds, type MonthDay } from '../../lib/calendar';
+import { addMonths, buildMonth, dayKey, dayNumber, daysInMonth, monthBounds, type MonthDay } from '../../lib/calendar';
 import {
   formatDayMonth,
   formatMonthTitle,
@@ -70,8 +70,14 @@ export function CalendarScreen() {
 
   function shift(delta: number) {
     hapticImpact('light');
-    updateSelected(null);
-    updateCursor((prev) => addMonths(prev.year, prev.month, delta));
+    const next = addMonths(cursor.year, cursor.month, delta);
+    if (selected !== null) {
+      const currentDay = new Date(selected * 86_400_000).getUTCDate();
+      const maxDay = daysInMonth(next.year, next.month);
+      const targetDay = Math.min(currentDay, maxDay);
+      updateSelected(dayNumber(next.year, next.month, targetDay));
+    }
+    updateCursor(next);
   }
 
   function onPickDay(day: MonthDay) {
@@ -99,6 +105,12 @@ export function CalendarScreen() {
     setEditing(null);
     setSheetOpen(true);
   }
+
+  useEffect(() => {
+    const handler = () => openCreate();
+    window.addEventListener('deadliner:open-create', handler);
+    return () => window.removeEventListener('deadliner:open-create', handler);
+  }, []);
 
   return (
     <Screen title={strings.calendar.title}>
@@ -204,18 +216,20 @@ export function CalendarScreen() {
         </List>
       )}
 
-      <button
-        type="button"
-        className="dl-fab"
-        aria-label={strings.deadlines.addButton}
-        data-testid="fab-add"
-        onClick={() => {
-          hapticImpact('medium');
-          openCreate();
-        }}
-      >
-        +
-      </button>
+      {typeof document === 'undefined' || !document.querySelector('.dl-fab--global') ? (
+        <button
+          type="button"
+          className="dl-fab"
+          aria-label={strings.deadlines.addButton}
+          data-testid="fab-add"
+          onClick={() => {
+            hapticImpact('medium');
+            openCreate();
+          }}
+        >
+          +
+        </button>
+      ) : null}
 
       <DeadlineSheet
         open={sheetOpen}

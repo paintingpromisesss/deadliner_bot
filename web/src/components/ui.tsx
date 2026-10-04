@@ -305,13 +305,23 @@ interface InputProps extends FieldBase {
 }
 
 /** Поле ввода: label с подписью и input (как .field/.input макета). */
-export function Input({ header, status = 'default', className, ...rest }: InputProps) {
+export function Input({ header, status = 'default', className, placeholder, ...rest }: InputProps) {
+  const showDatePlaceholder = rest.type === 'date' && !rest.value && Boolean(placeholder);
   return (
     <label className={['dl-field', status === 'error' ? 'dl-field--error' : '', className ?? '']
       .filter(Boolean)
       .join(' ')}>
       {header ? <span className="dl-field__label">{header}</span> : null}
-      <input className="dl-input" {...rest} />
+      <div className="dl-input-wrap">
+        <input
+          className={['dl-input', showDatePlaceholder ? 'dl-input--empty-date' : ''].filter(Boolean).join(' ')}
+          placeholder={placeholder}
+          {...rest}
+        />
+        {showDatePlaceholder ? (
+          <span className="dl-input-placeholder" aria-hidden="true">{placeholder}</span>
+        ) : null}
+      </div>
     </label>
   );
 }

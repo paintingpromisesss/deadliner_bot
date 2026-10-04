@@ -388,6 +388,42 @@ button.dl-button:active:not(:disabled) {
 .dl-field--error .dl-input {
   border-color: var(--tg-theme-destructive-text-color);
 }
+.dl-input-wrap {
+  position: relative;
+  width: 100%;
+  display: flex;
+}
+.dl-input-placeholder {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--tg-theme-hint-color);
+  font-size: 15px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.dl-input:focus + .dl-input-placeholder {
+  display: none;
+}
+.dl-input--empty-date::-webkit-datetime-edit {
+  color: transparent;
+}
+.dl-input--empty-date:focus::-webkit-datetime-edit {
+  color: inherit;
+}
+
+.dl-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238e8e93' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 16px 16px;
+  padding-right: 40px;
+  cursor: pointer;
+}
 
 /* ── Переключатель (по макету .switch) ── */
 .dl-switch {
@@ -791,6 +827,11 @@ button.dl-button:active:not(:disabled) {
 .dl-action--icon:hover,
 .dl-action--icon:active {
   color: var(--tg-theme-text-color);
+}
+.dl-action--copied,
+.dl-action--copied:hover,
+.dl-action--copied:active {
+  color: var(--dl-green, #2eb85a);
 }
 
 /* ── FAB «+» (по макету .fab) ── */

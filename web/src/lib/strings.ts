@@ -296,6 +296,7 @@ export const strings = {
     groupModerationHint: 'Дедлайн участника публикуется после подтверждения админом группы.',
     dueHint: 'Время указывается в вашем часовом поясе: %s.',
     fieldDate: 'Дата',
+    datePlaceholder: 'Выберите дату',
     fieldTime: 'Время',
     remindersHeader: 'Напоминания',
     remindersEditHint: 'Напоминания пересчитываются автоматически при смене срока.',

@@ -64,6 +64,14 @@ function IconClose({ size = 18 }: { size?: number }) {
   );
 }
 
+function IconCheck({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
 interface GroupDetailScreenProps {
   groupID: number;
 }
@@ -107,12 +115,14 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
   const [moderationTarget, setModerationTarget] = useState<Deadline | null>(null);
   const [moderationAction, setModerationAction] = useState<'approve' | 'reject'>('approve');
   const [notice, setNotice] = useState<string | null>(null);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
   // Смена группы (переход из списка в другую) — чистое состояние.
   useEffect(() => {
     setActionError(null);
     setMenuFor(null);
     setNotice(null);
+    setCopiedCode(null);
   }, [groupID]);
 
   const expiresAt = detail.data?.group.claim_expires_at ?? null;
@@ -317,19 +327,21 @@ export function GroupDetailScreen({ groupID }: GroupDetailScreenProps) {
                       <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                         <button
                           type="button"
-                          className="dl-action dl-action--icon"
-                          aria-label={strings.groups.inviteCopy}
+                          className={`dl-action dl-action--icon ${copiedCode === inv.code ? 'dl-action--copied' : ''}`}
+                          aria-label={copiedCode === inv.code ? strings.groups.inviteCopied : strings.groups.inviteCopy}
                           data-testid={`copy-invite-${inv.code}`}
                           onClick={async () => {
                             hapticImpact('light');
                             try {
                               await navigator.clipboard.writeText(inv.code);
-                              setNotice(strings.groups.inviteCopied);
-                              setTimeout(() => setNotice(null), 2000);
+                              setCopiedCode(inv.code);
+                              setTimeout(() => {
+                                setCopiedCode((cur) => (cur === inv.code ? null : cur));
+                              }, 2000);
                             } catch {}
                           }}
                         >
-                          <IconCopy />
+                          {copiedCode === inv.code ? <IconCheck /> : <IconCopy />}
                         </button>
                         {inv.status === 'active' ? (
                           <button
